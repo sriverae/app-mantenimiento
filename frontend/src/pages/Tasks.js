@@ -3,179 +3,131 @@ import { Link } from 'react-router-dom';
 import { getTasks } from '../services/api';
 import { format } from 'date-fns';
 
-function Tasks({ user }) {
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({
+const STATUS_LABEL = { DRAFT:'Borrador', OPEN:'Abierta', IN_PROGRESS:'En Progreso', DONE:'Completada', CANCELLED:'Cancelada' };
+const STATUS_COLOR = { DRAFT:'#6b7280', OPEN:'#2563eb', IN_PROGRESS:'#f59e0b', DONE:'#059669', CANCELLED:'#dc2626' };
+const PRIORITY_COLOR = { ALTA:'#dc2626', MEDIA:'#f59e0b', BAJA:'#059669' };
+
+const ROLE_HIERARCHY = { TECNICO:1, ENCARGADO:2, PLANNER:3, INGENIERO:4 };
+const canManage = (role) => ROLE_HIERARCHY[role] >= ROLE_HIERARCHY['ENCARGADO'];
+
+export default function Tasks({ user }) {
+  const [tasks, setTasks]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [filters, setFilters]   = useState({
     day_date: new Date().toISOString().split('T')[0],
     status: '',
   });
 
-  useEffect(() => {
-    loadTasks();
-  }, [filters]);
+  useEffect(() => { loadTasks(); }, [filters]);
 
   const loadTasks = async () => {
     try {
       setLoading(true);
       const data = await getTasks(filters);
       setTasks(data);
-    } catch (err) {
-      console.error('Error cargando tareas:', err);
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { console.error(err); }
+    finally { setLoading(false); }
   };
 
-  const handleFilterChange = (e) => {
-    setFilters({
-      ...filters,
-      [e.target.name]: e.target.value
-    });
-  };
+  const isTecnico = !canManage(user.role);
+  // TECNICO never sees DRAFT — already filtered server-side, but also guard client-side
+  const visibleTasks = isTecnico ? tasks.filter(t => t.status !== 'DRAFT') : tasks;
 
-  const getStatusBadgeClass = (status) => {
-    const classes = {
-      'OPEN': 'badge-open',
-      'IN_PROGRESS': 'badge-in-progress',
-      'DONE': 'badge-done'
-    };
-    return classes[status] || 'badge-open';
-  };
-
-  const getPriorityBadgeClass = (priority) => {
-    const classes = {
-      'ALTA': 'badge-alta',
-      'MEDIA': 'badge-media',
-      'BAJA': 'badge-baja'
-    };
-    return classes[priority] || 'badge-media';
-  };
-
-  const getStatusText = (status) => {
-    const texts = {
-      'OPEN': 'Abierta',
-      'IN_PROGRESS': 'En Progreso',
-      'DONE': 'Completada',
-      'CANCELLED': 'Cancelada'
-    };
-    return texts[status] || status;
-  };
+  const draftCount = tasks.filter(t => t.status === 'DRAFT').length;
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '2rem', fontWeight: '700' }}>
-          Tareas
-        </h1>
-        <Link to="/tasks/new" className="btn btn-primary">
-          ➕ Nueva Tarea
-        </Link>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem', flexWrap:'wrap', gap:'1rem' }}>
+        <h1 style={{ fontSize:'2rem', fontWeight:700 }}>Tareas</h1>
+        {canManage(user.role) && (
+          <Link to="/tasks/new" className="btn btn-primary">+ Nueva Tarea</Link>
+        )}
       </div>
 
-      {/* Filtros */}
-      <div className="card" style={{ marginBottom: '2rem' }}>
-        <h3 style={{ marginBottom: '1rem', fontSize: '1rem', fontWeight: '600' }}>
-          Filtros
-        </h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-          <div className="form-group" style={{ marginBottom: 0 }}>
+      {/* Draft info banner for managers */}
+      {canManage(user.role) && draftCount > 0 && (
+        <div style={{ background:'#fef3c7', border:'1.5px solid #fcd34d', borderRadius:'.65rem', padding:'.75rem 1.1rem', marginBottom:'1.25rem', display:'flex', alignItems:'center', gap:'.6rem', fontSize:'.875rem' }}>
+          <span style={{ fontSize:'1.1rem' }}>📋</span>
+          <span><strong>{draftCount}</strong> tarea(s) en borrador — solo visibles para ENCARGADO, PLANNER e INGENIERO</span>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="card" style={{ marginBottom:'1.5rem' }}>
+        <div style={{ display:'flex', gap:'1rem', flexWrap:'wrap' }}>
+          <div className="form-group" style={{ margin:0, flex:1, minWidth:'150px' }}>
             <label className="form-label">Fecha</label>
-            <input
-              type="date"
-              name="day_date"
-              className="form-input"
-              value={filters.day_date}
-              onChange={handleFilterChange}
-            />
+            <input type="date" className="form-input" name="day_date"
+              value={filters.day_date} onChange={e => setFilters({...filters, day_date: e.target.value})} />
           </div>
-          <div className="form-group" style={{ marginBottom: 0 }}>
+          <div className="form-group" style={{ margin:0, flex:1, minWidth:'150px' }}>
             <label className="form-label">Estado</label>
-            <select
-              name="status"
-              className="form-select"
-              value={filters.status}
-              onChange={handleFilterChange}
-            >
+            <select className="form-select" name="status"
+              value={filters.status} onChange={e => setFilters({...filters, status: e.target.value})}>
               <option value="">Todos</option>
-              <option value="OPEN">Abierta</option>
+              {canManage(user.role) && <option value="DRAFT">Borradores</option>}
+              <option value="OPEN">Abiertas</option>
               <option value="IN_PROGRESS">En Progreso</option>
-              <option value="DONE">Completada</option>
-              <option value="CANCELLED">Cancelada</option>
+              <option value="DONE">Completadas</option>
             </select>
           </div>
+          <div style={{ alignSelf:'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setFilters({ day_date:'', status:'' })}>
+              Ver todas
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Lista de Tareas */}
       {loading ? (
-        <div className="loading">
-          <div className="spinner"></div>
-        </div>
-      ) : tasks.length === 0 ? (
-        <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-          <p style={{ fontSize: '3rem', marginBottom: '1rem' }}>📋</p>
-          <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
-            No hay tareas para los filtros seleccionados
-          </p>
-          <Link to="/tasks/new" className="btn btn-primary">
-            Crear Nueva Tarea
-          </Link>
+        <div className="loading"><div className="spinner" /></div>
+      ) : visibleTasks.length === 0 ? (
+        <div className="card" style={{ textAlign:'center', padding:'3rem', color:'#9ca3af' }}>
+          <div style={{ fontSize:'3rem', marginBottom:'1rem' }}>📋</div>
+          <p style={{ fontWeight:600 }}>No hay tareas para mostrar</p>
+          <p style={{ fontSize:'.875rem', marginTop:'.4rem' }}>Cambia los filtros o crea una nueva tarea</p>
         </div>
       ) : (
-        <div>
-          <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
-            Mostrando {tasks.length} tarea(s)
-          </p>
-          <div className="task-list">
-            {tasks.map((task) => (
-              <div key={task.id} className="task-item">
-                <div className="task-header">
-                  <div style={{ flex: 1 }}>
-                    <div className="task-title">{task.description}</div>
-                    <div style={{ fontSize: '0.875rem', color: '#6b7280', marginTop: '0.25rem' }}>
-                      📍 {task.area} • 🔧 {task.equipo}
-                    </div>
+        <div style={{ display:'grid', gap:'.75rem' }}>
+          {visibleTasks.map(task => (
+            <Link key={task.id} to={`/tasks/${task.id}`} style={{ textDecoration:'none', color:'inherit' }}>
+              <div style={{
+                background:'#fff', border: `1.5px solid ${task.status === 'DRAFT' ? '#fcd34d' : '#e5e7eb'}`,
+                borderRadius:'.75rem', padding:'1rem 1.25rem', display:'flex', alignItems:'center', gap:'1rem',
+                flexWrap:'wrap', transition:'box-shadow .15s', cursor:'pointer',
+                opacity: task.status === 'DRAFT' ? 0.85 : 1,
+              }}
+              onMouseEnter={e => e.currentTarget.style.boxShadow='0 4px 12px rgba(0,0,0,.08)'}
+              onMouseLeave={e => e.currentTarget.style.boxShadow='none'}>
+
+                {/* Draft icon */}
+                {task.status === 'DRAFT' && (
+                  <span title="Borrador" style={{ fontSize:'1.2rem' }}>📋</span>
+                )}
+
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontWeight:700, fontSize:'1rem', marginBottom:'.2rem', display:'flex', alignItems:'center', gap:'.5rem' }}>
+                    {task.description}
                   </div>
-                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                    <span className={`task-badge ${getPriorityBadgeClass(task.priority)}`}>
-                      {task.priority}
-                    </span>
-                    <span className={`task-badge ${getStatusBadgeClass(task.status)}`}>
-                      {getStatusText(task.status)}
-                    </span>
+                  <div style={{ fontSize:'.82rem', color:'#6b7280' }}>
+                    {task.area} · {task.equipo} · {format(new Date(task.day_date), 'dd/MM/yyyy')}
                   </div>
                 </div>
 
-                <div className="task-info">
-                  <div>📅 Fecha: {format(new Date(task.day_date), 'dd/MM/yyyy')}</div>
-                  {task.members.length > 0 && (
-                    <div>👥 {task.members.length} miembro(s) asignado(s)</div>
-                  )}
-                  {task.rescheduled_date && (
-                    <div style={{ color: '#f59e0b' }}>
-                      ⏰ Reprogramada para: {format(new Date(task.rescheduled_date), 'dd/MM/yyyy')}
-                    </div>
-                  )}
-                </div>
-
-                <div className="task-actions">
-                  <Link to={`/tasks/${task.id}`} className="btn btn-sm btn-primary">
-                    Ver Detalles
-                  </Link>
-                  {task.members.includes(user.telegram_id) && (
-                    <span className="btn btn-sm btn-success" style={{ cursor: 'default' }}>
-                      ✓ Asignado a ti
-                    </span>
-                  )}
+                <div style={{ display:'flex', gap:'.5rem', flexWrap:'wrap', alignItems:'center' }}>
+                  <span style={{ background: PRIORITY_COLOR[task.priority]+'18', color: PRIORITY_COLOR[task.priority], padding:'.2rem .65rem', borderRadius:'9999px', fontSize:'.75rem', fontWeight:700 }}>
+                    {task.priority}
+                  </span>
+                  <span style={{ background: STATUS_COLOR[task.status]+'18', color: STATUS_COLOR[task.status], padding:'.2rem .65rem', borderRadius:'9999px', fontSize:'.75rem', fontWeight:700 }}>
+                    {STATUS_LABEL[task.status]}
+                  </span>
+                  <span style={{ fontSize:'.78rem', color:'#9ca3af' }}>#{task.id}</span>
                 </div>
               </div>
-            ))}
-          </div>
+            </Link>
+          ))}
         </div>
       )}
     </div>
   );
 }
-
-export default Tasks;

@@ -27,7 +27,7 @@ function NewTask({ user }) {
     setError('');
 
     try {
-      await createTask(formData, user.telegram_id);
+      await createTask(formData);
       navigate('/tasks');
     } catch (err) {
       setError(err.response?.data?.detail || 'Error al crear la tarea');

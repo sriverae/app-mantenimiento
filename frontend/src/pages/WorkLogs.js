@@ -19,12 +19,15 @@ function WorkLogs({ user }) {
       const startDate = subDays(new Date(), days).toISOString().split('T')[0];
       
       const [logsData, statsData] = await Promise.all([
-        getWorkLogs({ telegram_id: user.telegram_id }),
-        getUserStats(user.telegram_id, days)
+        getWorkLogs({ user_id: user.id }),
+        getUserStats(user.id, days)
       ]);
 
-      // Filtrar logs por período
-      const filteredLogs = logsData.filter(log => log.day_date >= startDate);
+      // Filtrar logs por período usando start_dt (fecha real del trabajo)
+      const filteredLogs = logsData.filter(log => {
+        const logDate = log.start_dt ? log.start_dt.split('T')[0] : log.day_date;
+        return logDate >= startDate;
+      });
       
       setWorkLogs(filteredLogs);
       setStats(statsData);

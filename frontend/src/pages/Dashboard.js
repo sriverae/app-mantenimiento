@@ -178,14 +178,14 @@ function Dashboard({ user }) {
       {/* Mis Tareas Asignadas */}
       <div className="card" style={{ marginTop: '2rem' }}>
         <h2 className="card-title">Mis Tareas Asignadas</h2>
-        {todayTasks.filter(t => t.members.includes(user.telegram_id)).length === 0 ? (
+        {todayTasks.filter(t => t.members.includes(user.id)).length === 0 ? (
           <p style={{ color: '#6b7280', textAlign: 'center', padding: '2rem' }}>
             No tienes tareas asignadas hoy
           </p>
         ) : (
           <div className="task-list">
             {todayTasks
-              .filter(t => t.members.includes(user.telegram_id))
+              .filter(t => t.members.includes(user.id))
               .map((task) => (
                 <div key={task.id} className="task-item">
                   <div className="task-header">
