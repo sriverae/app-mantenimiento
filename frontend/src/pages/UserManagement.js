@@ -308,13 +308,13 @@ function UsersPanel({ isIngeniero }) {
       {loading ? <div className="loading"><div className="spinner" /></div> : (
         <>
           <div style={{display:'grid', gap:'.6rem'}}>
-            {activeUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} onEdit={openEdit} onToggle={toggleActive} />)}
+            {activeUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} onEdit={openEdit} onToggle={toggleActive} onReset={handleReset} />)}
           </div>
           {inactiveUsers.length > 0 && (
             <div style={{marginTop:'1.5rem'}}>
               <div style={{fontSize:'.85rem', fontWeight:700, color:'#6b7280', marginBottom:'.75rem'}}>Inactivos ({inactiveUsers.length})</div>
               <div style={{display:'grid', gap:'.6rem', opacity:.7}}>
-                {inactiveUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} onEdit={openEdit} onToggle={toggleActive} />)}
+                {inactiveUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} onEdit={openEdit} onToggle={toggleActive} onReset={handleReset} />)}
               </div>
             </div>
           )}

@@ -110,7 +110,7 @@ export default function TaskDetail({ user }) {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [taskId]);
+  useEffect(() => { load(); }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── WebSocket presence ───────────────────────────────────────────────────────
   useEffect(() => {

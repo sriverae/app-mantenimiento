@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { register, changePassword, getSecretQuestions, setSecretQuestion, getUserSecretQuestion, recoverPassword } from '../services/api';
+import { register, changePassword, getSecretQuestions, getUserSecretQuestion, recoverPassword } from '../services/api';
 
 const ROLES = {
   TECNICO  : { label: 'Técnico',   icon: '🔧', color: '#059669', desc: 'Ejecución de tareas de mantenimiento' },

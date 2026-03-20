@@ -18,7 +18,7 @@ export default function Tasks({ user }) {
     status: '',
   });
 
-  useEffect(() => { loadTasks(); }, [filters]);
+  useEffect(() => { loadTasks(); }, [filters] // eslint-disable-line react-hooks/exhaustive-deps);
 
   const loadTasks = async () => {
     try {
