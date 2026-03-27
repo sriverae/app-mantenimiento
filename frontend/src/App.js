@@ -32,7 +32,7 @@ function PrivateRoute({ children, minRole }) {
 // Main layout (navbar + bottom nav)
 // ---------------------------------------------------------------------------
 function AppLayout() {
-  const { user, logout, hasMinRole, hasRole } = useAuth();
+  const { user, logout, hasMinRole } = useAuth();
   const location = useLocation();
 
   const isActive = (path) => location.pathname === path;
