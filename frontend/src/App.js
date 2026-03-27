@@ -34,6 +34,14 @@ function PrivateRoute({ children, minRole }) {
 function AppLayout() {
   const { user, logout, hasMinRole } = useAuth();
   const location = useLocation();
+  const pmpOptions = [
+    'Plan de mantenimiento - Fechas',
+    'Plan de mantenimiento - Km',
+    'Paquetes de mantenimiento',
+    'Calendario',
+    'AMEF',
+    'Gestión de OT',
+  ];
 
   const isActive = (path) => location.pathname === path;
 
@@ -50,6 +58,20 @@ function AppLayout() {
             <li><Link to="/" className="nav-link">Dashboard</Link></li>
             <li><Link to="/tasks" className="nav-link">Tareas</Link></li>
             <li><Link to="/worklogs" className="nav-link">Registros</Link></li>
+            <li style={{ position: 'relative' }}>
+              <details>
+                <summary className="nav-link" style={{ cursor: 'pointer', listStyle: 'none' }}>
+                  PMP ▾
+                </summary>
+                <div style={{ position: 'absolute', top: '2.2rem', left: 0, background: '#fff', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', borderRadius: '0.5rem', minWidth: '280px', zIndex: 120, border: '1px solid #e5e7eb', overflow: 'hidden' }}>
+                  {pmpOptions.map((option) => (
+                    <button key={option} type="button" style={{ width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderBottom: '1px solid #f3f4f6', padding: '0.65rem 0.9rem', fontSize: '0.88rem', color: '#1f2937', cursor: 'pointer' }}>
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </details>
+            </li>
             {hasMinRole('ENCARGADO') && (
               <li><Link to="/users" className="nav-link">Usuarios</Link></li>
             )}
