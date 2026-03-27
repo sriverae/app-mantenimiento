@@ -10,6 +10,7 @@ import WorkLogs from './pages/WorkLogs';
 import Login from './pages/Login';
 import UserManagement from './pages/UserManagement';
 import ChangePassword from './pages/ChangePassword';
+import PmpFechas from './pages/PmpFechas';
 
 // ---------------------------------------------------------------------------
 // Guard: redirect to /login if not authenticated
@@ -35,12 +36,12 @@ function AppLayout() {
   const { user, logout, hasMinRole } = useAuth();
   const location = useLocation();
   const pmpOptions = [
-    'Plan de mantenimiento - Fechas',
-    'Plan de mantenimiento - Km',
-    'Paquetes de mantenimiento',
-    'Calendario',
-    'AMEF',
-    'Gestión de OT',
+    { label: 'Plan de mantenimiento - Fechas', path: '/pmp/fechas' },
+    { label: 'Plan de mantenimiento - Km', path: null },
+    { label: 'Paquetes de mantenimiento', path: null },
+    { label: 'Calendario', path: null },
+    { label: 'AMEF', path: null },
+    { label: 'Gestión de OT', path: null },
   ];
 
   const isActive = (path) => location.pathname === path;
@@ -58,15 +59,19 @@ function AppLayout() {
             <li><Link to="/" className="nav-link">Dashboard</Link></li>
             <li><Link to="/tasks" className="nav-link">Tareas</Link></li>
             <li><Link to="/worklogs" className="nav-link">Registros</Link></li>
-            <li style={{ position: 'relative' }}>
-              <details>
-                <summary className="nav-link" style={{ cursor: 'pointer', listStyle: 'none' }}>
-                  PMP ▾
+            <li className="nav-dropdown">
+              <details className="nav-dropdown-details">
+                <summary className="nav-link nav-dropdown-trigger">
+                  PMP <span style={{ fontSize: '.65rem' }}>▼</span>
                 </summary>
-                <div style={{ position: 'absolute', top: '2.2rem', left: 0, background: '#fff', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', borderRadius: '0.5rem', minWidth: '280px', zIndex: 120, border: '1px solid #e5e7eb', overflow: 'hidden' }}>
-                  {pmpOptions.map((option) => (
-                    <button key={option} type="button" style={{ width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderBottom: '1px solid #f3f4f6', padding: '0.65rem 0.9rem', fontSize: '0.88rem', color: '#1f2937', cursor: 'pointer' }}>
-                      {option}
+                <div className="nav-dropdown-menu">
+                  {pmpOptions.map((option) => option.path ? (
+                    <Link key={option.label} to={option.path} className="nav-dropdown-item">
+                      {option.label}
+                    </Link>
+                  ) : (
+                    <button key={option.label} type="button" className="nav-dropdown-item nav-dropdown-item-muted">
+                      {option.label}
                     </button>
                   ))}
                 </div>
@@ -108,6 +113,7 @@ function AppLayout() {
           <Route path="/tasks/new" element={<PrivateRoute minRole="PLANNER"><NewTask user={user} /></PrivateRoute>} />
           <Route path="/tasks/:taskId" element={<PrivateRoute><TaskDetail user={user} /></PrivateRoute>} />
           <Route path="/worklogs" element={<PrivateRoute><WorkLogs user={user} /></PrivateRoute>} />
+          <Route path="/pmp/fechas" element={<PrivateRoute minRole="ENCARGADO"><PmpFechas /></PrivateRoute>} />
           <Route path="/users" element={<PrivateRoute minRole="ENCARGADO"><UserManagement /></PrivateRoute>} />
           <Route path="/change-password" element={<PrivateRoute><ChangePassword /></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" />} />
