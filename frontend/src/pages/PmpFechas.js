@@ -15,6 +15,42 @@ const EMPTY_FORM = {
   actividades: '',
 };
 
+const FREQ_TO_DAYS = {
+  Semanal: 7,
+  Mensual: 30,
+  Bimestral: 60,
+  Trimestral: 90,
+  Semestral: 180,
+  Anual: 365,
+};
+
+const MONTHS = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+];
+
+function getMarkedDays(plan, year, month) {
+  const intervalDays = FREQ_TO_DAYS[plan.frecuencia] ?? 30;
+  const start = new Date(`${plan.fecha_inicio}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return new Set();
+
+  const monthStart = new Date(year, month, 1);
+  const monthEnd = new Date(year, month + 1, 0);
+  const marks = new Set();
+
+  const cursor = new Date(start);
+  while (cursor < monthStart) {
+    cursor.setDate(cursor.getDate() + intervalDays);
+  }
+  while (cursor <= monthEnd) {
+    if (cursor.getMonth() === month && cursor.getFullYear() === year) {
+      marks.add(cursor.getDate());
+    }
+    cursor.setDate(cursor.getDate() + intervalDays);
+  }
+  return marks;
+}
+
 function Modal({ title, onClose, children }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
@@ -37,6 +73,8 @@ export default function PmpFechas() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
+  const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
+  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
 
   const selectedPlan = useMemo(
     () => plans.find((p) => p.id === selectedId) || null,
@@ -93,18 +131,40 @@ export default function PmpFechas() {
       </div>
 
       <div className="card" style={{ overflowX: 'auto' }}>
-        <h2 style={{ marginBottom: '1rem', fontSize: '1.2rem', fontWeight: 700 }}>Cronograma anual de mantenimiento preventivo</h2>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '920px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.7rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+          <h2 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Cronograma anual de mantenimiento preventivo</h2>
+          <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center' }}>
+            <select className="form-select" style={{ minWidth: '145px' }} value={calendarMonth} onChange={(e) => setCalendarMonth(Number(e.target.value))}>
+              {MONTHS.map((monthName, index) => (
+                <option key={monthName} value={index}>{monthName}</option>
+              ))}
+            </select>
+            <input type="number" className="form-input" style={{ width: '95px' }} min={2000} max={2100} value={calendarYear} onChange={(e) => setCalendarYear(Number(e.target.value) || new Date().getFullYear())} />
+          </div>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1620px' }}>
           <thead>
             <tr style={{ background: '#1f3b5b', color: '#fff' }}>
               {['Código', 'Equipo', 'Prioridad', 'Frecuencia', 'Responsable', 'Fecha inicio', 'Actividades'].map((h) => (
                 <th key={h} style={{ textAlign: 'left', padding: '.7rem .65rem', border: '1px solid #2f4f75', fontSize: '.85rem' }}>{h}</th>
+              ))}
+              <th colSpan={31} style={{ textAlign: 'center', padding: '.7rem .5rem', border: '1px solid #2f4f75', fontSize: '.85rem', background: '#21486e' }}>
+                Cronograma ({MONTHS[calendarMonth]} {calendarYear})
+              </th>
+            </tr>
+            <tr style={{ background: '#244a71', color: '#fff' }}>
+              <th colSpan={7} style={{ border: '1px solid #2f4f75', padding: '.35rem' }} />
+              {Array.from({ length: 31 }, (_, i) => (
+                <th key={`day-header-${i + 1}`} style={{ width: '28px', textAlign: 'center', border: '1px solid #2f4f75', fontSize: '.72rem', padding: '.35rem 0' }}>
+                  {i + 1}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {plans.map((plan) => {
               const selected = plan.id === selectedId;
+              const marks = getMarkedDays(plan, calendarYear, calendarMonth);
               return (
                 <tr key={plan.id} onClick={() => setSelectedId(plan.id)} style={{ background: selected ? '#dbeafe' : '#fff', cursor: 'pointer' }}>
                   <td style={{ padding: '.6rem .65rem', border: '1px solid #e5e7eb', fontWeight: 700 }}>{plan.codigo}</td>
@@ -114,6 +174,15 @@ export default function PmpFechas() {
                   <td style={{ padding: '.6rem .65rem', border: '1px solid #e5e7eb' }}>{plan.responsable}</td>
                   <td style={{ padding: '.6rem .65rem', border: '1px solid #e5e7eb' }}>{plan.fecha_inicio}</td>
                   <td style={{ padding: '.6rem .65rem', border: '1px solid #e5e7eb' }}>{plan.actividades}</td>
+                  {Array.from({ length: 31 }, (_, i) => {
+                    const day = i + 1;
+                    const inMonth = day <= new Date(calendarYear, calendarMonth + 1, 0).getDate();
+                    return (
+                      <td key={`${plan.id}-day-${day}`} style={{ width: '28px', textAlign: 'center', border: '1px solid #e5e7eb', fontWeight: 700, color: '#dc2626', background: inMonth ? 'transparent' : '#f9fafb' }}>
+                        {inMonth && marks.has(day) ? 'X' : ''}
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}
