@@ -76,10 +76,15 @@ export default function PmpEquipos() {
   const [showEquipoModal, setShowEquipoModal] = useState(false);
   const [showColModal, setShowColModal] = useState(false);
   const [showRemoveColModal, setShowRemoveColModal] = useState(false);
+  const [showDespieceModal, setShowDespieceModal] = useState(false);
   const [newColumnName, setNewColumnName] = useState('');
   const [columnToRemove, setColumnToRemove] = useState(BASE_COLUMNS[0].key);
   const [form, setForm] = useState({});
   const [editingId, setEditingId] = useState(null);
+  const [despieceTargetId, setDespieceTargetId] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [newNodeName, setNewNodeName] = useState('');
+  const [newNodeDetails, setNewNodeDetails] = useState('');
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.columns, JSON.stringify(columns));
@@ -96,6 +101,8 @@ export default function PmpEquipos() {
   }, [columns, columnToRemove]);
 
   const selectedEquipo = useMemo(() => equipos.find((e) => e.id === selectedId) || null, [equipos, selectedId]);
+  const despieceTarget = useMemo(() => equipos.find((e) => e.id === despieceTargetId) || null, [equipos, despieceTargetId]);
+  const despieceNodes = despieceTarget?.despiece || [];
 
   const openNewEquipo = () => {
     const defaultForm = {};
@@ -173,6 +180,64 @@ export default function PmpEquipos() {
     setSelectedId(filtered[0]?.id ?? null);
   };
 
+  const openDespiece = (equipo) => {
+    setDespieceTargetId(equipo.id);
+    setSelectedNodeId(null); // null = raíz (Nivel 1 / equipo)
+    setNewNodeName('');
+    setNewNodeDetails('');
+    setShowDespieceModal(true);
+  };
+
+  const addDespieceNode = (e) => {
+    e.preventDefault();
+    if (!despieceTarget || !newNodeName.trim()) return;
+    const node = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      parentId: selectedNodeId,
+      nombre: newNodeName.trim(),
+      detalle: newNodeDetails.trim(),
+    };
+    setEquipos((prev) => prev.map((eq) => (
+      eq.id === despieceTarget.id
+        ? { ...eq, despiece: [...(eq.despiece || []), node] }
+        : eq
+    )));
+    setSelectedNodeId(node.id);
+    setNewNodeName('');
+    setNewNodeDetails('');
+  };
+
+  const renderTree = (parentId = null, level = 2) => {
+    const nodes = despieceNodes.filter((n) => n.parentId === parentId);
+    if (!nodes.length) return null;
+    return (
+      <ul style={{ listStyle: 'none', margin: 0, paddingLeft: level === 2 ? '.35rem' : '1rem' }}>
+        {nodes.map((node) => (
+          <li key={node.id} style={{ marginBottom: '.35rem' }}>
+            <button
+              type="button"
+              onClick={() => setSelectedNodeId(node.id)}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                border: '1px solid #d1d5db',
+                borderRadius: '.45rem',
+                padding: '.48rem .55rem',
+                background: selectedNodeId === node.id ? '#dbeafe' : '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontSize: '.76rem', color: '#6b7280', marginBottom: '.2rem' }}>Nivel {level}</div>
+              <div style={{ fontWeight: 700 }}>{node.nombre}</div>
+              {node.detalle && <div style={{ fontSize: '.8rem', color: '#6b7280' }}>{node.detalle}</div>}
+            </button>
+            {renderTree(node.id, level + 1)}
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
   return (
     <div>
       <div style={{ marginBottom: '1.2rem' }}>
@@ -200,6 +265,9 @@ export default function PmpEquipos() {
                   {col.label}
                 </th>
               ))}
+              <th style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.65rem .55rem', fontSize: '.82rem', whiteSpace: 'nowrap' }}>
+                Despiece
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -210,6 +278,11 @@ export default function PmpEquipos() {
                     {equipo[col.key] || '—'}
                   </td>
                 ))}
+                <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', whiteSpace: 'nowrap' }}>
+                  <button type="button" className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); openDespiece(equipo); }}>
+                    Despiece
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -272,6 +345,43 @@ export default function PmpEquipos() {
               <button type="submit" className="btn btn-danger">Eliminar columna</button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {showDespieceModal && despieceTarget && (
+        <Modal title={`Despiece de máquina - ${despieceTarget.descripcion || despieceTarget.codigo}`} maxWidth="980px">
+          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '1rem' }}>
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: '.7rem', padding: '.8rem' }}>
+              <div style={{ marginBottom: '.7rem', padding: '.55rem .65rem', borderRadius: '.5rem', background: selectedNodeId === null ? '#dbeafe' : '#f9fafb', border: '1px solid #d1d5db', cursor: 'pointer' }} onClick={() => setSelectedNodeId(null)}>
+                <div style={{ fontSize: '.78rem', color: '#6b7280' }}>Nivel 1</div>
+                <div style={{ fontWeight: 700 }}>{despieceTarget.descripcion || despieceTarget.codigo}</div>
+              </div>
+              {despieceNodes.length ? renderTree(null, 2) : (
+                <p style={{ color: '#6b7280', fontSize: '.9rem' }}>Aún no hay subniveles creados para este equipo.</p>
+              )}
+            </div>
+
+            <form onSubmit={addDespieceNode} style={{ border: '1px solid #e5e7eb', borderRadius: '.7rem', padding: '.85rem' }}>
+              <h4 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '.75rem' }}>
+                Agregar nivel {selectedNodeId ? 'hijo' : 'desde Nivel 1'}
+              </h4>
+              <div className="form-group" style={{ marginBottom: '.7rem' }}>
+                <label className="form-label">Nombre del componente *</label>
+                <input className="form-input" value={newNodeName} onChange={(e) => setNewNodeName(e.target.value)} placeholder="Ej: Motor principal, Rodaje, Faja" required />
+              </div>
+              <div className="form-group" style={{ marginBottom: '.7rem' }}>
+                <label className="form-label">Características</label>
+                <textarea className="form-textarea" value={newNodeDetails} onChange={(e) => setNewNodeDetails(e.target.value)} placeholder="Ej: 15 kW, 1750 rpm, marca ABB..." />
+              </div>
+              <p style={{ fontSize: '.82rem', color: '#6b7280', marginBottom: '.9rem' }}>
+                Selecciona un nivel en el árbol y luego usa “Agregar nivel” para crear el subnivel (por ejemplo motor → rodajes).
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowDespieceModal(false)}>Cerrar</button>
+                <button type="submit" className="btn btn-primary">Agregar nivel</button>
+              </div>
+            </form>
+          </div>
         </Modal>
       )}
     </div>
