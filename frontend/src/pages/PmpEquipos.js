@@ -263,7 +263,7 @@ export default function PmpEquipos() {
           node.id === selectedNode.id
             ? { ...node, nombre: newNodeName.trim(), detalle: newNodeDetails.trim(), caracteristicas: draftFeatures }
             : node
-        ),
+        )),
       };
     }));
     setFormMode('add');
