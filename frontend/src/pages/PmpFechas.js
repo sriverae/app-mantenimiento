@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const INITIAL_PLANS = [
   { id: 1, codigo: 'IAISPL1', equipo: 'Pre Limpia Sabreca N 1', prioridad: 'Alta', frecuencia: 'Mensual', responsable: 'Mecánico', fecha_inicio: '2026-04-01', actividades: 'Inspección de fajas, limpieza y verificación de sensores.' },
@@ -14,6 +14,19 @@ const EMPTY_FORM = {
   fecha_inicio: new Date().toISOString().split('T')[0],
   actividades: '',
 };
+
+const PLAN_STORAGE_KEY = 'pmp_fechas_plans_v1';
+
+function getStoredPlans() {
+  try {
+    const raw = localStorage.getItem(PLAN_STORAGE_KEY);
+    if (!raw) return INITIAL_PLANS;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : INITIAL_PLANS;
+  } catch {
+    return INITIAL_PLANS;
+  }
+}
 
 const FREQ_TO_DAYS = {
   Semanal: 7,
@@ -68,13 +81,17 @@ function Modal({ title, onClose, children }) {
 }
 
 export default function PmpFechas() {
-  const [plans, setPlans] = useState(INITIAL_PLANS);
+  const [plans, setPlans] = useState(() => getStoredPlans());
   const [selectedId, setSelectedId] = useState(INITIAL_PLANS[0]?.id ?? null);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
+
+  useEffect(() => {
+    localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(plans));
+  }, [plans]);
 
   const selectedPlan = useMemo(
     () => plans.find((p) => p.id === selectedId) || null,

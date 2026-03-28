@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const BASE_COLUMNS = [
   { key: 'codigo', label: 'Código' },
@@ -39,6 +39,22 @@ const INITIAL_EQUIPOS = [
   },
 ];
 
+const STORAGE_KEYS = {
+  columns: 'pmp_equipos_columns_v1',
+  equipos: 'pmp_equipos_items_v1',
+};
+
+function getStoredJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function Modal({ title, onClose, children, maxWidth = '860px' }) {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}>
@@ -54,8 +70,8 @@ function Modal({ title, onClose, children, maxWidth = '860px' }) {
 }
 
 export default function PmpEquipos() {
-  const [columns, setColumns] = useState(BASE_COLUMNS);
-  const [equipos, setEquipos] = useState(INITIAL_EQUIPOS);
+  const [columns, setColumns] = useState(() => getStoredJSON(STORAGE_KEYS.columns, BASE_COLUMNS));
+  const [equipos, setEquipos] = useState(() => getStoredJSON(STORAGE_KEYS.equipos, INITIAL_EQUIPOS));
   const [selectedId, setSelectedId] = useState(INITIAL_EQUIPOS[0]?.id ?? null);
   const [showEquipoModal, setShowEquipoModal] = useState(false);
   const [showColModal, setShowColModal] = useState(false);
@@ -64,6 +80,20 @@ export default function PmpEquipos() {
   const [columnToRemove, setColumnToRemove] = useState(BASE_COLUMNS[0].key);
   const [form, setForm] = useState({});
   const [editingId, setEditingId] = useState(null);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.columns, JSON.stringify(columns));
+  }, [columns]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.equipos, JSON.stringify(equipos));
+  }, [equipos]);
+
+  useEffect(() => {
+    if (!columns.some((col) => col.key === columnToRemove)) {
+      setColumnToRemove(columns[0]?.key || '');
+    }
+  }, [columns, columnToRemove]);
 
   const selectedEquipo = useMemo(() => equipos.find((e) => e.id === selectedId) || null, [equipos, selectedId]);
 
