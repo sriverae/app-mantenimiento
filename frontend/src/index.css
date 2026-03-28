@@ -181,6 +181,70 @@ code {
   background-color: #eff6ff;
 }
 
+.nav-dropdown {
+  position: relative;
+}
+
+.nav-dropdown-details {
+  position: relative;
+}
+
+.nav-dropdown-details[open] .nav-dropdown-trigger {
+  color: #2563eb;
+  background-color: #eff6ff;
+}
+
+.nav-dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.nav-dropdown-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.nav-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  left: 0;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.55rem;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.14);
+  min-width: 300px;
+  z-index: 120;
+  overflow: hidden;
+}
+
+.nav-dropdown-item {
+  display: block;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #f3f4f6;
+  background: #fff;
+  text-align: left;
+  color: #1f2937;
+  font-size: 0.9rem;
+  padding: 0.68rem 0.9rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.nav-dropdown-item:hover {
+  background: #f9fafb;
+}
+
+.nav-dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.nav-dropdown-item-muted {
+  color: #6b7280;
+}
+
 /* Task List */
 .task-list {
   display: grid;
