@@ -11,7 +11,7 @@ function WorkLogs({ user }) {
 
   useEffect(() => {
     loadData();
-  }, [user, days] // eslint-disable-line react-hooks/exhaustive-deps);
+  }, [user, days]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadData = async () => {
     try {
