@@ -12,6 +12,9 @@ import UserManagement from './pages/UserManagement';
 import ChangePassword from './pages/ChangePassword';
 import PmpFechas from './pages/PmpFechas';
 import PmpEquipos from './pages/PmpEquipos';
+import PmpIntercambiosHistorial from './pages/PmpIntercambiosHistorial';
+import PmpBajas from './pages/PmpBajas';
+import PmpBajasHistorial from './pages/PmpBajasHistorial';
 
 // ---------------------------------------------------------------------------
 // Guard: redirect to /login if not authenticated
@@ -39,6 +42,9 @@ function AppLayout() {
   const pmpOptions = [
     { label: 'Equipos', path: '/pmp/equipos' },
     { label: 'Plan de mantenimiento - Fechas', path: '/pmp/fechas' },
+    { label: 'Bajas', path: '/pmp/bajas' },
+    { label: 'Historial intercambios', path: '/pmp/intercambios/historial' },
+    { label: 'Historial bajas', path: '/pmp/bajas/historial' },
     { label: 'Plan de mantenimiento - Km', path: null },
     { label: 'Paquetes de mantenimiento', path: null },
     { label: 'Calendario', path: null },
@@ -117,6 +123,9 @@ function AppLayout() {
           <Route path="/worklogs" element={<PrivateRoute><WorkLogs user={user} /></PrivateRoute>} />
           <Route path="/pmp/equipos" element={<PrivateRoute minRole="ENCARGADO"><PmpEquipos /></PrivateRoute>} />
           <Route path="/pmp/fechas" element={<PrivateRoute minRole="ENCARGADO"><PmpFechas /></PrivateRoute>} />
+          <Route path="/pmp/bajas" element={<PrivateRoute minRole="ENCARGADO"><PmpBajas /></PrivateRoute>} />
+          <Route path="/pmp/intercambios/historial" element={<PrivateRoute minRole="ENCARGADO"><PmpIntercambiosHistorial /></PrivateRoute>} />
+          <Route path="/pmp/bajas/historial" element={<PrivateRoute minRole="ENCARGADO"><PmpBajasHistorial /></PrivateRoute>} />
           <Route path="/users" element={<PrivateRoute minRole="ENCARGADO"><UserManagement /></PrivateRoute>} />
           <Route path="/change-password" element={<PrivateRoute><ChangePassword /></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" />} />

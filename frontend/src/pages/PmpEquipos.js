@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 const BASE_COLUMNS = [
   { key: 'codigo', label: 'Código' },
@@ -458,6 +459,8 @@ export default function PmpEquipos() {
           <button type="button" className="btn btn-secondary" onClick={() => setShowColModal(true)}>Agregar columna</button>
           <button type="button" className="btn btn-secondary" onClick={() => setShowRemoveColModal(true)} disabled={columns.length <= 1}>Eliminar columna</button>
           <button type="button" className="btn btn-secondary" onClick={openExchangeModal} disabled={equipos.length <= 1}>Intercambios</button>
+          <Link className="btn btn-secondary" to="/pmp/intercambios/historial">Historial intercambios</Link>
+          <Link className="btn btn-danger" to="/pmp/bajas">Dar de baja</Link>
           <button type="button" className="btn btn-danger" onClick={deleteSelected} disabled={!selectedEquipo}>Eliminar</button>
         </div>
       </div>
@@ -494,38 +497,6 @@ export default function PmpEquipos() {
             ))}
           </tbody>
         </table>
-      </div>
-
-      <div className="card">
-        <h2 style={{ marginBottom: '.85rem', fontSize: '1.15rem', fontWeight: 700 }}>Historial de intercambios</h2>
-        {exchangeHistory.length === 0 ? (
-          <p style={{ color: '#6b7280' }}>Aún no hay intercambios registrados.</p>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '860px' }}>
-              <thead>
-                <tr style={{ background: '#1f3b5b', color: '#fff' }}>
-                  {['Fecha', 'Equipo origen', 'Equipo destino', 'Subequipo', 'Código origen', 'Código nuevo', 'Niveles migrados'].map((h) => (
-                    <th key={h} style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.55rem .5rem', fontSize: '.8rem' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {exchangeHistory.map((item) => (
-                  <tr key={item.id}>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{new Date(item.fecha).toLocaleString()}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.sourceEquipo}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.targetEquipo}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.nodeName}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.oldCode}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.newCode}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.levelsMigrated}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       {showEquipoModal && (
