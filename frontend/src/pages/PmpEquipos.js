@@ -83,6 +83,7 @@ export default function PmpEquipos() {
   const [editingId, setEditingId] = useState(null);
   const [despieceTargetId, setDespieceTargetId] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [formMode, setFormMode] = useState('add'); // add | edit
   const [newNodeName, setNewNodeName] = useState('');
   const [newNodeDetails, setNewNodeDetails] = useState('');
   const [newFeatureDesc, setNewFeatureDesc] = useState('');
@@ -106,6 +107,7 @@ export default function PmpEquipos() {
   const selectedEquipo = useMemo(() => equipos.find((e) => e.id === selectedId) || null, [equipos, selectedId]);
   const despieceTarget = useMemo(() => equipos.find((e) => e.id === despieceTargetId) || null, [equipos, despieceTargetId]);
   const despieceNodes = despieceTarget?.despiece || [];
+  const selectedNode = despieceNodes.find((n) => n.id === selectedNodeId) || null;
 
   const openNewEquipo = () => {
     const defaultForm = {};
@@ -186,12 +188,22 @@ export default function PmpEquipos() {
   const openDespiece = (equipo) => {
     setDespieceTargetId(equipo.id);
     setSelectedNodeId(null); // null = raíz (Nivel 1 / equipo)
+    setFormMode('add');
     setNewNodeName('');
     setNewNodeDetails('');
     setDraftFeatures([]);
     setNewFeatureDesc('');
     setNewFeatureValue('');
     setShowDespieceModal(true);
+  };
+
+  const getNodeById = (nodeId) => despieceNodes.find((n) => n.id === nodeId) || null;
+
+  const getNextChildCode = (parentId) => {
+    if (!despieceTarget) return '';
+    const parentCode = parentId ? (getNodeById(parentId)?.codigo_sub || despieceTarget.codigo || 'EQ') : (despieceTarget.codigo || 'EQ');
+    const siblings = despieceNodes.filter((n) => n.parentId === parentId).length;
+    return `${parentCode}-${siblings + 1}`;
   };
 
   const addDraftFeature = () => {
@@ -213,6 +225,7 @@ export default function PmpEquipos() {
     const node = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       parentId: selectedNodeId,
+      codigo_sub: getNextChildCode(selectedNodeId),
       nombre: newNodeName.trim(),
       detalle: newNodeDetails.trim(),
       caracteristicas: draftFeatures,
@@ -223,6 +236,65 @@ export default function PmpEquipos() {
         : eq
     )));
     setSelectedNodeId(node.id);
+    setFormMode('add');
+    setNewNodeName('');
+    setNewNodeDetails('');
+    setDraftFeatures([]);
+    setNewFeatureDesc('');
+    setNewFeatureValue('');
+  };
+
+  const loadSelectedNodeForEdit = () => {
+    if (!selectedNode) return;
+    setFormMode('edit');
+    setNewNodeName(selectedNode.nombre || '');
+    setNewNodeDetails(selectedNode.detalle || '');
+    setDraftFeatures(Array.isArray(selectedNode.caracteristicas) ? selectedNode.caracteristicas : []);
+  };
+
+  const updateSelectedNode = (e) => {
+    e.preventDefault();
+    if (!despieceTarget || !selectedNode || !newNodeName.trim()) return;
+    setEquipos((prev) => prev.map((eq) => {
+      if (eq.id !== despieceTarget.id) return eq;
+      return {
+        ...eq,
+        despiece: (eq.despiece || []).map((node) => (
+          node.id === selectedNode.id
+            ? { ...node, nombre: newNodeName.trim(), detalle: newNodeDetails.trim(), caracteristicas: draftFeatures }
+            : node
+        ),
+      };
+    }));
+    setFormMode('add');
+    setNewNodeName('');
+    setNewNodeDetails('');
+    setDraftFeatures([]);
+    setNewFeatureDesc('');
+    setNewFeatureValue('');
+  };
+
+  const deleteSelectedNode = () => {
+    if (!despieceTarget || !selectedNode) return;
+    if (!window.confirm(`¿Eliminar nivel ${selectedNode.nombre} y sus subniveles?`)) return;
+    const toDelete = new Set([selectedNode.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      despieceNodes.forEach((node) => {
+        if (node.parentId && toDelete.has(node.parentId) && !toDelete.has(node.id)) {
+          toDelete.add(node.id);
+          changed = true;
+        }
+      });
+    }
+    setEquipos((prev) => prev.map((eq) => (
+      eq.id === despieceTarget.id
+        ? { ...eq, despiece: (eq.despiece || []).filter((node) => !toDelete.has(node.id)) }
+        : eq
+    )));
+    setSelectedNodeId(null);
+    setFormMode('add');
     setNewNodeName('');
     setNewNodeDetails('');
     setDraftFeatures([]);
@@ -252,6 +324,7 @@ export default function PmpEquipos() {
             >
               <div style={{ fontSize: '.76rem', color: '#6b7280', marginBottom: '.2rem' }}>Nivel {level}</div>
               <div style={{ fontWeight: 700 }}>{node.nombre}</div>
+              {node.codigo_sub && <div style={{ fontSize: '.75rem', color: '#1d4ed8', fontWeight: 700 }}>Código: {node.codigo_sub}</div>}
               {node.detalle && <div style={{ fontSize: '.8rem', color: '#6b7280' }}>{node.detalle}</div>}
               {Array.isArray(node.caracteristicas) && node.caracteristicas.length > 0 && (
                 <div style={{ marginTop: '.3rem', display: 'flex', flexDirection: 'column', gap: '.15rem' }}>
@@ -393,10 +466,13 @@ export default function PmpEquipos() {
               )}
             </div>
 
-            <form onSubmit={addDespieceNode} style={{ border: '1px solid #e5e7eb', borderRadius: '.7rem', padding: '.85rem' }}>
+            <form onSubmit={formMode === 'edit' ? updateSelectedNode : addDespieceNode} style={{ border: '1px solid #e5e7eb', borderRadius: '.7rem', padding: '.85rem' }}>
               <h4 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '.75rem' }}>
-                Agregar nivel {selectedNodeId ? 'hijo' : 'desde Nivel 1'}
+                {formMode === 'edit' ? 'Editar nivel seleccionado' : `Agregar nivel ${selectedNodeId ? 'hijo' : 'desde Nivel 1'}`}
               </h4>
+              <p style={{ fontSize: '.8rem', color: '#6b7280', marginBottom: '.55rem' }}>
+                Código del nuevo subequipo: <strong>{formMode === 'add' ? getNextChildCode(selectedNodeId) : (selectedNode?.codigo_sub || 'N/A')}</strong>
+              </p>
               <div className="form-group" style={{ marginBottom: '.7rem' }}>
                 <label className="form-label">Nombre del componente *</label>
                 <input className="form-input" value={newNodeName} onChange={(e) => setNewNodeName(e.target.value)} placeholder="Ej: Motor principal, Rodaje, Faja" required />
@@ -426,9 +502,18 @@ export default function PmpEquipos() {
               <p style={{ fontSize: '.82rem', color: '#6b7280', marginBottom: '.9rem' }}>
                 Selecciona un nivel en el árbol y luego usa “Agregar nivel” para crear el subnivel (por ejemplo motor → rodajes).
               </p>
+              <div style={{ display: 'flex', gap: '.55rem', marginBottom: '.9rem', flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-secondary" onClick={loadSelectedNodeForEdit} disabled={!selectedNodeId}>Modificar nivel seleccionado</button>
+                <button type="button" className="btn btn-danger" onClick={deleteSelectedNode} disabled={!selectedNodeId}>Eliminar nivel seleccionado</button>
+              </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowDespieceModal(false)}>Cerrar</button>
-                <button type="submit" className="btn btn-primary">Agregar nivel</button>
+                <button type="button" className="btn btn-secondary" onClick={() => { setFormMode('add'); setNewNodeName(''); setNewNodeDetails(''); setDraftFeatures([]); setNewFeatureDesc(''); setNewFeatureValue(''); }}>
+                  Nuevo subnivel
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  {formMode === 'edit' ? 'Guardar cambios nivel' : 'Agregar nivel'}
+                </button>
               </div>
             </form>
           </div>
