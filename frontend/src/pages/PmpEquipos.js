@@ -59,8 +59,11 @@ export default function PmpEquipos() {
   const [selectedId, setSelectedId] = useState(INITIAL_EQUIPOS[0]?.id ?? null);
   const [showEquipoModal, setShowEquipoModal] = useState(false);
   const [showColModal, setShowColModal] = useState(false);
+  const [showRemoveColModal, setShowRemoveColModal] = useState(false);
   const [newColumnName, setNewColumnName] = useState('');
+  const [columnToRemove, setColumnToRemove] = useState(BASE_COLUMNS[0].key);
   const [form, setForm] = useState({});
+  const [editingId, setEditingId] = useState(null);
 
   const selectedEquipo = useMemo(() => equipos.find((e) => e.id === selectedId) || null, [equipos, selectedId]);
 
@@ -68,15 +71,30 @@ export default function PmpEquipos() {
     const defaultForm = {};
     columns.forEach((col) => { defaultForm[col.key] = ''; });
     setForm(defaultForm);
+    setEditingId(null);
+    setShowEquipoModal(true);
+  };
+
+  const openEditEquipo = () => {
+    if (!selectedEquipo) return;
+    const editForm = {};
+    columns.forEach((col) => { editForm[col.key] = selectedEquipo[col.key] || ''; });
+    setForm(editForm);
+    setEditingId(selectedEquipo.id);
     setShowEquipoModal(true);
   };
 
   const saveEquipo = (e) => {
     e.preventDefault();
-    const nextId = equipos.length ? Math.max(...equipos.map((eq) => eq.id)) + 1 : 1;
-    const newRow = { id: nextId, ...form };
-    setEquipos((prev) => [newRow, ...prev]);
-    setSelectedId(nextId);
+    if (editingId) {
+      setEquipos((prev) => prev.map((eq) => (eq.id === editingId ? { ...eq, ...form } : eq)));
+      setSelectedId(editingId);
+    } else {
+      const nextId = equipos.length ? Math.max(...equipos.map((eq) => eq.id)) + 1 : 1;
+      const newRow = { id: nextId, ...form };
+      setEquipos((prev) => [newRow, ...prev]);
+      setSelectedId(nextId);
+    }
     setShowEquipoModal(false);
   };
 
@@ -98,7 +116,23 @@ export default function PmpEquipos() {
     setColumns((prev) => [...prev, newCol]);
     setEquipos((prev) => prev.map((item) => ({ ...item, [key]: '' })));
     setNewColumnName('');
+    setColumnToRemove(key);
     setShowColModal(false);
+  };
+
+  const removeColumn = (e) => {
+    e.preventDefault();
+    if (!columnToRemove) return;
+    if (columns.length <= 1) return;
+    setColumns((prev) => prev.filter((col) => col.key !== columnToRemove));
+    setEquipos((prev) => prev.map((item) => {
+      const next = { ...item };
+      delete next[columnToRemove];
+      return next;
+    }));
+    const remaining = columns.filter((col) => col.key !== columnToRemove);
+    setColumnToRemove(remaining[0]?.key || '');
+    setShowRemoveColModal(false);
   };
 
   const deleteSelected = () => {
@@ -119,7 +153,9 @@ export default function PmpEquipos() {
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '.65rem', flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-primary" onClick={openNewEquipo}>Nuevo equipo</button>
+          <button type="button" className="btn btn-secondary" onClick={openEditEquipo} disabled={!selectedEquipo}>Editar equipo</button>
           <button type="button" className="btn btn-secondary" onClick={() => setShowColModal(true)}>Agregar columna</button>
+          <button type="button" className="btn btn-secondary" onClick={() => setShowRemoveColModal(true)} disabled={columns.length <= 1}>Eliminar columna</button>
           <button type="button" className="btn btn-danger" onClick={deleteSelected} disabled={!selectedEquipo}>Eliminar</button>
         </div>
       </div>
@@ -151,7 +187,7 @@ export default function PmpEquipos() {
       </div>
 
       {showEquipoModal && (
-        <Modal title="Nuevo equipo">
+        <Modal title={editingId ? 'Editar equipo' : 'Nuevo equipo'}>
           <form onSubmit={saveEquipo}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
               {columns.map((col) => (
@@ -163,7 +199,7 @@ export default function PmpEquipos() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem', marginTop: '1rem' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setShowEquipoModal(false)}>Cancelar</button>
-              <button type="submit" className="btn btn-primary">Guardar equipo</button>
+              <button type="submit" className="btn btn-primary">{editingId ? 'Guardar cambios' : 'Guardar equipo'}</button>
             </div>
           </form>
         </Modal>
@@ -182,6 +218,28 @@ export default function PmpEquipos() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setShowColModal(false)}>Cancelar</button>
               <button type="submit" className="btn btn-primary">Agregar columna</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {showRemoveColModal && (
+        <Modal title="Eliminar columna" maxWidth="520px">
+          <form onSubmit={removeColumn}>
+            <div className="form-group" style={{ marginBottom: '.8rem' }}>
+              <label className="form-label">Selecciona la columna a eliminar</label>
+              <select className="form-select" value={columnToRemove} onChange={(e) => setColumnToRemove(e.target.value)}>
+                {columns.map((col) => (
+                  <option key={col.key} value={col.key}>{col.label}</option>
+                ))}
+              </select>
+            </div>
+            <p style={{ color: '#b45309', fontSize: '.85rem', marginBottom: '1rem' }}>
+              ⚠️ Se eliminará esta columna de la tabla y de los próximos ingresos de equipos.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowRemoveColModal(false)}>Cancelar</button>
+              <button type="submit" className="btn btn-danger">Eliminar columna</button>
             </div>
           </form>
         </Modal>
