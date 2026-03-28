@@ -85,6 +85,9 @@ export default function PmpEquipos() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [newNodeName, setNewNodeName] = useState('');
   const [newNodeDetails, setNewNodeDetails] = useState('');
+  const [newFeatureDesc, setNewFeatureDesc] = useState('');
+  const [newFeatureValue, setNewFeatureValue] = useState('');
+  const [draftFeatures, setDraftFeatures] = useState([]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.columns, JSON.stringify(columns));
@@ -185,7 +188,23 @@ export default function PmpEquipos() {
     setSelectedNodeId(null); // null = raíz (Nivel 1 / equipo)
     setNewNodeName('');
     setNewNodeDetails('');
+    setDraftFeatures([]);
+    setNewFeatureDesc('');
+    setNewFeatureValue('');
     setShowDespieceModal(true);
+  };
+
+  const addDraftFeature = () => {
+    const descripcion = newFeatureDesc.trim();
+    const valor = newFeatureValue.trim();
+    if (!descripcion || !valor) return;
+    setDraftFeatures((prev) => [...prev, { descripcion, valor }]);
+    setNewFeatureDesc('');
+    setNewFeatureValue('');
+  };
+
+  const removeDraftFeature = (index) => {
+    setDraftFeatures((prev) => prev.filter((_, i) => i !== index));
   };
 
   const addDespieceNode = (e) => {
@@ -196,6 +215,7 @@ export default function PmpEquipos() {
       parentId: selectedNodeId,
       nombre: newNodeName.trim(),
       detalle: newNodeDetails.trim(),
+      caracteristicas: draftFeatures,
     };
     setEquipos((prev) => prev.map((eq) => (
       eq.id === despieceTarget.id
@@ -205,6 +225,9 @@ export default function PmpEquipos() {
     setSelectedNodeId(node.id);
     setNewNodeName('');
     setNewNodeDetails('');
+    setDraftFeatures([]);
+    setNewFeatureDesc('');
+    setNewFeatureValue('');
   };
 
   const renderTree = (parentId = null, level = 2) => {
@@ -230,6 +253,15 @@ export default function PmpEquipos() {
               <div style={{ fontSize: '.76rem', color: '#6b7280', marginBottom: '.2rem' }}>Nivel {level}</div>
               <div style={{ fontWeight: 700 }}>{node.nombre}</div>
               {node.detalle && <div style={{ fontSize: '.8rem', color: '#6b7280' }}>{node.detalle}</div>}
+              {Array.isArray(node.caracteristicas) && node.caracteristicas.length > 0 && (
+                <div style={{ marginTop: '.3rem', display: 'flex', flexDirection: 'column', gap: '.15rem' }}>
+                  {node.caracteristicas.map((item, index) => (
+                    <span key={`${node.id}-feat-${index}`} style={{ fontSize: '.75rem', color: '#4b5563' }}>
+                      • {item.descripcion}: {item.valor}
+                    </span>
+                  ))}
+                </div>
+              )}
             </button>
             {renderTree(node.id, level + 1)}
           </li>
@@ -370,9 +402,27 @@ export default function PmpEquipos() {
                 <input className="form-input" value={newNodeName} onChange={(e) => setNewNodeName(e.target.value)} placeholder="Ej: Motor principal, Rodaje, Faja" required />
               </div>
               <div className="form-group" style={{ marginBottom: '.7rem' }}>
-                <label className="form-label">Características</label>
+                <label className="form-label">Nota general (opcional)</label>
                 <textarea className="form-textarea" value={newNodeDetails} onChange={(e) => setNewNodeDetails(e.target.value)} placeholder="Ej: 15 kW, 1750 rpm, marca ABB..." />
               </div>
+              <div className="form-group" style={{ marginBottom: '.6rem' }}>
+                <label className="form-label">Agregar característica</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '.45rem' }}>
+                  <input className="form-input" value={newFeatureDesc} onChange={(e) => setNewFeatureDesc(e.target.value)} placeholder="Descripción (ej: Potencia)" />
+                  <input className="form-input" value={newFeatureValue} onChange={(e) => setNewFeatureValue(e.target.value)} placeholder="Valor (ej: 15 kW)" />
+                  <button type="button" className="btn btn-secondary" onClick={addDraftFeature}>Agregar</button>
+                </div>
+              </div>
+              {draftFeatures.length > 0 && (
+                <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '.55rem', padding: '.55rem', marginBottom: '.75rem' }}>
+                  {draftFeatures.map((item, index) => (
+                    <div key={`draft-feature-${index}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '.84rem', padding: '.2rem 0' }}>
+                      <span>{item.descripcion}: <strong>{item.valor}</strong></span>
+                      <button type="button" onClick={() => removeDraftFeature(index)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer' }}>Quitar</button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <p style={{ fontSize: '.82rem', color: '#6b7280', marginBottom: '.9rem' }}>
                 Selecciona un nivel en el árbol y luego usa “Agregar nivel” para crear el subnivel (por ejemplo motor → rodajes).
               </p>
