@@ -42,6 +42,7 @@ const INITIAL_EQUIPOS = [
 const STORAGE_KEYS = {
   columns: 'pmp_equipos_columns_v1',
   equipos: 'pmp_equipos_items_v1',
+  exchangeHistory: 'pmp_equipos_exchange_history_v1',
 };
 
 function getStoredJSON(key, fallback) {
@@ -89,6 +90,12 @@ export default function PmpEquipos() {
   const [newFeatureDesc, setNewFeatureDesc] = useState('');
   const [newFeatureValue, setNewFeatureValue] = useState('');
   const [draftFeatures, setDraftFeatures] = useState([]);
+  const [showNoteField, setShowNoteField] = useState(false);
+  const [showExchangeModal, setShowExchangeModal] = useState(false);
+  const [exchangeHistory, setExchangeHistory] = useState(() => getStoredJSON(STORAGE_KEYS.exchangeHistory, []));
+  const [exchangeSourceId, setExchangeSourceId] = useState(INITIAL_EQUIPOS[0]?.id ?? null);
+  const [exchangeNodeId, setExchangeNodeId] = useState('');
+  const [exchangeTargetId, setExchangeTargetId] = useState(INITIAL_EQUIPOS[1]?.id ?? null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.columns, JSON.stringify(columns));
@@ -97,6 +104,10 @@ export default function PmpEquipos() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.equipos, JSON.stringify(equipos));
   }, [equipos]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.exchangeHistory, JSON.stringify(exchangeHistory));
+  }, [exchangeHistory]);
 
   useEffect(() => {
     if (!columns.some((col) => col.key === columnToRemove)) {
@@ -108,6 +119,8 @@ export default function PmpEquipos() {
   const despieceTarget = useMemo(() => equipos.find((e) => e.id === despieceTargetId) || null, [equipos, despieceTargetId]);
   const despieceNodes = despieceTarget?.despiece || [];
   const selectedNode = despieceNodes.find((n) => n.id === selectedNodeId) || null;
+  const exchangeSourceEquipo = equipos.find((e) => e.id === Number(exchangeSourceId)) || null;
+  const exchangeSourceNodes = exchangeSourceEquipo?.despiece || [];
 
   const openNewEquipo = () => {
     const defaultForm = {};
@@ -194,6 +207,7 @@ export default function PmpEquipos() {
     setDraftFeatures([]);
     setNewFeatureDesc('');
     setNewFeatureValue('');
+    setShowNoteField(false);
     setShowDespieceModal(true);
   };
 
@@ -242,6 +256,7 @@ export default function PmpEquipos() {
     setDraftFeatures([]);
     setNewFeatureDesc('');
     setNewFeatureValue('');
+    setShowNoteField(false);
   };
 
   const loadSelectedNodeForEdit = () => {
@@ -250,6 +265,7 @@ export default function PmpEquipos() {
     setNewNodeName(selectedNode.nombre || '');
     setNewNodeDetails(selectedNode.detalle || '');
     setDraftFeatures(Array.isArray(selectedNode.caracteristicas) ? selectedNode.caracteristicas : []);
+    setShowNoteField(Boolean(selectedNode.detalle));
   };
 
   const updateSelectedNode = (e) => {
@@ -272,6 +288,7 @@ export default function PmpEquipos() {
     setDraftFeatures([]);
     setNewFeatureDesc('');
     setNewFeatureValue('');
+    setShowNoteField(false);
   };
 
   const deleteSelectedNode = () => {
@@ -300,6 +317,90 @@ export default function PmpEquipos() {
     setDraftFeatures([]);
     setNewFeatureDesc('');
     setNewFeatureValue('');
+    setShowNoteField(false);
+  };
+
+  const openExchangeModal = () => {
+    const source = selectedEquipo?.id || equipos[0]?.id || null;
+    const target = equipos.find((e) => e.id !== source)?.id || null;
+    setExchangeSourceId(source);
+    setExchangeTargetId(target);
+    setExchangeNodeId('');
+    setShowExchangeModal(true);
+  };
+
+  const getSubtreeIds = (rootId, nodes) => {
+    const ids = new Set([rootId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      nodes.forEach((node) => {
+        if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
+          ids.add(node.id);
+          changed = true;
+        }
+      });
+    }
+    return ids;
+  };
+
+  const migrateSubtree = () => {
+    const sourceId = Number(exchangeSourceId);
+    const targetId = Number(exchangeTargetId);
+    if (!sourceId || !targetId || !exchangeNodeId || sourceId === targetId) return;
+
+    const sourceEq = equipos.find((e) => e.id === sourceId);
+    const targetEq = equipos.find((e) => e.id === targetId);
+    if (!sourceEq || !targetEq) return;
+    const sourceNodes = sourceEq.despiece || [];
+    const nodeToMove = sourceNodes.find((n) => n.id === exchangeNodeId);
+    if (!nodeToMove) return;
+
+    if (!window.confirm(`¿Confirmas el intercambio del subequipo "${nodeToMove.nombre}" desde ${sourceEq.codigo} hacia ${targetEq.codigo}?`)) return;
+
+    const subtreeIds = getSubtreeIds(nodeToMove.id, sourceNodes);
+    const subtreeNodes = sourceNodes.filter((node) => subtreeIds.has(node.id));
+    const childrenByParent = {};
+    subtreeNodes.forEach((node) => {
+      const key = node.parentId || '__root__';
+      if (!childrenByParent[key]) childrenByParent[key] = [];
+      childrenByParent[key].push(node);
+    });
+
+    const cloneBranch = (oldNode, newParentId) => {
+      const newId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const cloned = { ...oldNode, id: newId, parentId: newParentId, codigo_sub: oldNode.codigo_sub };
+      const children = (childrenByParent[oldNode.id] || []);
+      let all = [cloned];
+      children.forEach((child) => {
+        all = all.concat(cloneBranch(child, newId));
+      });
+      return all;
+    };
+
+    const clonedNodes = cloneBranch(nodeToMove, null);
+
+    setEquipos((prev) => prev.map((eq) => {
+      if (eq.id === sourceId) {
+        return { ...eq, despiece: (eq.despiece || []).filter((node) => !subtreeIds.has(node.id)) };
+      }
+      if (eq.id === targetId) {
+        return { ...eq, despiece: [...(eq.despiece || []), ...clonedNodes] };
+      }
+      return eq;
+    }));
+
+    setExchangeHistory((prev) => [{
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      fecha: new Date().toISOString(),
+      sourceEquipo: sourceEq.codigo,
+      targetEquipo: targetEq.codigo,
+      nodeName: nodeToMove.nombre,
+      oldCode: nodeToMove.codigo_sub || 'N/A',
+      newCode: nodeToMove.codigo_sub || 'N/A',
+      levelsMigrated: clonedNodes.length,
+    }, ...prev]);
+    setShowExchangeModal(false);
   };
 
   const renderTree = (parentId = null, level = 2) => {
@@ -356,6 +457,7 @@ export default function PmpEquipos() {
           <button type="button" className="btn btn-secondary" onClick={openEditEquipo} disabled={!selectedEquipo}>Editar equipo</button>
           <button type="button" className="btn btn-secondary" onClick={() => setShowColModal(true)}>Agregar columna</button>
           <button type="button" className="btn btn-secondary" onClick={() => setShowRemoveColModal(true)} disabled={columns.length <= 1}>Eliminar columna</button>
+          <button type="button" className="btn btn-secondary" onClick={openExchangeModal} disabled={equipos.length <= 1}>Intercambios</button>
           <button type="button" className="btn btn-danger" onClick={deleteSelected} disabled={!selectedEquipo}>Eliminar</button>
         </div>
       </div>
@@ -392,6 +494,38 @@ export default function PmpEquipos() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="card">
+        <h2 style={{ marginBottom: '.85rem', fontSize: '1.15rem', fontWeight: 700 }}>Historial de intercambios</h2>
+        {exchangeHistory.length === 0 ? (
+          <p style={{ color: '#6b7280' }}>Aún no hay intercambios registrados.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '860px' }}>
+              <thead>
+                <tr style={{ background: '#1f3b5b', color: '#fff' }}>
+                  {['Fecha', 'Equipo origen', 'Equipo destino', 'Subequipo', 'Código origen', 'Código nuevo', 'Niveles migrados'].map((h) => (
+                    <th key={h} style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.55rem .5rem', fontSize: '.8rem' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {exchangeHistory.map((item) => (
+                  <tr key={item.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{new Date(item.fecha).toLocaleString()}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.sourceEquipo}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.targetEquipo}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.nodeName}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.oldCode}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.newCode}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.levelsMigrated}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {showEquipoModal && (
@@ -477,10 +611,16 @@ export default function PmpEquipos() {
                 <label className="form-label">Nombre del componente *</label>
                 <input className="form-input" value={newNodeName} onChange={(e) => setNewNodeName(e.target.value)} placeholder="Ej: Motor principal, Rodaje, Faja" required />
               </div>
-              <div className="form-group" style={{ marginBottom: '.7rem' }}>
-                <label className="form-label">Nota general (opcional)</label>
-                <textarea className="form-textarea" value={newNodeDetails} onChange={(e) => setNewNodeDetails(e.target.value)} placeholder="Ej: 15 kW, 1750 rpm, marca ABB..." />
-              </div>
+              {!showNoteField ? (
+                <button type="button" className="btn btn-secondary" style={{ marginBottom: '.7rem' }} onClick={() => setShowNoteField(true)}>
+                  Agregar nota (opcional)
+                </button>
+              ) : (
+                <div className="form-group" style={{ marginBottom: '.7rem' }}>
+                  <label className="form-label">Nota general (opcional)</label>
+                  <textarea className="form-textarea" value={newNodeDetails} onChange={(e) => setNewNodeDetails(e.target.value)} placeholder="Ej: 15 kW, 1750 rpm, marca ABB..." />
+                </div>
+              )}
               <div className="form-group" style={{ marginBottom: '.6rem' }}>
                 <label className="form-label">Agregar característica</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '.45rem' }}>
@@ -508,14 +648,50 @@ export default function PmpEquipos() {
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowDespieceModal(false)}>Cerrar</button>
-                <button type="button" className="btn btn-secondary" onClick={() => { setFormMode('add'); setNewNodeName(''); setNewNodeDetails(''); setDraftFeatures([]); setNewFeatureDesc(''); setNewFeatureValue(''); }}>
-                  Nuevo subnivel
-                </button>
                 <button type="submit" className="btn btn-primary">
                   {formMode === 'edit' ? 'Guardar cambios nivel' : 'Agregar nivel'}
                 </button>
               </div>
             </form>
+          </div>
+        </Modal>
+      )}
+
+      {showExchangeModal && (
+        <Modal title="Intercambio de subequipos" maxWidth="760px">
+          <div style={{ display: 'grid', gap: '.8rem' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Equipo origen</label>
+              <select className="form-select" value={exchangeSourceId || ''} onChange={(e) => { setExchangeSourceId(Number(e.target.value)); setExchangeNodeId(''); }}>
+                {equipos.map((eq) => <option key={`source-${eq.id}`} value={eq.id}>{eq.codigo} - {eq.descripcion}</option>)}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Subequipo a intercambiar</label>
+              <select className="form-select" value={exchangeNodeId} onChange={(e) => setExchangeNodeId(e.target.value)}>
+                <option value="">Selecciona un subequipo...</option>
+                {exchangeSourceNodes.map((node) => (
+                  <option key={`node-${node.id}`} value={node.id}>{node.codigo_sub || '-'} | {node.nombre}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Equipo destino</label>
+              <select className="form-select" value={exchangeTargetId || ''} onChange={(e) => setExchangeTargetId(Number(e.target.value))}>
+                {equipos.filter((eq) => eq.id !== Number(exchangeSourceId)).map((eq) => (
+                  <option key={`target-${eq.id}`} value={eq.id}>{eq.codigo} - {eq.descripcion}</option>
+                ))}
+              </select>
+            </div>
+            <p style={{ fontSize: '.84rem', color: '#6b7280' }}>
+              Se migrará el subequipo seleccionado con todos sus niveles hijos manteniendo su codificación original para trazabilidad de origen.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowExchangeModal(false)}>Cancelar</button>
+              <button type="button" className="btn btn-primary" onClick={migrateSubtree} disabled={!exchangeNodeId || !exchangeTargetId}>
+                Confirmar intercambio
+              </button>
+            </div>
           </div>
         </Modal>
       )}
