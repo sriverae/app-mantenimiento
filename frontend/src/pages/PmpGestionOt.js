@@ -52,6 +52,184 @@ const getMarkedDays = (plan, year, month) => {
 
 const buildOtNumber = () => `OT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
 
+function ModalTiempoEfectivo({ value, onClose, onSave }) {
+  const [horas, setHoras] = useState(() => String(Math.floor(Number(value || 0))));
+  const [minutos, setMinutos] = useState(() => String(Math.round((Number(value || 0) % 1) * 60)));
+
+  const submit = () => {
+    const hh = Number(horas) || 0;
+    const mm = Number(minutos) || 0;
+    const total = hh + (mm / 60);
+    onSave(Number(total.toFixed(2)));
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, .5)', zIndex: 1500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div style={{ width: 'min(520px, 100%)', background: '#fff', borderRadius: '.65rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+        <div style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb' }}>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Tiempo efectivo</h3>
+          <p style={{ color: '#6b7280', fontSize: '.9rem' }}>Ingresa manualmente el tiempo real trabajado.</p>
+        </div>
+        <div style={{ padding: '1rem 1.2rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.75rem' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Horas</label>
+              <input type="number" min="0" className="form-input" value={horas} onChange={(e) => setHoras(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Minutos</label>
+              <input type="number" min="0" max="59" className="form-input" value={minutos} onChange={(e) => setMinutos(e.target.value)} />
+            </div>
+          </div>
+        </div>
+        <div style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button type="button" className="btn btn-primary" onClick={submit}>Guardar tiempo</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalCerrarOT({ alert, onClose, onSubmit }) {
+  const [showTiempoModal, setShowTiempoModal] = useState(false);
+  const [form, setForm] = useState(() => {
+    const registro = alert.registro_ot || {};
+    return {
+      codigo: alert.codigo || '',
+      descripcion: alert.descripcion || '',
+      fecha_inicio: registro.fecha_inicio || new Date().toISOString().slice(0, 10),
+      fecha_fin: registro.fecha_fin || new Date().toISOString().slice(0, 10),
+      hora_inicio: registro.hora_inicio || '08:00',
+      hora_fin: registro.hora_fin || '09:00',
+      observaciones: registro.observaciones || '',
+      tipo_mantenimiento: alert.tipo_mantto || 'Preventivo',
+      puesto_trabajo_resp: alert.responsable || 'N.A.',
+      tiempo_efectivo_hh: alert.cierre_ot?.tiempo_efectivo_hh ?? 0,
+      satisfaccion: alert.cierre_ot?.satisfaccion || 'Satisfecho',
+      estado_equipo: alert.cierre_ot?.estado_equipo || 'Operativo',
+      informe: alert.cierre_ot?.informe || '',
+    };
+  });
+
+  const personalDetalle = alert.personal_detalle || [];
+  const materialesDetalle = alert.materiales_detalle || [];
+
+  const submit = () => {
+    if (!form.tiempo_efectivo_hh || Number(form.tiempo_efectivo_hh) <= 0) {
+      window.alert('Debes registrar el tiempo efectivo para cerrar la OT.');
+      return;
+    }
+    onSubmit(form);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, .5)', zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div style={{ width: 'min(1180px, 100%)', maxHeight: '93vh', overflow: 'auto', background: '#fff', borderRadius: '.65rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+        <div style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Cerrar Orden de Trabajo · {alert.ot_numero || 'OT #?'}</h3>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar ventana</button>
+        </div>
+
+        <div style={{ padding: '1rem 1.2rem' }}>
+          <div className="card">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código</label><input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Tipo de mantenimiento</label><input className="form-input" value={form.tipo_mantenimiento} onChange={(e) => setForm({ ...form, tipo_mantenimiento: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Descripción</label><input className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Puesto trabajo resp.</label><input className="form-input" value={form.puesto_trabajo_resp} onChange={(e) => setForm({ ...form, puesto_trabajo_resp: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Fecha inicio</label><input type="date" className="form-input" value={form.fecha_inicio} onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Hora inicio</label><input type="time" className="form-input" value={form.hora_inicio} onChange={(e) => setForm({ ...form, hora_inicio: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Fecha fin</label><input type="date" className="form-input" value={form.fecha_fin} onChange={(e) => setForm({ ...form, fecha_fin: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Hora fin</label><input type="time" className="form-input" value={form.hora_fin} onChange={(e) => setForm({ ...form, hora_fin: e.target.value })} /></div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Observaciones</label><textarea className="form-textarea" value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} /></div>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.75rem' }}>
+            <div className="card">
+              <h4 className="card-title">Personal de mantenimiento</h4>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '500px' }}>
+                  <thead><tr style={{ background: '#f3f4f6' }}><th style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>Código</th><th style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>Nombres</th><th style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>Especialidad</th></tr></thead>
+                  <tbody>
+                    {personalDetalle.map((p) => <tr key={p.id}><td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{p.codigo}</td><td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{p.nombres_apellidos}</td><td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{p.especialidad}</td></tr>)}
+                    {!personalDetalle.length && <tr><td colSpan={3} style={{ padding: '.7rem', textAlign: 'center', border: '1px solid #e5e7eb', color: '#6b7280' }}>Sin personal asignado.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="card">
+              <h4 className="card-title">Materiales utilizados</h4>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '500px' }}>
+                  <thead><tr style={{ background: '#f3f4f6' }}><th style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>Código</th><th style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>Descripción</th><th style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>Cant.</th></tr></thead>
+                  <tbody>
+                    {materialesDetalle.map((m) => <tr key={m.id}><td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{m.codigo}</td><td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{m.descripcion}</td><td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{m.cantidad}</td></tr>)}
+                    {!materialesDetalle.length && <tr><td colSpan={3} style={{ padding: '.7rem', textAlign: 'center', border: '1px solid #e5e7eb', color: '#6b7280' }}>Sin materiales registrados.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Tiempo efectivo (Hh)</label>
+                <div style={{ display: 'flex', gap: '.5rem' }}>
+                  <input className="form-input" value={form.tiempo_efectivo_hh} readOnly />
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowTiempoModal(true)}>Tiempo efectivo</button>
+                </div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Estado del equipo</label>
+                <select className="form-select" value={form.estado_equipo} onChange={(e) => setForm({ ...form, estado_equipo: e.target.value })}>
+                  <option>Operativo</option>
+                  <option>Operativo durante mantenimiento</option>
+                  <option>Parada de equipo</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                <label className="form-label">¿Qué tan satisfecho quedó con el servicio?</label>
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                  {['Parada de equipo', 'Insatisfecho', 'Neutral', 'Satisfecho', 'Operativa durante mantto'].map((item) => (
+                    <label key={item} style={{ display: 'inline-flex', alignItems: 'center', gap: '.35rem' }}>
+                      <input type="radio" name="satisfaccion" checked={form.satisfaccion === item} onChange={() => setForm({ ...form, satisfaccion: item })} />
+                      <span>{item}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                <label className="form-label">Cargar informe (texto / ruta)</label>
+                <input className="form-input" value={form.informe} onChange={(e) => setForm({ ...form, informe: e.target.value })} placeholder="Ej: Informe-OT-2026-03.pdf" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button type="button" className="btn btn-primary" onClick={submit}>Cerrar OT</button>
+        </div>
+      </div>
+
+      {showTiempoModal && (
+        <ModalTiempoEfectivo
+          value={form.tiempo_efectivo_hh}
+          onClose={() => setShowTiempoModal(false)}
+          onSave={(value) => {
+            setForm((prev) => ({ ...prev, tiempo_efectivo_hh: value }));
+            setShowTiempoModal(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmit }) {
   const [tab, setTab] = useState('registro');
   const [registro, setRegistro] = useState(() => {
@@ -248,6 +426,7 @@ export default function PmpGestionOt() {
   const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
   const [selectedId, setSelectedId] = useState(null);
   const [showReleaseModal, setShowReleaseModal] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
   const [rrhhItems, setRrhhItems] = useState(() => readJson(RRHH_KEY, RRHH_FALLBACK));
   const [materialesItems, setMaterialesItems] = useState(() => readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
 
@@ -287,6 +466,7 @@ export default function PmpGestionOt() {
           personal_detalle: old?.personal_detalle || [],
           materiales_detalle: old?.materiales_detalle || [],
           registro_ot: old?.registro_ot || null,
+          cierre_ot: old?.cierre_ot || null,
           orden: idx + 1,
         };
       });
@@ -336,10 +516,25 @@ export default function PmpGestionOt() {
     setShowReleaseModal(false);
   };
 
-  const closeOt = () => {
+  const openCloseModal = () => {
+    if (!selected) return;
+    if (selected.status_ot !== 'Liberada') {
+      window.alert('Solo puedes cerrar una OT que esté en estado Liberada.');
+      return;
+    }
+    setShowCloseModal(true);
+  };
+
+  const confirmCloseOt = (cierreData) => {
     if (!selected) return;
     const todayStr = new Date().toISOString().split('T')[0];
-    setAlerts((prev) => prev.map((a) => (a.id === selected.id ? { ...a, status_ot: 'Cerrada', fecha_ejecucion: a.fecha_ejecucion || todayStr } : a)));
+    setAlerts((prev) => prev.map((a) => (a.id === selected.id ? {
+      ...a,
+      status_ot: 'Cerrada',
+      fecha_ejecucion: a.fecha_ejecucion || todayStr,
+      cierre_ot: cierreData,
+    } : a)));
+    setShowCloseModal(false);
   };
 
   return (
@@ -353,7 +548,7 @@ export default function PmpGestionOt() {
         <div style={{ display: 'flex', gap: '.65rem', flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-primary" onClick={createOt} disabled={!selected}>Crear una OT</button>
           <button type="button" className="btn btn-secondary" onClick={openReleaseModal} disabled={!selected}>Liberar OT</button>
-          <button type="button" className="btn btn-danger" onClick={closeOt} disabled={!selected}>Cerrar OT</button>
+          <button type="button" className="btn btn-danger" onClick={openCloseModal} disabled={!selected}>Cerrar OT</button>
         </div>
       </div>
 
@@ -395,6 +590,14 @@ export default function PmpGestionOt() {
           materialesItems={materialesItems}
           onClose={() => setShowReleaseModal(false)}
           onSubmit={confirmRelease}
+        />
+      )}
+
+      {showCloseModal && selected && (
+        <ModalCerrarOT
+          alert={selected}
+          onClose={() => setShowCloseModal(false)}
+          onSubmit={confirmCloseOt}
         />
       )}
     </div>
