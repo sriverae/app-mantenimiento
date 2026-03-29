@@ -28,10 +28,6 @@ const readData = () => {
   }
 };
 
-function ToolbarButton({ label, className, ...props }) {
-  return <button type="button" className={`classic-action-btn ${className || ''}`.trim()} {...props}>{label}</button>;
-}
-
 export default function MaterialsManagement() {
   const [items, setItems] = useState(() => readData());
   const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
@@ -110,78 +106,68 @@ export default function MaterialsManagement() {
   };
 
   return (
-    <div className="classic-module">
-      <div className="classic-header">
-        <h1>CONTROL DE MATERIALES - REPUESTOS - INSUMOS</h1>
-        <span>{new Date().toLocaleDateString('es-PE')}</span>
-      </div>
+    <div>
+      <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestión de Materiales</h1>
+      <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edición y eliminación de materiales/repuestos.</p>
 
-      <div className="classic-toolbar-grid">
-        <div className="classic-card">
-          <h3>BUSCAR POR:</h3>
-          <div className="classic-inline-fields">
-            <label htmlFor="mat-search">Descripción:</label>
-            <input id="mat-search" className="form-input" placeholder="Buscar por código, descripción, marca o proveedor" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          <div className="classic-inline-fields">
-            <label htmlFor="mat-code">Código:</label>
-            <input id="mat-code" className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} />
-          </div>
+      <div className="card" style={{ marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            className="form-input"
+            style={{ maxWidth: '460px' }}
+            placeholder="Buscar por código, descripción, marca o proveedor"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button type="button" className="btn btn-primary" onClick={handleNew}>Nuevo</button>
+          <button type="button" className="btn btn-secondary" onClick={handleEdit} disabled={!selectedItem}>Editar</button>
+          <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!selectedItem}>Eliminar</button>
+          <button type="button" className="btn" style={{ background: '#e5e7eb', color: '#374151' }} onClick={handleCancel}>Limpiar</button>
         </div>
-
-        <div className="classic-card classic-total-card">
-          <h3>COSTO TOTAL INVENTARIO</h3>
-          <p>S/ {totalInventario.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-        </div>
-
-        <div className="classic-card classic-actions">
-          <ToolbarButton label="NUEVO" className="btn-primary" onClick={handleNew} />
-          <ToolbarButton label="EDITAR" className="btn-secondary" onClick={handleEdit} disabled={!selectedItem} />
-          <ToolbarButton label="ELIMINAR" className="btn-danger" onClick={handleDelete} disabled={!selectedItem} />
-          <ToolbarButton label="CANCELAR" onClick={handleCancel} disabled={!editingId && !form.codigo && !form.descripcion} />
+        <div style={{ marginTop: '.85rem', color: '#374151', fontWeight: 600 }}>
+          Costo total inventario: <span style={{ color: '#111827' }}>S/ {totalInventario.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
       </div>
 
-      <div className="classic-card">
-        <h3>INVENTARIO:</h3>
-        <div className="classic-table-wrap">
-          <table className="classic-table">
-            <thead>
-              <tr>
-                <th>CÓDIGO</th><th>DESCRIPCIÓN</th><th>MARCA</th><th>PROVEEDOR</th><th>STOCK</th><th>UNIDAD</th><th>COSTO UNIT.</th><th>COSTO TOTAL</th><th>STOCK MÍN.</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((it) => (
-                <tr key={it.id} className={selectedId === it.id ? 'selected' : ''} onClick={() => setSelectedId(it.id)}>
-                  <td>{it.codigo}</td>
-                  <td>{it.descripcion}</td>
-                  <td>{it.marca}</td>
-                  <td>{it.proveedor}</td>
-                  <td>{it.stock}</td>
-                  <td>{it.unidad}</td>
-                  <td>S/ {Number(it.costo_unit).toFixed(2)}</td>
-                  <td>S/ {(Number(it.stock) * Number(it.costo_unit)).toFixed(2)}</td>
-                  <td>{it.stock_min}</td>
-                </tr>
+      <div className="card" style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1120px' }}>
+          <thead>
+            <tr style={{ background: '#f3f4f6' }}>
+              {['Código', 'Descripción', 'Marca', 'Proveedor', 'Stock', 'Unidad', 'Costo unit.', 'Costo total', 'Stock mín.'].map((h) => (
+                <th key={h} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'left', color: '#374151' }}>{h}</th>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((it) => (
+              <tr key={it.id} onClick={() => setSelectedId(it.id)} style={{ background: selectedId === it.id ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.codigo}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.descripcion}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.marca}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.proveedor}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.unidad}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {Number(it.costo_unit).toFixed(2)}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {(Number(it.stock) * Number(it.costo_unit)).toFixed(2)}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock_min}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      <div className="classic-card">
-        <h3>RESULTADOS:</h3>
-        <form onSubmit={handleSubmit} className="classic-form-grid">
-          <div className="form-group"><label className="form-label">Código *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
-          <div className="form-group wide"><label className="form-label">Descripción *</label><input required className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Marca</label><input className="form-input" value={form.marca} onChange={(e) => setForm({ ...form, marca: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Proveedor</label><input className="form-input" value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Stock</label><input type="number" className="form-input" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Unidad</label><input className="form-input" value={form.unidad} onChange={(e) => setForm({ ...form, unidad: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Costo unitario</label><input type="number" step="0.01" className="form-input" value={form.costo_unit} onChange={(e) => setForm({ ...form, costo_unit: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Stock mínimo</label><input type="number" className="form-input" value={form.stock_min} onChange={(e) => setForm({ ...form, stock_min: e.target.value })} /></div>
-          <div className="classic-form-actions">
+      <div className="card" style={{ marginTop: '1rem' }}>
+        <h3 className="card-title" style={{ marginBottom: '.8rem' }}>{editingId ? 'Editar material' : 'Registrar material'}</h3>
+        <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Descripción *</label><input required className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Marca</label><input className="form-input" value={form.marca} onChange={(e) => setForm({ ...form, marca: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Proveedor</label><input className="form-input" value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Stock</label><input type="number" className="form-input" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Unidad</label><input className="form-input" value={form.unidad} onChange={(e) => setForm({ ...form, unidad: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Costo unitario</label><input type="number" step="0.01" className="form-input" value={form.costo_unit} onChange={(e) => setForm({ ...form, costo_unit: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Stock mínimo</label><input type="number" className="form-input" value={form.stock_min} onChange={(e) => setForm({ ...form, stock_min: e.target.value })} /></div>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '.2rem' }}>
             <button type="submit" className="btn btn-primary">{editingId ? 'Actualizar' : 'Registrar'}</button>
           </div>
         </form>

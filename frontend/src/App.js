@@ -88,7 +88,7 @@ function AppLayout() {
                 </div>
               </details>
             </li>
-            {hasMinRole('ENCARGADO') && (
+            {user?.role === 'INGENIERO' && (
               <>
                 <li><Link to="/rrhh" className="nav-link">Gestión de RRHH</Link></li>
                 <li><Link to="/materiales" className="nav-link">Gestión de Materiales</Link></li>
@@ -130,8 +130,8 @@ function AppLayout() {
           <Route path="/tasks/new" element={<PrivateRoute minRole="PLANNER"><NewTask user={user} /></PrivateRoute>} />
           <Route path="/tasks/:taskId" element={<PrivateRoute><TaskDetail user={user} /></PrivateRoute>} />
           <Route path="/worklogs" element={<PrivateRoute><WorkLogs user={user} /></PrivateRoute>} />
-          <Route path="/rrhh" element={<PrivateRoute minRole="ENCARGADO"><RrhhManagement /></PrivateRoute>} />
-          <Route path="/materiales" element={<PrivateRoute minRole="ENCARGADO"><MaterialsManagement /></PrivateRoute>} />
+          <Route path="/rrhh" element={<PrivateRoute minRole="INGENIERO"><RrhhManagement /></PrivateRoute>} />
+          <Route path="/materiales" element={<PrivateRoute minRole="INGENIERO"><MaterialsManagement /></PrivateRoute>} />
           <Route path="/pmp/equipos" element={<PrivateRoute minRole="ENCARGADO"><PmpEquipos /></PrivateRoute>} />
           <Route path="/pmp/fechas" element={<PrivateRoute minRole="ENCARGADO"><PmpFechas /></PrivateRoute>} />
           <Route path="/pmp/bajas" element={<PrivateRoute minRole="ENCARGADO"><PmpBajas /></PrivateRoute>} />

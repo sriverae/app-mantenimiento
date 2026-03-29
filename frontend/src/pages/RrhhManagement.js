@@ -29,10 +29,6 @@ const readData = () => {
   }
 };
 
-function ToolbarButton({ label, className, ...props }) {
-  return <button type="button" className={`classic-action-btn ${className || ''}`.trim()} {...props}>{label}</button>;
-}
-
 export default function RrhhManagement() {
   const [items, setItems] = useState(() => readData());
   const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
@@ -107,74 +103,60 @@ export default function RrhhManagement() {
   };
 
   return (
-    <div className="classic-module">
-      <div className="classic-header">
-        <h1>CTRL DE RECURSOS HUMANOS</h1>
-        <span>{new Date().toLocaleDateString('es-PE')}</span>
-      </div>
+    <div>
+      <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestión de RRHH</h1>
+      <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edición y eliminación de técnicos de mantenimiento.</p>
 
-      <div className="classic-toolbar-grid">
-        <div className="classic-card">
-          <h3>BUSCAR POR:</h3>
-          <div className="classic-inline-fields">
-            <label htmlFor="rrhh-search">Nombres y apellidos:</label>
-            <input id="rrhh-search" className="form-input" placeholder="Buscar por código, nombre o especialidad" value={query} onChange={(e) => setQuery(e.target.value)} />
-          </div>
-          <div className="classic-inline-fields">
-            <label htmlFor="rrhh-code">Código:</label>
-            <input id="rrhh-code" className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} />
-          </div>
-        </div>
-
-        <div className="classic-card classic-actions">
-          <ToolbarButton label="NUEVO" className="btn-primary" onClick={handleNew} />
-          <ToolbarButton label="EDITAR" className="btn-secondary" onClick={handleEdit} disabled={!selectedItem} />
-          <ToolbarButton label="ELIMINAR" className="btn-danger" onClick={handleDelete} disabled={!selectedItem} />
-          <ToolbarButton label="CANCELAR" onClick={handleCancel} disabled={!editingId && !form.codigo && !form.nombres_apellidos} />
+      <div className="card" style={{ marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            className="form-input"
+            style={{ maxWidth: '420px' }}
+            placeholder="Buscar por código, nombre o especialidad"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button type="button" className="btn btn-primary" onClick={handleNew}>Nuevo</button>
+          <button type="button" className="btn btn-secondary" onClick={handleEdit} disabled={!selectedItem}>Editar</button>
+          <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!selectedItem}>Eliminar</button>
+          <button type="button" className="btn" style={{ background: '#e5e7eb', color: '#374151' }} onClick={handleCancel}>Limpiar</button>
         </div>
       </div>
 
-      <div className="classic-card">
-        <h3>INVENTARIO:</h3>
-        <div className="classic-table-wrap">
-          <table className="classic-table">
-            <thead>
-              <tr>
-                <th>CÓDIGO</th><th>NOMBRES Y APELLIDOS</th><th>ESPECIALIDAD</th><th>IDENTIFICACIÓN</th><th>EDAD</th><th>DOMICILIO</th><th>CAPACIDAD (Hh/día)</th><th>COSTO/Hra</th><th>E-MAIL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((it) => (
-                <tr key={it.id} className={selectedId === it.id ? 'selected' : ''} onClick={() => setSelectedId(it.id)}>
-                  <td>{it.codigo}</td>
-                  <td>{it.nombres_apellidos}</td>
-                  <td>{it.especialidad}</td>
-                  <td>{it.identificacion}</td>
-                  <td>{it.edad}</td>
-                  <td>{it.domicilio}</td>
-                  <td>{it.capacidad_hh_dia}</td>
-                  <td>S/ {Number(it.costo_hora || 0).toFixed(2)}</td>
-                  <td>{it.email}</td>
-                </tr>
+      <div className="card" style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1200px' }}>
+          <thead>
+            <tr style={{ background: '#f3f4f6' }}>
+              {['Código', 'Nombres y apellidos', 'Especialidad', 'Identificación', 'Edad', 'Domicilio', 'Capacidad (Hh/día)', 'Costo/Hra', 'E-mail'].map((h) => (
+                <th key={h} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'left', color: '#374151' }}>{h}</th>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((it) => (
+              <tr key={it.id} onClick={() => setSelectedId(it.id)} style={{ background: selectedId === it.id ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
+                {[it.codigo, it.nombres_apellidos, it.especialidad, it.identificacion, it.edad, it.domicilio, it.capacidad_hh_dia, `S/ ${Number(it.costo_hora || 0).toFixed(2)}`, it.email].map((value, idx) => (
+                  <td key={`${it.id}-${idx}`} style={{ border: '1px solid #e5e7eb', padding: '.55rem', color: '#111827' }}>{value}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      <div className="classic-card">
-        <h3>RESULTADOS:</h3>
-        <form onSubmit={handleSubmit} className="classic-form-grid">
-          <div className="form-group"><label className="form-label">Código *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
-          <div className="form-group wide"><label className="form-label">Nombres y apellidos *</label><input required className="form-input" value={form.nombres_apellidos} onChange={(e) => setForm({ ...form, nombres_apellidos: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Especialidad</label><input className="form-input" value={form.especialidad} onChange={(e) => setForm({ ...form, especialidad: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Identificación</label><input className="form-input" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Edad</label><input className="form-input" value={form.edad} onChange={(e) => setForm({ ...form, edad: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Domicilio</label><input className="form-input" value={form.domicilio} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Capacidad (Hh/día)</label><input className="form-input" value={form.capacidad_hh_dia} onChange={(e) => setForm({ ...form, capacidad_hh_dia: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">Costo/Hra</label><input className="form-input" value={form.costo_hora} onChange={(e) => setForm({ ...form, costo_hora: e.target.value })} /></div>
-          <div className="form-group"><label className="form-label">E-mail</label><input className="form-input" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
-          <div className="classic-form-actions">
+      <div className="card" style={{ marginTop: '1rem' }}>
+        <h3 className="card-title" style={{ marginBottom: '.8rem' }}>{editingId ? 'Editar técnico' : 'Registrar técnico'}</h3>
+        <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Nombres y apellidos *</label><input required className="form-input" value={form.nombres_apellidos} onChange={(e) => setForm({ ...form, nombres_apellidos: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Especialidad</label><input className="form-input" value={form.especialidad} onChange={(e) => setForm({ ...form, especialidad: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Identificación</label><input className="form-input" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Edad</label><input className="form-input" value={form.edad} onChange={(e) => setForm({ ...form, edad: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Domicilio</label><input className="form-input" value={form.domicilio} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Capacidad (Hh/día)</label><input className="form-input" value={form.capacidad_hh_dia} onChange={(e) => setForm({ ...form, capacidad_hh_dia: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Costo/Hra</label><input className="form-input" value={form.costo_hora} onChange={(e) => setForm({ ...form, costo_hora: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">E-mail</label><input className="form-input" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+          <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '.2rem' }}>
             <button type="submit" className="btn btn-primary">{editingId ? 'Actualizar' : 'Registrar'}</button>
           </div>
         </form>
