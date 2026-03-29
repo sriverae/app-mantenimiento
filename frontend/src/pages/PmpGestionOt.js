@@ -52,34 +52,77 @@ const getMarkedDays = (plan, year, month) => {
 
 const buildOtNumber = () => `OT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
 
-function ModalTiempoEfectivo({ value, onClose, onSave }) {
-  const [horas, setHoras] = useState(() => String(Math.floor(Number(value || 0))));
-  const [minutos, setMinutos] = useState(() => String(Math.round((Number(value || 0) % 1) * 60)));
+function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, onClose, onSave }) {
+  const [rows, setRows] = useState(() => {
+    const mapActual = new Map((tiempoPersonalActual || []).map((item) => [item.id, item.horas]));
+    return (personalDetalle || []).map((item) => ({
+      id: item.id,
+      nombre: item.nombres_apellidos,
+      especialidad: item.especialidad,
+      horas: mapActual.get(item.id) ?? 0,
+    }));
+  });
+
+  const totalHoras = rows.reduce((sum, item) => sum + (Number(item.horas) || 0), 0);
+
+  const updateHoras = (id, value) => {
+    setRows((prev) => prev.map((row) => (row.id === id ? { ...row, horas: value } : row)));
+  };
 
   const submit = () => {
-    const hh = Number(horas) || 0;
-    const mm = Number(minutos) || 0;
-    const total = hh + (mm / 60);
-    onSave(Number(total.toFixed(2)));
+    const payload = rows.map((item) => ({ ...item, horas: Number(item.horas) || 0 }));
+    onSave({
+      tiempoPersonal: payload,
+      totalHoras: Number(payload.reduce((sum, item) => sum + item.horas, 0).toFixed(2)),
+    });
   };
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, .5)', zIndex: 1500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
       <div style={{ width: 'min(520px, 100%)', background: '#fff', borderRadius: '.65rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
         <div style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb' }}>
-          <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Tiempo efectivo</h3>
-          <p style={{ color: '#6b7280', fontSize: '.9rem' }}>Ingresa manualmente el tiempo real trabajado.</p>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Tiempo efectivo por técnico</h3>
+          <p style={{ color: '#6b7280', fontSize: '.9rem' }}>Selecciona el técnico por nombre y registra sus horas trabajadas.</p>
         </div>
         <div style={{ padding: '1rem 1.2rem' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.75rem' }}>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Horas</label>
-              <input type="number" min="0" className="form-input" value={horas} onChange={(e) => setHoras(e.target.value)} />
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Minutos</label>
-              <input type="number" min="0" max="59" className="form-input" value={minutos} onChange={(e) => setMinutos(e.target.value)} />
-            </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '480px' }}>
+              <thead>
+                <tr style={{ background: '#f3f4f6' }}>
+                  <th style={{ border: '1px solid #e5e7eb', padding: '.5rem', textAlign: 'left' }}>Técnico</th>
+                  <th style={{ border: '1px solid #e5e7eb', padding: '.5rem', textAlign: 'left' }}>Especialidad</th>
+                  <th style={{ border: '1px solid #e5e7eb', padding: '.5rem', textAlign: 'left' }}>Horas trabajadas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{row.nombre}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{row.especialidad}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.5rem', width: '180px' }}>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.25"
+                        className="form-input"
+                        value={row.horas}
+                        onChange={(e) => updateHoras(row.id, e.target.value)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+                {!rows.length && (
+                  <tr>
+                    <td colSpan={3} style={{ border: '1px solid #e5e7eb', padding: '.8rem', textAlign: 'center', color: '#6b7280' }}>
+                      No hay técnicos asignados en esta OT.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: '.8rem', fontWeight: 600, color: '#1f2937' }}>
+            Tiempo efectivo - personal (Hh): {Number(totalHoras).toFixed(2)}
           </div>
         </div>
         <div style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
@@ -106,6 +149,7 @@ function ModalCerrarOT({ alert, onClose, onSubmit }) {
       tipo_mantenimiento: alert.tipo_mantto || 'Preventivo',
       puesto_trabajo_resp: alert.responsable || 'N.A.',
       tiempo_efectivo_hh: alert.cierre_ot?.tiempo_efectivo_hh ?? 0,
+      tiempo_personal: alert.cierre_ot?.tiempo_personal || [],
       satisfaccion: alert.cierre_ot?.satisfaccion || 'Satisfecho',
       estado_equipo: alert.cierre_ot?.estado_equipo || 'Operativo',
       informe: alert.cierre_ot?.informe || '',
@@ -218,10 +262,15 @@ function ModalCerrarOT({ alert, onClose, onSubmit }) {
 
       {showTiempoModal && (
         <ModalTiempoEfectivo
-          value={form.tiempo_efectivo_hh}
+          personalDetalle={personalDetalle}
+          tiempoPersonalActual={form.tiempo_personal}
           onClose={() => setShowTiempoModal(false)}
-          onSave={(value) => {
-            setForm((prev) => ({ ...prev, tiempo_efectivo_hh: value }));
+          onSave={({ tiempoPersonal, totalHoras }) => {
+            setForm((prev) => ({
+              ...prev,
+              tiempo_personal: tiempoPersonal,
+              tiempo_efectivo_hh: totalHoras,
+            }));
             setShowTiempoModal(false);
           }}
         />
