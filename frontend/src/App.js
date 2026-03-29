@@ -15,6 +15,7 @@ import PmpEquipos from './pages/PmpEquipos';
 import PmpIntercambiosHistorial from './pages/PmpIntercambiosHistorial';
 import PmpBajas from './pages/PmpBajas';
 import PmpBajasHistorial from './pages/PmpBajasHistorial';
+import PmpGestionOt from './pages/PmpGestionOt';
 
 // ---------------------------------------------------------------------------
 // Guard: redirect to /login if not authenticated
@@ -45,11 +46,11 @@ function AppLayout() {
     { label: 'Bajas', path: '/pmp/bajas' },
     { label: 'Historial intercambios', path: '/pmp/intercambios/historial' },
     { label: 'Historial bajas', path: '/pmp/bajas/historial' },
+    { label: 'Gestión de OT', path: '/pmp/gestion-ot' },
     { label: 'Plan de mantenimiento - Km', path: null },
     { label: 'Paquetes de mantenimiento', path: null },
     { label: 'Calendario', path: null },
     { label: 'AMEF', path: null },
-    { label: 'Gestión de OT', path: null },
   ];
 
   const isActive = (path) => location.pathname === path;
@@ -126,6 +127,7 @@ function AppLayout() {
           <Route path="/pmp/bajas" element={<PrivateRoute minRole="ENCARGADO"><PmpBajas /></PrivateRoute>} />
           <Route path="/pmp/intercambios/historial" element={<PrivateRoute minRole="ENCARGADO"><PmpIntercambiosHistorial /></PrivateRoute>} />
           <Route path="/pmp/bajas/historial" element={<PrivateRoute minRole="ENCARGADO"><PmpBajasHistorial /></PrivateRoute>} />
+          <Route path="/pmp/gestion-ot" element={<PrivateRoute minRole="ENCARGADO"><PmpGestionOt /></PrivateRoute>} />
           <Route path="/users" element={<PrivateRoute minRole="ENCARGADO"><UserManagement /></PrivateRoute>} />
           <Route path="/change-password" element={<PrivateRoute><ChangePassword /></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" />} />
