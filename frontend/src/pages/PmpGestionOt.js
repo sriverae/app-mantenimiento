@@ -5,6 +5,14 @@ const EQUIPOS_KEY = 'pmp_equipos_items_v1';
 const OT_ALERTS_KEY = 'pmp_ot_alertas_v1';
 const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
 const MATERIALES_KEY = 'pmp_materiales_v1';
+const RRHH_FALLBACK = [
+  { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', especialidad: 'Mecánico', capacidad_hh_dia: '12.00' },
+  { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', especialidad: 'Eléctrico', capacidad_hh_dia: '12.00' },
+];
+const MATERIALES_FALLBACK = [
+  { id: 1, codigo: 'PRD0000000', descripcion: 'ABRAZADERA 5"', unidad: 'UND', costo_unit: 4 },
+  { id: 2, codigo: 'PRD0000001', descripcion: 'ACEITE 15W40 CAT X 5 GL', unidad: 'GLN', costo_unit: 136.67 },
+];
 
 const FREQ_TO_DAYS = {
   Semanal: 7,
@@ -240,9 +248,8 @@ export default function PmpGestionOt() {
   const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
   const [selectedId, setSelectedId] = useState(null);
   const [showReleaseModal, setShowReleaseModal] = useState(false);
-
-  const rrhhItems = useMemo(() => readJson(RRHH_KEY, []), []);
-  const materialesItems = useMemo(() => readJson(MATERIALES_KEY, []), []);
+  const [rrhhItems, setRrhhItems] = useState(() => readJson(RRHH_KEY, RRHH_FALLBACK));
+  const [materialesItems, setMaterialesItems] = useState(() => readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
 
   useEffect(() => {
     const plans = readJson(PLANS_KEY, []);
@@ -301,6 +308,8 @@ export default function PmpGestionOt() {
 
   const openReleaseModal = () => {
     if (!selected) return;
+    setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
+    setMaterialesItems(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
     setShowReleaseModal(true);
   };
 
