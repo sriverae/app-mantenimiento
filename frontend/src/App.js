@@ -70,8 +70,6 @@ function AppLayout() {
             <li><Link to="/" className="nav-link">Dashboard</Link></li>
             <li><Link to="/tasks" className="nav-link">Tareas</Link></li>
             <li><Link to="/worklogs" className="nav-link">Registros</Link></li>
-            <li><Link to="/rrhh" className="nav-link">Gestión de RRHH</Link></li>
-            <li><Link to="/materiales" className="nav-link">Gestión de Materiales</Link></li>
             <li className="nav-dropdown">
               <details className="nav-dropdown-details">
                 <summary className="nav-link nav-dropdown-trigger">
@@ -90,6 +88,12 @@ function AppLayout() {
                 </div>
               </details>
             </li>
+            {hasMinRole('ENCARGADO') && (
+              <>
+                <li><Link to="/rrhh" className="nav-link">Gestión de RRHH</Link></li>
+                <li><Link to="/materiales" className="nav-link">Gestión de Materiales</Link></li>
+              </>
+            )}
             {hasMinRole('ENCARGADO') && (
               <li><Link to="/users" className="nav-link">Usuarios</Link></li>
             )}

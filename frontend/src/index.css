@@ -245,6 +245,145 @@ code {
   color: #6b7280;
 }
 
+/* Classic management modules (RRHH / Materiales) */
+.classic-module {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.classic-header {
+  background: #1f2937;
+  color: #f8fafc;
+  border: 2px solid #475569;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0.9rem;
+}
+
+.classic-header h1 {
+  font-size: 1.45rem;
+  letter-spacing: 0.02em;
+}
+
+.classic-header span {
+  color: #fde047;
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.classic-toolbar-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: 1.45fr 0.55fr 0.75fr;
+}
+
+.classic-card {
+  background: #6b7280;
+  border: 2px solid #374151;
+  padding: 0.7rem;
+  color: #fff;
+}
+
+.classic-card h3 {
+  font-size: 1.06rem;
+  margin-bottom: 0.55rem;
+  color: #f8fafc;
+}
+
+.classic-inline-fields {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 0.55rem;
+  margin-bottom: 0.5rem;
+  align-items: center;
+}
+
+.classic-inline-fields label {
+  font-size: 0.92rem;
+}
+
+.classic-actions {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+}
+
+.classic-action-btn {
+  width: 100%;
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  border-radius: 0.25rem;
+  padding: 0.7rem;
+  color: #fff;
+  background: #4b5563;
+}
+
+.classic-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.classic-total-card {
+  text-align: center;
+}
+
+.classic-total-card p {
+  background: #fef08a;
+  color: #111827;
+  font-size: 1.9rem;
+  font-weight: 700;
+  padding: 0.55rem;
+  border-radius: 0.4rem;
+}
+
+.classic-table-wrap {
+  overflow-x: auto;
+}
+
+.classic-table {
+  width: 100%;
+  min-width: 1020px;
+  border-collapse: collapse;
+}
+
+.classic-table th,
+.classic-table td {
+  border: 1px solid #d1d5db;
+  padding: 0.38rem;
+  text-align: left;
+}
+
+.classic-table thead th {
+  background: #fef9c3;
+  color: #111827;
+}
+
+.classic-table tbody td {
+  background: #fefce8;
+  color: #111827;
+}
+
+.classic-table tbody tr.selected td {
+  background: #bfdbfe;
+}
+
+.classic-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(170px, 1fr));
+  gap: 0.65rem;
+}
+
+.classic-form-grid .wide {
+  grid-column: span 2;
+}
+
+.classic-form-actions {
+  display: flex;
+  align-items: end;
+}
+
 /* Task List */
 .task-list {
   display: grid;
@@ -410,6 +549,18 @@ code {
   .navbar-nav {
     flex-direction: column;
     gap: 0.5rem;
+  }
+
+  .classic-toolbar-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .classic-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .classic-form-grid .wide {
+    grid-column: auto;
   }
   
   .stats-grid {
