@@ -16,6 +16,8 @@ import PmpIntercambiosHistorial from './pages/PmpIntercambiosHistorial';
 import PmpBajas from './pages/PmpBajas';
 import PmpBajasHistorial from './pages/PmpBajasHistorial';
 import PmpGestionOt from './pages/PmpGestionOt';
+import RrhhManagement from './pages/RrhhManagement';
+import MaterialsManagement from './pages/MaterialsManagement';
 
 // ---------------------------------------------------------------------------
 // Guard: redirect to /login if not authenticated
@@ -86,6 +88,12 @@ function AppLayout() {
                 </div>
               </details>
             </li>
+            {user?.role === 'INGENIERO' && (
+              <>
+                <li><Link to="/rrhh" className="nav-link">Gestión de RRHH</Link></li>
+                <li><Link to="/materiales" className="nav-link">Gestión de Materiales</Link></li>
+              </>
+            )}
             {hasMinRole('ENCARGADO') && (
               <li><Link to="/users" className="nav-link">Usuarios</Link></li>
             )}
@@ -122,6 +130,8 @@ function AppLayout() {
           <Route path="/tasks/new" element={<PrivateRoute minRole="PLANNER"><NewTask user={user} /></PrivateRoute>} />
           <Route path="/tasks/:taskId" element={<PrivateRoute><TaskDetail user={user} /></PrivateRoute>} />
           <Route path="/worklogs" element={<PrivateRoute><WorkLogs user={user} /></PrivateRoute>} />
+          <Route path="/rrhh" element={<PrivateRoute minRole="INGENIERO"><RrhhManagement /></PrivateRoute>} />
+          <Route path="/materiales" element={<PrivateRoute minRole="INGENIERO"><MaterialsManagement /></PrivateRoute>} />
           <Route path="/pmp/equipos" element={<PrivateRoute minRole="ENCARGADO"><PmpEquipos /></PrivateRoute>} />
           <Route path="/pmp/fechas" element={<PrivateRoute minRole="ENCARGADO"><PmpFechas /></PrivateRoute>} />
           <Route path="/pmp/bajas" element={<PrivateRoute minRole="ENCARGADO"><PmpBajas /></PrivateRoute>} />

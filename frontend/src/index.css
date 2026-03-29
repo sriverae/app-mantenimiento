@@ -411,7 +411,7 @@ code {
     flex-direction: column;
     gap: 0.5rem;
   }
-  
+
   .stats-grid {
     grid-template-columns: 1fr;
   }
