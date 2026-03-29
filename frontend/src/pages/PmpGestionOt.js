@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 const PLANS_KEY = 'pmp_fechas_plans_v1';
 const EQUIPOS_KEY = 'pmp_equipos_items_v1';
 const OT_ALERTS_KEY = 'pmp_ot_alertas_v1';
+const OT_HISTORY_KEY = 'pmp_ot_historial_v1';
 const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
 const MATERIALES_KEY = 'pmp_materiales_v1';
 const RRHH_FALLBACK = [
@@ -577,12 +578,18 @@ export default function PmpGestionOt() {
   const confirmCloseOt = (cierreData) => {
     if (!selected) return;
     const todayStr = new Date().toISOString().split('T')[0];
-    setAlerts((prev) => prev.map((a) => (a.id === selected.id ? {
-      ...a,
+    const history = readJson(OT_HISTORY_KEY, []);
+    const closedRow = {
+      ...selected,
       status_ot: 'Cerrada',
-      fecha_ejecucion: a.fecha_ejecucion || todayStr,
+      fecha_ejecucion: selected.fecha_ejecucion || todayStr,
       cierre_ot: cierreData,
-    } : a)));
+      fecha_cierre: todayStr,
+    };
+    localStorage.setItem(OT_HISTORY_KEY, JSON.stringify([closedRow, ...history]));
+
+    setAlerts((prev) => prev.filter((a) => a.id !== selected.id));
+    setSelectedId(null);
     setShowCloseModal(false);
   };
 
