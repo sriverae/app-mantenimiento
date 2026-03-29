@@ -16,6 +16,7 @@ const EMPTY_FORM = {
 };
 
 const PLAN_STORAGE_KEY = 'pmp_fechas_plans_v1';
+const EQUIPOS_STORAGE_KEY = 'pmp_equipos_items_v1';
 
 function getStoredPlans() {
   try {
@@ -25,6 +26,17 @@ function getStoredPlans() {
     return Array.isArray(parsed) ? parsed : INITIAL_PLANS;
   } catch {
     return INITIAL_PLANS;
+  }
+}
+
+function getStoredEquipos() {
+  try {
+    const raw = localStorage.getItem(EQUIPOS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
@@ -86,6 +98,11 @@ export default function PmpFechas() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
+  const [equipos] = useState(() => getStoredEquipos());
+  const [equipmentAreaFilter, setEquipmentAreaFilter] = useState('');
+  const [equipmentCodeFilter, setEquipmentCodeFilter] = useState('');
+  const [equipmentTextFilter, setEquipmentTextFilter] = useState('');
+  const [selectedEquipmentIds, setSelectedEquipmentIds] = useState([]);
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
 
@@ -98,9 +115,25 @@ export default function PmpFechas() {
     [plans, selectedId],
   );
 
+  const uniqueAreas = useMemo(
+    () => Array.from(new Set(equipos.map((e) => e.area_trabajo).filter(Boolean))).sort(),
+    [equipos],
+  );
+
+  const filteredEquipos = useMemo(() => equipos.filter((eq) => {
+    const areaOk = !equipmentAreaFilter || eq.area_trabajo === equipmentAreaFilter;
+    const codeOk = !equipmentCodeFilter || (eq.codigo || '').toLowerCase().includes(equipmentCodeFilter.toLowerCase());
+    const textOk = !equipmentTextFilter || `${eq.codigo} ${eq.descripcion}`.toLowerCase().includes(equipmentTextFilter.toLowerCase());
+    return areaOk && codeOk && textOk;
+  }), [equipos, equipmentAreaFilter, equipmentCodeFilter, equipmentTextFilter]);
+
   const openCreate = () => {
     setEditingId(null);
     setForm({ ...EMPTY_FORM, fecha_inicio: new Date().toISOString().split('T')[0] });
+    setEquipmentAreaFilter('');
+    setEquipmentCodeFilter('');
+    setEquipmentTextFilter('');
+    setSelectedEquipmentIds([]);
     setShowModal(true);
   };
 
@@ -108,6 +141,11 @@ export default function PmpFechas() {
     if (!selectedPlan) return;
     setEditingId(selectedPlan.id);
     setForm({ ...selectedPlan });
+    const matchEquipo = equipos.find((eq) => eq.codigo === selectedPlan.codigo);
+    setSelectedEquipmentIds(matchEquipo ? [String(matchEquipo.id)] : []);
+    setEquipmentAreaFilter('');
+    setEquipmentCodeFilter('');
+    setEquipmentTextFilter('');
     setShowModal(true);
   };
 
@@ -122,11 +160,23 @@ export default function PmpFechas() {
   const onSave = (e) => {
     e.preventDefault();
     if (editingId) {
-      setPlans((prev) => prev.map((p) => (p.id === editingId ? { ...form, id: editingId } : p)));
+      const selectedEq = equipos.find((eq) => String(eq.id) === selectedEquipmentIds[0]);
+      const payload = selectedEq
+        ? { ...form, codigo: selectedEq.codigo || '', equipo: selectedEq.descripcion || '', id: editingId }
+        : { ...form, id: editingId };
+      setPlans((prev) => prev.map((p) => (p.id === editingId ? payload : p)));
       setSelectedId(editingId);
     } else {
+      const selectedEquipos = equipos.filter((eq) => selectedEquipmentIds.includes(String(eq.id)));
+      if (selectedEquipos.length === 0) return;
       const nextId = plans.length ? Math.max(...plans.map((p) => p.id)) + 1 : 1;
-      setPlans((prev) => [{ ...form, id: nextId }, ...prev]);
+      const newPlans = selectedEquipos.map((eq, index) => ({
+        ...form,
+        id: nextId + index,
+        codigo: eq.codigo || '',
+        equipo: eq.descripcion || '',
+      }));
+      setPlans((prev) => [...newPlans, ...prev]);
       setSelectedId(nextId);
     }
     setShowModal(false);
@@ -243,8 +293,44 @@ export default function PmpFechas() {
                 <input type="date" className="form-input" value={form.fecha_inicio} onChange={(e) => setForm({ ...form, fecha_inicio: e.target.value })} required />
               </div>
               <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                <label className="form-label">Buscar equipo desde Control de equipos</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: '.55rem' }}>
+                  <select className="form-select" value={equipmentAreaFilter} onChange={(e) => setEquipmentAreaFilter(e.target.value)}>
+                    <option value="">Área (todas)</option>
+                    {uniqueAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
+                  <input className="form-input" placeholder="Filtro por código" value={equipmentCodeFilter} onChange={(e) => setEquipmentCodeFilter(e.target.value)} />
+                  <input className="form-input" placeholder="Buscar por nombre/código..." value={equipmentTextFilter} onChange={(e) => setEquipmentTextFilter(e.target.value)} />
+                </div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
                 <label className="form-label">Equipo *</label>
-                <input className="form-input" value={form.equipo} onChange={(e) => setForm({ ...form, equipo: e.target.value })} required />
+                <select
+                  className="form-select"
+                  multiple
+                  size={Math.min(8, Math.max(4, filteredEquipos.length || 4))}
+                  required
+                  value={selectedEquipmentIds}
+                  onChange={(e) => {
+                    const selectedOptions = Array.from(e.target.selectedOptions).map((opt) => opt.value);
+                    setSelectedEquipmentIds(selectedOptions);
+                    if (selectedOptions.length > 0) {
+                      const eq = equipos.find((item) => String(item.id) === selectedOptions[0]);
+                      if (eq) {
+                        setForm((prev) => ({ ...prev, codigo: eq.codigo || '', equipo: eq.descripcion || '' }));
+                      }
+                    }
+                  }}
+                >
+                  {filteredEquipos.map((eq) => (
+                    <option key={eq.id} value={String(eq.id)}>
+                      {eq.codigo} | {eq.descripcion} {eq.area_trabajo ? `(${eq.area_trabajo})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p style={{ color: '#6b7280', fontSize: '.8rem', marginTop: '.35rem' }}>
+                  Selección múltiple habilitada: puedes crear el mismo plan para varios equipos en una sola operación.
+                </p>
               </div>
               <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
                 <label className="form-label">Actividades a realizar *</label>
