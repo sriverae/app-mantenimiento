@@ -3,10 +3,8 @@ import { BrowserRouter as Router, Routes, Route, Link, Navigate, useLocation } f
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 import Dashboard from './pages/Dashboard';
-import Tasks from './pages/Tasks';
-import NewTask from './pages/NewTask';
-import TaskDetail from './pages/TaskDetail';
 import WorkLogs from './pages/WorkLogs';
+import WorkNotifications from './pages/WorkNotifications';
 import Login from './pages/Login';
 import UserManagement from './pages/UserManagement';
 import ChangePassword from './pages/ChangePassword';
@@ -71,7 +69,7 @@ function AppLayout() {
           <Link to="/" className="navbar-brand">🔧 Mantenimiento</Link>
           <ul className="navbar-nav">
             <li><Link to="/" className="nav-link">Dashboard</Link></li>
-            <li><Link to="/tasks" className="nav-link">Tareas</Link></li>
+            <li><Link to="/tasks" className="nav-link">Notificaciones de Trabajo</Link></li>
             <li><Link to="/worklogs" className="nav-link">Registros</Link></li>
             <li className="nav-dropdown">
               <details className="nav-dropdown-details">
@@ -129,9 +127,9 @@ function AppLayout() {
       <div className="container">
         <Routes>
           <Route path="/" element={<PrivateRoute><Dashboard user={user} /></PrivateRoute>} />
-          <Route path="/tasks" element={<PrivateRoute><Tasks user={user} /></PrivateRoute>} />
-          <Route path="/tasks/new" element={<PrivateRoute minRole="PLANNER"><NewTask user={user} /></PrivateRoute>} />
-          <Route path="/tasks/:taskId" element={<PrivateRoute><TaskDetail user={user} /></PrivateRoute>} />
+          <Route path="/tasks" element={<PrivateRoute><WorkNotifications user={user} /></PrivateRoute>} />
+          <Route path="/tasks/new" element={<Navigate to="/tasks" replace />} />
+          <Route path="/tasks/:taskId" element={<Navigate to="/tasks" replace />} />
           <Route path="/worklogs" element={<PrivateRoute><WorkLogs user={user} /></PrivateRoute>} />
           <Route path="/rrhh" element={<PrivateRoute minRole="INGENIERO"><RrhhManagement /></PrivateRoute>} />
           <Route path="/materiales" element={<PrivateRoute minRole="INGENIERO"><MaterialsManagement /></PrivateRoute>} />
@@ -156,13 +154,8 @@ function AppLayout() {
             <span className="bottom-nav-icon">📊</span><span>Dashboard</span>
           </Link>
           <Link to="/tasks" className={`bottom-nav-item ${isActive('/tasks') ? 'active' : ''}`}>
-            <span className="bottom-nav-icon">📋</span><span>Tareas</span>
+            <span className="bottom-nav-icon">📋</span><span>Notif.</span>
           </Link>
-          {hasMinRole('PLANNER') && (
-            <Link to="/tasks/new" className={`bottom-nav-item ${isActive('/tasks/new') ? 'active' : ''}`}>
-              <span className="bottom-nav-icon">➕</span><span>Nueva</span>
-            </Link>
-          )}
           <Link to="/worklogs" className={`bottom-nav-item ${isActive('/worklogs') ? 'active' : ''}`}>
             <span className="bottom-nav-icon">⏱️</span><span>Registros</span>
           </Link>

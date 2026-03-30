@@ -3,13 +3,14 @@ import React, { useMemo, useState } from 'react';
 const STORAGE_KEY = 'pmp_rrhh_tecnicos_v1';
 
 const INITIAL_DATA = [
-  { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', especialidad: 'Mecánico', identificacion: 'N.A.', edad: 'N.A.', domicilio: 'Primero', capacidad_hh_dia: '12.00', costo_hora: '6.94', email: 'N.A.' },
-  { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', especialidad: 'Eléctrico', identificacion: 'N.A.', edad: 'N.A.', domicilio: 'Primero', capacidad_hh_dia: '12.00', costo_hora: '6.11', email: 'N.A.' },
+  { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', cargo: 'Técnico', especialidad: 'Mecánico', identificacion: 'N.A.', edad: 'N.A.', domicilio: 'Primero', capacidad_hh_dia: '12.00', costo_hora: '6.94', email: 'N.A.' },
+  { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', cargo: 'Encargado', especialidad: 'Eléctrico', identificacion: 'N.A.', edad: 'N.A.', domicilio: 'Primero', capacidad_hh_dia: '12.00', costo_hora: '6.11', email: 'N.A.' },
 ];
 
 const EMPTY_FORM = {
   codigo: '',
   nombres_apellidos: '',
+  cargo: 'Técnico',
   especialidad: 'Mecánico',
   identificacion: '',
   edad: '',
@@ -70,6 +71,7 @@ export default function RrhhManagement() {
       ...form,
       codigo: form.codigo.trim(),
       nombres_apellidos: form.nombres_apellidos.trim(),
+      cargo: form.cargo || 'Técnico',
       especialidad: form.especialidad.trim() || 'Mecánico',
       identificacion: form.identificacion.trim() || 'N.A.',
       edad: form.edad.trim() || 'N.A.',
@@ -127,7 +129,7 @@ export default function RrhhManagement() {
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1200px' }}>
           <thead>
             <tr style={{ background: '#f3f4f6' }}>
-              {['Código', 'Nombres y apellidos', 'Especialidad', 'Identificación', 'Edad', 'Domicilio', 'Capacidad (Hh/día)', 'Costo/Hra', 'E-mail'].map((h) => (
+              {['Código', 'Nombres y apellidos', 'Cargo', 'Especialidad', 'Identificación', 'Edad', 'Domicilio', 'Capacidad (Hh/día)', 'Costo/Hra', 'E-mail'].map((h) => (
                 <th key={h} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'left', color: '#374151' }}>{h}</th>
               ))}
             </tr>
@@ -135,7 +137,7 @@ export default function RrhhManagement() {
           <tbody>
             {filtered.map((it) => (
               <tr key={it.id} onClick={() => setSelectedId(it.id)} style={{ background: selectedId === it.id ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
-                {[it.codigo, it.nombres_apellidos, it.especialidad, it.identificacion, it.edad, it.domicilio, it.capacidad_hh_dia, `S/ ${Number(it.costo_hora || 0).toFixed(2)}`, it.email].map((value, idx) => (
+                {[it.codigo, it.nombres_apellidos, it.cargo || 'Técnico', it.especialidad, it.identificacion, it.edad, it.domicilio, it.capacidad_hh_dia, `S/ ${Number(it.costo_hora || 0).toFixed(2)}`, it.email].map((value, idx) => (
                   <td key={`${it.id}-${idx}`} style={{ border: '1px solid #e5e7eb', padding: '.55rem', color: '#111827' }}>{value}</td>
                 ))}
               </tr>
@@ -149,6 +151,7 @@ export default function RrhhManagement() {
         <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Nombres y apellidos *</label><input required className="form-input" value={form.nombres_apellidos} onChange={(e) => setForm({ ...form, nombres_apellidos: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Cargo</label><select className="form-select" value={form.cargo || 'Técnico'} onChange={(e) => setForm({ ...form, cargo: e.target.value })}><option>Técnico</option><option>Encargado</option><option>Otro</option></select></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Especialidad</label><input className="form-input" value={form.especialidad} onChange={(e) => setForm({ ...form, especialidad: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Identificación</label><input className="form-input" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Edad</label><input className="form-input" value={form.edad} onChange={(e) => setForm({ ...form, edad: e.target.value })} /></div>

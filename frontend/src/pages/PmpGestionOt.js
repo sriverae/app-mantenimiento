@@ -7,8 +7,8 @@ const OT_HISTORY_KEY = 'pmp_ot_historial_v1';
 const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
 const MATERIALES_KEY = 'pmp_materiales_v1';
 const RRHH_FALLBACK = [
-  { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', especialidad: 'Mecánico', capacidad_hh_dia: '12.00' },
-  { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', especialidad: 'Eléctrico', capacidad_hh_dia: '12.00' },
+  { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', cargo: 'Técnico', especialidad: 'Mecánico', capacidad_hh_dia: '12.00' },
+  { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', cargo: 'Encargado', especialidad: 'Eléctrico', capacidad_hh_dia: '12.00' },
 ];
 const MATERIALES_FALLBACK = [
   { id: 1, codigo: 'PRD0000000', descripcion: 'ABRAZADERA 5"', unidad: 'UND', costo_unit: 4 },
@@ -327,8 +327,10 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
   const [cantidadMaterial, setCantidadMaterial] = useState(1);
   const [materialesAsignados, setMaterialesAsignados] = useState([]);
 
+  const eligibleRrhh = rrhhItems.filter((item) => ['técnico', 'tecnico', 'encargado'].includes(String(item.cargo || '').toLowerCase()));
+
   const addPersonal = () => {
-    const item = rrhhItems.find((it) => String(it.id) === String(selectedPersonalId));
+    const item = eligibleRrhh.find((it) => String(it.id) === String(selectedPersonalId));
     if (!item) return;
     if (personalAsignado.some((p) => p.id === item.id)) return;
     setPersonalAsignado((prev) => [...prev, item]);
@@ -417,8 +419,8 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.7rem', marginBottom: '.8rem' }}>
                 <select className="form-select" value={selectedPersonalId || ''} onChange={(e) => setSelectedPersonalId(e.target.value)}>
                   <option value="">Selecciona técnico...</option>
-                  {rrhhItems.map((item) => (
-                    <option key={item.id} value={item.id}>{item.codigo} · {item.nombres_apellidos} ({item.especialidad})</option>
+                  {eligibleRrhh.map((item) => (
+                    <option key={item.id} value={item.id}>{item.nombres_apellidos} · {item.cargo || 'N.A.'} ({item.especialidad})</option>
                   ))}
                 </select>
                 <button type="button" className="btn btn-primary" onClick={addPersonal}>Agregar</button>
