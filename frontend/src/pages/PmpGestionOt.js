@@ -34,21 +34,23 @@ const readJson = (key, fallback) => {
   }
 };
 
-const getMarkedDays = (plan, year, month) => {
+const getDueDatesUntilToday = (plan, today, lookbackDays = 120) => {
   const intervalDays = FREQ_TO_DAYS[plan.frecuencia] ?? 30;
   const start = new Date(`${plan.fecha_inicio}T00:00:00`);
-  if (Number.isNaN(start.getTime())) return new Set();
-  const monthStart = new Date(year, month, 1);
-  const monthEnd = new Date(year, month + 1, 0);
-  const marks = new Set();
+  if (Number.isNaN(start.getTime())) return [];
+
+  const limitDate = new Date(today);
+  limitDate.setDate(limitDate.getDate() - lookbackDays);
 
   const cursor = new Date(start);
-  while (cursor < monthStart) cursor.setDate(cursor.getDate() + intervalDays);
-  while (cursor <= monthEnd) {
-    if (cursor.getMonth() === month && cursor.getFullYear() === year) marks.add(cursor.getDate());
+  while (cursor < limitDate) cursor.setDate(cursor.getDate() + intervalDays);
+
+  const result = [];
+  while (cursor <= today) {
+    result.push(cursor.toISOString().slice(0, 10));
     cursor.setDate(cursor.getDate() + intervalDays);
   }
-  return marks;
+  return result;
 };
 
 const buildOtNumber = () => `OT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
@@ -484,47 +486,53 @@ export default function PmpGestionOt() {
     const plans = readJson(PLANS_KEY, []);
     const equipos = readJson(EQUIPOS_KEY, []);
     const today = new Date();
-    const day = today.getDate();
-    const month = today.getMonth();
-    const year = today.getFullYear();
     const todayStr = today.toISOString().split('T')[0];
 
     const existing = readJson(OT_ALERTS_KEY, []);
     const activeExisting = existing.filter((a) => a.status_ot !== 'Cerrada');
     const mapExisting = new Map(activeExisting.map((a) => [a.id, a]));
+    const history = readJson(OT_HISTORY_KEY, []);
+    const closedHistoryIds = new Set(history.map((item) => item.id));
 
-    const dueToday = plans
-      .filter((plan) => getMarkedDays(plan, year, month).has(day))
-      .map((plan, idx) => {
+    const dueUntilToday = plans
+      .flatMap((plan) => {
         const eq = equipos.find((e) => (e.codigo || '') === (plan.codigo || ''));
-        const id = `${todayStr}_${plan.id}`;
-        const old = mapExisting.get(id);
-        return {
-          id,
-          fecha_ejecutar: todayStr,
-          codigo: plan.codigo || '',
-          descripcion: plan.equipo || '',
-          area_trabajo: eq?.area_trabajo || 'N.A.',
-          prioridad: plan.prioridad || 'Media',
-          actividad: plan.actividades || '',
-          responsable: plan.responsable || 'N.A.',
-          status_ot: old?.status_ot || 'Pendiente',
-          ot_numero: old?.ot_numero || '',
-          fecha_ejecucion: old?.fecha_ejecucion || '',
-          tipo_mantto: 'Preventivo',
-          personal_mantenimiento: old?.personal_mantenimiento || '',
-          materiales: old?.materiales || '',
-          personal_detalle: old?.personal_detalle || [],
-          materiales_detalle: old?.materiales_detalle || [],
-          registro_ot: old?.registro_ot || null,
-          cierre_ot: old?.cierre_ot || null,
-          orden: idx + 1,
-        };
-      });
+        const dueDates = getDueDatesUntilToday(plan, today, 120);
+        return dueDates.map((fecha, idx) => {
+          const id = `${fecha}_${plan.id}`;
+          if (closedHistoryIds.has(id)) return null;
 
-    const dueIds = new Set(dueToday.map((item) => item.id));
+          const old = mapExisting.get(id);
+          return {
+            id,
+            fecha_ejecutar: fecha,
+            codigo: plan.codigo || '',
+            descripcion: plan.equipo || '',
+            area_trabajo: eq?.area_trabajo || 'N.A.',
+            prioridad: plan.prioridad || 'Media',
+            actividad: plan.actividades || '',
+            responsable: plan.responsable || 'N.A.',
+            status_ot: old?.status_ot || (fecha === todayStr ? 'Pendiente' : 'Pendiente'),
+            ot_numero: old?.ot_numero || '',
+            fecha_ejecucion: old?.fecha_ejecucion || '',
+            tipo_mantto: 'Preventivo',
+            personal_mantenimiento: old?.personal_mantenimiento || '',
+            materiales: old?.materiales || '',
+            personal_detalle: old?.personal_detalle || [],
+            materiales_detalle: old?.materiales_detalle || [],
+            registro_ot: old?.registro_ot || null,
+            cierre_ot: old?.cierre_ot || null,
+            orden: idx + 1,
+          };
+        });
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(a.fecha_ejecutar) - new Date(b.fecha_ejecutar))
+      .map((row, idx) => ({ ...row, orden: idx + 1 }));
+
+    const dueIds = new Set(dueUntilToday.map((item) => item.id));
     const carryOver = activeExisting.filter((item) => !dueIds.has(item.id));
-    const mergedAlerts = [...carryOver, ...dueToday];
+    const mergedAlerts = [...carryOver, ...dueUntilToday];
 
     setAlerts(mergedAlerts);
   }, []);
