@@ -490,7 +490,8 @@ export default function PmpGestionOt() {
     const todayStr = today.toISOString().split('T')[0];
 
     const existing = readJson(OT_ALERTS_KEY, []);
-    const mapExisting = new Map(existing.map((a) => [a.id, a]));
+    const activeExisting = existing.filter((a) => a.status_ot !== 'Cerrada');
+    const mapExisting = new Map(activeExisting.map((a) => [a.id, a]));
 
     const dueToday = plans
       .filter((plan) => getMarkedDays(plan, year, month).has(day))
@@ -521,7 +522,11 @@ export default function PmpGestionOt() {
         };
       });
 
-    setAlerts(dueToday);
+    const dueIds = new Set(dueToday.map((item) => item.id));
+    const carryOver = activeExisting.filter((item) => !dueIds.has(item.id));
+    const mergedAlerts = [...carryOver, ...dueToday];
+
+    setAlerts(mergedAlerts);
   }, []);
 
   useEffect(() => {
