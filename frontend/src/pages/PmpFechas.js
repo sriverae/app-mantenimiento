@@ -19,6 +19,16 @@ const EMPTY_FORM = {
 const PLAN_STORAGE_KEY = 'pmp_fechas_plans_v1';
 const EQUIPOS_STORAGE_KEY = 'pmp_equipos_items_v1';
 const PACKAGES_STORAGE_KEY = 'pmp_paquetes_mantenimiento_v1';
+const PACKAGES_FALLBACK = [
+  {
+    id: 1,
+    codigo: 'PK-001',
+    vc: 'V.C - DÍA',
+    nombre: 'SECADO_ELEVADOR',
+    tiempo_min: 60,
+    actividades: ['Inspección visual general', 'Limpieza de componentes', 'Verificación de ajuste de pernos'],
+  },
+];
 
 function getStoredPlans() {
   try {
@@ -45,11 +55,11 @@ function getStoredEquipos() {
 function getStoredPackages() {
   try {
     const raw = localStorage.getItem(PACKAGES_STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) return PACKAGES_FALLBACK;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : PACKAGES_FALLBACK;
   } catch {
-    return [];
+    return PACKAGES_FALLBACK;
   }
 }
 
@@ -111,7 +121,7 @@ export default function PmpFechas() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
-  const [equipos] = useState(() => getStoredEquipos());
+  const [equipos, setEquipos] = useState(() => getStoredEquipos());
   const [packages, setPackages] = useState(() => getStoredPackages());
   const [packageFilterText, setPackageFilterText] = useState('');
   const [manualActivityInput, setManualActivityInput] = useState('');
@@ -126,6 +136,15 @@ export default function PmpFechas() {
   useEffect(() => {
     localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(plans));
   }, [plans]);
+
+  useEffect(() => {
+    if (!showModal) return;
+    const latestPackages = getStoredPackages();
+    setPackages(latestPackages);
+    if (form.paquete_id && !latestPackages.some((item) => String(item.id) === String(form.paquete_id))) {
+      setForm((prev) => ({ ...prev, paquete_id: '' }));
+    }
+  }, [showModal, form.paquete_id]);
 
   const selectedPlan = useMemo(
     () => plans.find((p) => p.id === selectedId) || null,
@@ -151,6 +170,7 @@ export default function PmpFechas() {
     setEquipmentCodeFilter('');
     setEquipmentTextFilter('');
     setSelectedEquipmentIds([]);
+    setEquipos(getStoredEquipos());
     setPackages(getStoredPackages());
     setPackageFilterText('');
     setManualActivityInput('');
@@ -162,7 +182,9 @@ export default function PmpFechas() {
     if (!selectedPlan) return;
     setEditingId(selectedPlan.id);
     setForm({ ...selectedPlan });
-    const matchEquipo = equipos.find((eq) => eq.codigo === selectedPlan.codigo);
+    const freshEquipos = getStoredEquipos();
+    setEquipos(freshEquipos);
+    const matchEquipo = freshEquipos.find((eq) => eq.codigo === selectedPlan.codigo);
     setSelectedEquipmentIds(matchEquipo ? [String(matchEquipo.id)] : []);
     setEquipmentAreaFilter('');
     setEquipmentCodeFilter('');
@@ -392,10 +414,15 @@ export default function PmpFechas() {
                 <p style={{ color: '#6b7280', fontSize: '.8rem', marginTop: '.35rem' }}>
                   Selección múltiple habilitada: puedes crear el mismo plan para varios equipos en una sola operación.
                 </p>
+                {filteredEquipos.length === 0 && (
+                  <p style={{ color: '#b45309', fontSize: '.8rem', marginTop: '.2rem' }}>
+                    No hay equipos disponibles con los filtros actuales. Verifica Control de Equipos o limpia los filtros.
+                  </p>
+                )}
               </div>
               <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
                 <label className="form-label">Paquete de mantenimiento (opcional)</label>
-                <div style={{ display: 'grid', gridTemplateColumns: '2fr auto auto', gap: '.55rem', marginBottom: '.55rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.55rem', marginBottom: '.55rem' }}>
                   <input
                     className="form-input"
                     placeholder="Filtrar paquete por nombre o código..."
@@ -403,9 +430,6 @@ export default function PmpFechas() {
                     onChange={(e) => setPackageFilterText(e.target.value)}
                   />
                   <button type="button" className="btn btn-secondary" onClick={() => setPackages(getStoredPackages())}>Recargar paquetes</button>
-                  <button type="button" className="btn btn-secondary" onClick={() => { window.location.href = '/pmp/paquetes'; }}>
-                    Paquetes de mantenimiento
-                  </button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.55rem' }}>
                   <select
