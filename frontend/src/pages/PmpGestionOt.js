@@ -55,7 +55,7 @@ const getDueDatesUntilToday = (plan, today, lookbackDays = 120) => {
 
 const buildOtNumber = () => `OT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
 
-function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, onClose, onSave }) {
+function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, maxHorasSugeridas, onClose, onSave }) {
   const [rows, setRows] = useState(() => {
     const mapActual = new Map((tiempoPersonalActual || []).map((item) => [item.id, item.horas]));
     return (personalDetalle || []).map((item) => ({
@@ -74,6 +74,11 @@ function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, onClose, o
 
   const submit = () => {
     const payload = rows.map((item) => ({ ...item, horas: Number(item.horas) || 0 }));
+    const excedido = payload.find((item) => item.horas > maxHorasSugeridas);
+    if (excedido) {
+      window.alert(`El técnico ${excedido.nombre} excede el máximo sugerido (${maxHorasSugeridas.toFixed(2)} Hh).`);
+      return;
+    }
     onSave({
       tiempoPersonal: payload,
       totalHoras: Number(payload.reduce((sum, item) => sum + item.horas, 0).toFixed(2)),
@@ -107,6 +112,7 @@ function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, onClose, o
                         type="number"
                         min="0"
                         step="0.25"
+                        max={maxHorasSugeridas}
                         className="form-input"
                         value={row.horas}
                         onChange={(e) => updateHoras(row.id, e.target.value)}
@@ -126,6 +132,9 @@ function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, onClose, o
           </div>
           <div style={{ marginTop: '.8rem', fontWeight: 600, color: '#1f2937' }}>
             Tiempo efectivo - personal (Hh): {Number(totalHoras).toFixed(2)}
+          </div>
+          <div style={{ marginTop: '.35rem', fontSize: '.9rem', color: '#6b7280' }}>
+            Sugerencia: máximo por técnico = {Number(maxHorasSugeridas || 0).toFixed(2)} Hh (según hora inicio/fin).
           </div>
         </div>
         <div style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
@@ -161,8 +170,20 @@ function ModalCerrarOT({ alert, onClose, onSubmit }) {
 
   const personalDetalle = alert.personal_detalle || [];
   const materialesDetalle = alert.materiales_detalle || [];
+  const maxHorasSugeridas = useMemo(() => {
+    if (!form.fecha_inicio || !form.fecha_fin || !form.hora_inicio || !form.hora_fin) return 0;
+    const inicio = new Date(`${form.fecha_inicio}T${form.hora_inicio}:00`);
+    const fin = new Date(`${form.fecha_fin}T${form.hora_fin}:00`);
+    if (Number.isNaN(inicio.getTime()) || Number.isNaN(fin.getTime())) return 0;
+    const diff = (fin.getTime() - inicio.getTime()) / (1000 * 60 * 60);
+    return diff > 0 ? Number(diff.toFixed(2)) : 0;
+  }, [form.fecha_inicio, form.fecha_fin, form.hora_inicio, form.hora_fin]);
 
   const submit = () => {
+    if (maxHorasSugeridas <= 0) {
+      window.alert('La fecha/hora fin debe ser mayor a la fecha/hora inicio para poder cerrar la OT.');
+      return;
+    }
     if (!form.tiempo_efectivo_hh || Number(form.tiempo_efectivo_hh) <= 0) {
       window.alert('Debes registrar el tiempo efectivo para cerrar la OT.');
       return;
@@ -229,6 +250,7 @@ function ModalCerrarOT({ alert, onClose, onSubmit }) {
                   <input className="form-input" value={form.tiempo_efectivo_hh} readOnly />
                   <button type="button" className="btn btn-secondary" onClick={() => setShowTiempoModal(true)}>Tiempo efectivo</button>
                 </div>
+                <small style={{ color: '#6b7280' }}>Máximo sugerido por técnico: {maxHorasSugeridas.toFixed(2)} Hh.</small>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Estado del equipo</label>
@@ -267,6 +289,7 @@ function ModalCerrarOT({ alert, onClose, onSubmit }) {
         <ModalTiempoEfectivo
           personalDetalle={personalDetalle}
           tiempoPersonalActual={form.tiempo_personal}
+          maxHorasSugeridas={maxHorasSugeridas}
           onClose={() => setShowTiempoModal(false)}
           onSave={({ tiempoPersonal, totalHoras }) => {
             setForm((prev) => ({
