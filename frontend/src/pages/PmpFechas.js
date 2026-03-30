@@ -13,10 +13,12 @@ const EMPTY_FORM = {
   responsable: '',
   fecha_inicio: new Date().toISOString().split('T')[0],
   actividades: '',
+  paquete_id: '',
 };
 
 const PLAN_STORAGE_KEY = 'pmp_fechas_plans_v1';
 const EQUIPOS_STORAGE_KEY = 'pmp_equipos_items_v1';
+const PACKAGES_STORAGE_KEY = 'pmp_paquetes_mantenimiento_v1';
 
 function getStoredPlans() {
   try {
@@ -32,6 +34,17 @@ function getStoredPlans() {
 function getStoredEquipos() {
   try {
     const raw = localStorage.getItem(EQUIPOS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function getStoredPackages() {
+  try {
+    const raw = localStorage.getItem(PACKAGES_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -99,6 +112,7 @@ export default function PmpFechas() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [equipos] = useState(() => getStoredEquipos());
+  const [packages] = useState(() => getStoredPackages());
   const [equipmentAreaFilter, setEquipmentAreaFilter] = useState('');
   const [equipmentCodeFilter, setEquipmentCodeFilter] = useState('');
   const [equipmentTextFilter, setEquipmentTextFilter] = useState('');
@@ -180,6 +194,20 @@ export default function PmpFechas() {
       setSelectedId(nextId);
     }
     setShowModal(false);
+  };
+
+  const onChangePackage = (packageId) => {
+    if (!packageId) {
+      setForm((prev) => ({ ...prev, paquete_id: '' }));
+      return;
+    }
+    const selectedPackage = packages.find((item) => String(item.id) === String(packageId));
+    if (!selectedPackage) return;
+    setForm((prev) => ({
+      ...prev,
+      paquete_id: String(selectedPackage.id),
+      actividades: (selectedPackage.actividades || []).join('\n'),
+    }));
   };
 
   return (
@@ -330,6 +358,34 @@ export default function PmpFechas() {
                 </select>
                 <p style={{ color: '#6b7280', fontSize: '.8rem', marginTop: '.35rem' }}>
                   Selección múltiple habilitada: puedes crear el mismo plan para varios equipos en una sola operación.
+                </p>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                <label className="form-label">Paquete de mantenimiento (opcional)</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.55rem' }}>
+                  <select
+                    className="form-select"
+                    value={form.paquete_id || ''}
+                    onChange={(e) => onChangePackage(e.target.value)}
+                  >
+                    <option value="">-- Seleccionar paquete --</option>
+                    {packages.map((item) => (
+                      <option key={item.id} value={String(item.id)}>
+                        {item.codigo} | {item.nombre} ({item.vc})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => onChangePackage(form.paquete_id)}
+                    disabled={!form.paquete_id}
+                  >
+                    Aplicar paquete
+                  </button>
+                </div>
+                <p style={{ color: '#6b7280', fontSize: '.8rem', marginTop: '.35rem' }}>
+                  Puedes escribir actividades manualmente o seleccionar un paquete y aplicarlo.
                 </p>
               </div>
               <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>

@@ -17,6 +17,7 @@ import PmpBajas from './pages/PmpBajas';
 import PmpBajasHistorial from './pages/PmpBajasHistorial';
 import PmpGestionOt from './pages/PmpGestionOt';
 import PmpHistorialOt from './pages/PmpHistorialOt';
+import PmpPaquetesMantenimiento from './pages/PmpPaquetesMantenimiento';
 import RrhhManagement from './pages/RrhhManagement';
 import MaterialsManagement from './pages/MaterialsManagement';
 
@@ -52,7 +53,7 @@ function AppLayout() {
     { label: 'Gestión de OT', path: '/pmp/gestion-ot' },
     { label: 'Historial de OTs', path: '/pmp/historial-ot' },
     { label: 'Plan de mantenimiento - Km', path: null },
-    { label: 'Paquetes de mantenimiento', path: null },
+    { label: 'Paquetes de mantenimiento', path: '/pmp/paquetes' },
     { label: 'Calendario', path: null },
     { label: 'AMEF', path: null },
   ];
@@ -141,6 +142,7 @@ function AppLayout() {
           <Route path="/pmp/bajas/historial" element={<PrivateRoute minRole="ENCARGADO"><PmpBajasHistorial /></PrivateRoute>} />
           <Route path="/pmp/gestion-ot" element={<PrivateRoute minRole="ENCARGADO"><PmpGestionOt /></PrivateRoute>} />
           <Route path="/pmp/historial-ot" element={<PrivateRoute minRole="ENCARGADO"><PmpHistorialOt /></PrivateRoute>} />
+          <Route path="/pmp/paquetes" element={<PrivateRoute minRole="ENCARGADO"><PmpPaquetesMantenimiento /></PrivateRoute>} />
           <Route path="/users" element={<PrivateRoute minRole="ENCARGADO"><UserManagement /></PrivateRoute>} />
           <Route path="/change-password" element={<PrivateRoute><ChangePassword /></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/" />} />

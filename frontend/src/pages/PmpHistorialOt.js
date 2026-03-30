@@ -44,7 +44,7 @@ export default function PmpHistorialOt() {
           <thead>
             <tr style={{ background: '#0b5c8c', color: '#fff' }}>
               {[
-                'Fecha cierre', 'Fecha inicio', 'Fecha fin', 'Código', 'Descripción', 'Área', '# OT', 'Var. Ctrl', 'Tipo mantto',
+                'Fecha cierre', 'Fecha inicio', 'Hora inicio', 'Fecha fin', 'Hora fin', 'Código', 'Descripción', 'Área', '# OT', 'Var. Ctrl', 'Tipo mantto',
                 'Puesto trabajo resp.', 'Personal de trabajo', 'Materiales', 'Tiempo efectivo (Hh)', 'Estado equipo', 'Satisfacción', 'Observaciones',
               ].map((h) => (
                 <th key={h} style={{ border: '1px solid #2f6fb2', padding: '.55rem .5rem', fontSize: '.8rem', textAlign: 'left' }}>{h}</th>
@@ -56,7 +56,9 @@ export default function PmpHistorialOt() {
               <tr key={it.id}>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.fecha_cierre || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.registro_ot?.fecha_inicio || 'N.A.'}</td>
+                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.hora_inicio || it.registro_ot?.hora_inicio || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.registro_ot?.fecha_fin || it.fecha_ejecucion || 'N.A.'}</td>
+                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.hora_fin || it.registro_ot?.hora_fin || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.codigo || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.descripcion || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.area_trabajo || 'N.A.'}</td>
@@ -74,7 +76,7 @@ export default function PmpHistorialOt() {
             ))}
             {!filtered.length && (
               <tr>
-                <td colSpan={16} style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', border: '1px solid #d1d5db' }}>
+                <td colSpan={18} style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', border: '1px solid #d1d5db' }}>
                   No hay OTs cerradas en el historial.
                 </td>
               </tr>
