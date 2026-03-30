@@ -112,7 +112,10 @@ export default function PmpFechas() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [equipos] = useState(() => getStoredEquipos());
-  const [packages] = useState(() => getStoredPackages());
+  const [packages, setPackages] = useState(() => getStoredPackages());
+  const [packageFilterText, setPackageFilterText] = useState('');
+  const [manualActivityInput, setManualActivityInput] = useState('');
+  const [manualActivities, setManualActivities] = useState([]);
   const [equipmentAreaFilter, setEquipmentAreaFilter] = useState('');
   const [equipmentCodeFilter, setEquipmentCodeFilter] = useState('');
   const [equipmentTextFilter, setEquipmentTextFilter] = useState('');
@@ -148,6 +151,10 @@ export default function PmpFechas() {
     setEquipmentCodeFilter('');
     setEquipmentTextFilter('');
     setSelectedEquipmentIds([]);
+    setPackages(getStoredPackages());
+    setPackageFilterText('');
+    setManualActivityInput('');
+    setManualActivities([]);
     setShowModal(true);
   };
 
@@ -160,6 +167,10 @@ export default function PmpFechas() {
     setEquipmentAreaFilter('');
     setEquipmentCodeFilter('');
     setEquipmentTextFilter('');
+    setPackages(getStoredPackages());
+    setPackageFilterText('');
+    setManualActivityInput('');
+    setManualActivities((selectedPlan.actividades || '').split('\n').map((i) => i.trim()).filter(Boolean));
     setShowModal(true);
   };
 
@@ -173,11 +184,16 @@ export default function PmpFechas() {
 
   const onSave = (e) => {
     e.preventDefault();
+    if (manualActivities.length === 0) {
+      window.alert('Agrega al menos una actividad.');
+      return;
+    }
+    const actividadesTexto = manualActivities.join('\n');
     if (editingId) {
       const selectedEq = equipos.find((eq) => String(eq.id) === selectedEquipmentIds[0]);
       const payload = selectedEq
-        ? { ...form, codigo: selectedEq.codigo || '', equipo: selectedEq.descripcion || '', id: editingId }
-        : { ...form, id: editingId };
+        ? { ...form, actividades: actividadesTexto, codigo: selectedEq.codigo || '', equipo: selectedEq.descripcion || '', id: editingId }
+        : { ...form, actividades: actividadesTexto, id: editingId };
       setPlans((prev) => prev.map((p) => (p.id === editingId ? payload : p)));
       setSelectedId(editingId);
     } else {
@@ -186,6 +202,7 @@ export default function PmpFechas() {
       const nextId = plans.length ? Math.max(...plans.map((p) => p.id)) + 1 : 1;
       const newPlans = selectedEquipos.map((eq, index) => ({
         ...form,
+        actividades: actividadesTexto,
         id: nextId + index,
         codigo: eq.codigo || '',
         equipo: eq.descripcion || '',
@@ -208,6 +225,22 @@ export default function PmpFechas() {
       paquete_id: String(selectedPackage.id),
       actividades: (selectedPackage.actividades || []).join('\n'),
     }));
+    setManualActivities(selectedPackage.actividades || []);
+  };
+
+  const filteredPackages = useMemo(() => packages.filter((item) => (
+    `${item.codigo} ${item.nombre}`.toLowerCase().includes(packageFilterText.toLowerCase())
+  )), [packages, packageFilterText]);
+
+  const addManualActivity = () => {
+    const text = manualActivityInput.trim();
+    if (!text) return;
+    setManualActivities((prev) => [...prev, text]);
+    setManualActivityInput('');
+  };
+
+  const removeManualActivity = (index) => {
+    setManualActivities((prev) => prev.filter((_, idx) => idx !== index));
   };
 
   return (
@@ -362,6 +395,18 @@ export default function PmpFechas() {
               </div>
               <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
                 <label className="form-label">Paquete de mantenimiento (opcional)</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr auto auto', gap: '.55rem', marginBottom: '.55rem' }}>
+                  <input
+                    className="form-input"
+                    placeholder="Filtrar paquete por nombre o código..."
+                    value={packageFilterText}
+                    onChange={(e) => setPackageFilterText(e.target.value)}
+                  />
+                  <button type="button" className="btn btn-secondary" onClick={() => setPackages(getStoredPackages())}>Recargar paquetes</button>
+                  <button type="button" className="btn btn-secondary" onClick={() => { window.location.href = '/pmp/paquetes'; }}>
+                    Paquetes de mantenimiento
+                  </button>
+                </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.55rem' }}>
                   <select
                     className="form-select"
@@ -369,7 +414,7 @@ export default function PmpFechas() {
                     onChange={(e) => onChangePackage(e.target.value)}
                   >
                     <option value="">-- Seleccionar paquete --</option>
-                    {packages.map((item) => (
+                    {filteredPackages.map((item) => (
                       <option key={item.id} value={String(item.id)}>
                         {item.codigo} | {item.nombre} ({item.vc})
                       </option>
@@ -390,11 +435,49 @@ export default function PmpFechas() {
               </div>
               <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
                 <label className="form-label">Actividades a realizar *</label>
-                <textarea className="form-textarea" value={form.actividades} onChange={(e) => setForm({ ...form, actividades: e.target.value })} required />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.55rem' }}>
+                  <input
+                    className="form-input"
+                    placeholder="Escribe una actividad y agrégala"
+                    value={manualActivityInput}
+                    onChange={(e) => setManualActivityInput(e.target.value)}
+                  />
+                  <button type="button" className="btn btn-primary" onClick={addManualActivity}>Agregar actividad</button>
+                </div>
+                <div className="card" style={{ marginTop: '.6rem', marginBottom: 0, padding: '.6rem' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: '#f3f4f6' }}>
+                        <th style={{ border: '1px solid #e5e7eb', padding: '.4rem', width: '80px' }}>Ítem</th>
+                        <th style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'left' }}>Actividad</th>
+                        <th style={{ border: '1px solid #e5e7eb', padding: '.4rem', width: '100px' }}>Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {manualActivities.map((activity, idx) => (
+                        <tr key={`${activity}-${idx}`}>
+                          <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>{idx + 1}</td>
+                          <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{activity}</td>
+                          <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>
+                            <button type="button" className="btn btn-danger btn-sm" onClick={() => removeManualActivity(idx)}>Quitar</button>
+                          </td>
+                        </tr>
+                      ))}
+                      {!manualActivities.length && (
+                        <tr>
+                          <td colSpan={3} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'center', color: '#6b7280' }}>
+                            Sin actividades agregadas.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.7rem', marginTop: '1.2rem' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cerrar</button>
               <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancelar</button>
               <button type="submit" className="btn btn-primary">{editingId ? 'Guardar cambios' : 'Guardar plan'}</button>
             </div>
