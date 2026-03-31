@@ -324,7 +324,6 @@ export default function WorkNotifications() {
           onSave={saveWorkReport}
         />
       )}
-       main
     </div>
   );
 }
