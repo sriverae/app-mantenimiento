@@ -3,6 +3,8 @@ import React, { useMemo, useState } from 'react';
 // Nota: este archivo debe permanecer sin marcadores de conflicto de merge.
 const OT_ALERTS_KEY = 'pmp_ot_alertas_v1';
 const OT_WORK_REPORTS_KEY = 'pmp_ot_work_reports_v1';
+const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
+const MATERIALES_KEY = 'pmp_materiales_v1';
 
 const readJson = (key, fallback = []) => {
   try {
@@ -18,20 +20,21 @@ const writeJson = (key, value) => {
   localStorage.setItem(key, JSON.stringify(value));
 };
 
-const createEmptyTechRow = () => ({ id: `tech_${Date.now()}_${Math.random()}`, tecnico: '', horas: '', actividades: '' });
-const createExtraMaterialRow = () => ({ id: `extra_${Date.now()}_${Math.random()}`, codigo: '', descripcion: '', cantidad: '' });
+const createEmptyTechRow = () => ({ id: `tech_${Date.now()}_${Math.random()}`, tecnicoId: null, tecnico: '', horas: '', actividades: '' });
+const createExtraMaterialRow = () => ({ id: `extra_${Date.now()}_${Math.random()}`, materialId: null, codigo: '', descripcion: '', cantidad: '' });
 
-function RegisterWorkModal({ alert, onClose, onSave }) {
+function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave }) {
   const initialTechs = (alert.personal_mantenimiento || '')
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean)
-    .map((name, idx) => ({ id: `tech_${idx}_${name}`, tecnico: name, horas: '', actividades: '' }));
+    .map((name, idx) => ({ id: `tech_${idx}_${name}`, tecnicoId: null, tecnico: name, horas: '', actividades: '' }));
 
   const [techRows, setTechRows] = useState(initialTechs.length ? initialTechs : [createEmptyTechRow()]);
   const [materialsRows, setMaterialsRows] = useState(
     (alert.materiales_detalle || []).map((item, idx) => ({
       id: `mat_${idx}_${item.id || item.codigo || 'x'}`,
+      materialId: item.id || null,
       codigo: item.codigo || '',
       descripcion: item.descripcion || '',
       cantidadPlanificada: Number(item.cantidad) || 0,
@@ -41,6 +44,24 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
   );
   const [extraMaterials, setExtraMaterials] = useState([]);
   const [observaciones, setObservaciones] = useState('');
+  const [techSearch, setTechSearch] = useState('');
+  const [materialSearch, setMaterialSearch] = useState('');
+
+  const filteredTechs = useMemo(() => {
+    const q = techSearch.trim().toLowerCase();
+    if (!q) return rrhhItems.slice(0, 8);
+    return rrhhItems
+      .filter((it) => `${it.codigo} ${it.nombres_apellidos} ${it.especialidad}`.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [rrhhItems, techSearch]);
+
+  const filteredMaterials = useMemo(() => {
+    const q = materialSearch.trim().toLowerCase();
+    if (!q) return materialsCatalog.slice(0, 8);
+    return materialsCatalog
+      .filter((it) => `${it.codigo} ${it.descripcion} ${it.marca}`.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [materialsCatalog, materialSearch]);
 
   const updateTech = (id, field, value) => {
     setTechRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
@@ -54,9 +75,36 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
     setExtraMaterials((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
   };
 
+  const addTechFromRrhh = (item) => {
+    setTechRows((prev) => {
+      const exists = prev.some((row) => String(row.tecnicoId) === String(item.id));
+      if (exists) return prev;
+      return [...prev, {
+        id: `tech_rrhh_${item.id}_${Date.now()}`,
+        tecnicoId: item.id,
+        tecnico: `${item.codigo} - ${item.nombres_apellidos}`,
+        horas: '',
+        actividades: '',
+      }];
+    });
+    setTechSearch('');
+  };
+
+  const addMaterialFromCatalog = (item) => {
+    setExtraMaterials((prev) => [...prev, {
+      id: `extra_mat_${item.id}_${Date.now()}`,
+      materialId: item.id,
+      codigo: item.codigo,
+      descripcion: item.descripcion,
+      cantidad: '',
+    }]);
+    setMaterialSearch('');
+  };
+
   const handleSubmit = () => {
     const tecnicosValidos = techRows
       .map((row) => ({
+        tecnicoId: row.tecnicoId,
         tecnico: row.tecnico.trim(),
         horas: Number(row.horas) || 0,
         actividades: row.actividades.trim(),
@@ -69,6 +117,7 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
     }
 
     const materialesConfirmados = materialsRows.map((row) => ({
+      materialId: row.materialId,
       codigo: row.codigo,
       descripcion: row.descripcion,
       cantidadPlanificada: row.cantidadPlanificada,
@@ -78,6 +127,7 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
 
     const materialesExtra = extraMaterials
       .map((row) => ({
+        materialId: row.materialId,
         codigo: row.codigo.trim(),
         descripcion: row.descripcion.trim(),
         cantidad: Number(row.cantidad) || 0,
@@ -94,15 +144,34 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', display: 'grid', placeItems: 'center', zIndex: 1000 }}>
-      <div className="card" style={{ width: 'min(1120px, 96vw)', maxHeight: '92vh', overflow: 'auto', padding: '1rem' }}>
-        <h3 style={{ marginTop: 0 }}>Registrar Trabajo · OT #{alert.ot_numero || 'N.A.'}</h3>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem' }}>
+      <div className="card" style={{ width: 'min(1160px, 98vw)', maxHeight: '95vh', overflow: 'auto', padding: '1rem 1.1rem', marginBottom: 0 }}>
+        <h3 className="card-title" style={{ marginBottom: '.35rem' }}>Registrar Trabajo · OT #{alert.ot_numero || 'N.A.'}</h3>
+        <p style={{ color: '#6b7280', marginBottom: '.8rem' }}>Usa RRHH y Gestión de Materiales como catálogo para registrar la ejecución real.</p>
 
-        <section style={{ marginBottom: '1rem' }}>
+        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
           <h4 style={{ marginBottom: '.5rem' }}>Horas y actividades por técnico</h4>
+          <div style={{ display: 'grid', gap: '.45rem', marginBottom: '.6rem' }}>
+            <input
+              className="form-input"
+              placeholder="Buscar técnico (código, nombre, especialidad)"
+              value={techSearch}
+              onChange={(e) => setTechSearch(e.target.value)}
+            />
+            {!!filteredTechs.length && (
+              <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
+                {filteredTechs.map((it) => (
+                  <button key={it.id} type="button" className="btn btn-secondary btn-sm" onClick={() => addTechFromRrhh(it)}>
+                    + {it.codigo} · {it.nombres_apellidos}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ background: '#f3f4f6' }}>
+              <tr style={{ background: '#e5e7eb' }}>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Técnico</th>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Horas</th>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Actividades realizadas</th>
@@ -112,28 +181,29 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
               {techRows.map((row) => (
                 <tr key={row.id}>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} style={{ width: '100%' }} />
+                    <input className="form-input" value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} />
                   </td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input type="number" min="0" step="0.25" value={row.horas} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} style={{ width: '100%' }} />
+                    <input className="form-input" type="number" min="0" step="0.25" value={row.horas} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} />
                   </td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} style={{ width: '100%' }} placeholder="Ej: ajuste de motor, cambio de sello..." />
+                    <input className="form-input" value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} placeholder="Ej: ajuste de motor, cambio de sello..." />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <button type="button" className="btn btn-secondary" style={{ marginTop: '.5rem' }} onClick={() => setTechRows((prev) => [...prev, createEmptyTechRow()])}>
-            + Agregar técnico
-          </button>
-        </section>
 
-        <section style={{ marginBottom: '1rem' }}>
-          <h4 style={{ marginBottom: '.5rem' }}>Confirmar materiales asignados</h4>
+          <button type="button" className="btn btn-secondary" style={{ marginTop: '.6rem' }} onClick={() => setTechRows((prev) => [...prev, createEmptyTechRow()])}>
+            + Agregar técnico manual
+          </button>
+        </div>
+
+        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+          <h4 style={{ marginBottom: '.55rem' }}>Confirmar materiales asignados</h4>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ background: '#f3f4f6' }}>
+              <tr style={{ background: '#e5e7eb' }}>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Descripción</th>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Planificada</th>
@@ -147,8 +217,8 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.codigo || 'N.A.'}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.descripcion || 'N.A.'}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.cantidadPlanificada}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input type="number" min="0" value={row.cantidadConfirmada} onChange={(e) => updateMaterial(row.id, 'cantidadConfirmada', e.target.value)} style={{ width: '100%' }} />
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', maxWidth: '130px' }}>
+                    <input className="form-input" type="number" min="0" value={row.cantidadConfirmada} onChange={(e) => updateMaterial(row.id, 'cantidadConfirmada', e.target.value)} />
                   </td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>
                     <input type="checkbox" checked={row.confirmada} onChange={(e) => updateMaterial(row.id, 'confirmada', e.target.checked)} />
@@ -160,13 +230,31 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
               )}
             </tbody>
           </table>
-        </section>
+        </div>
 
-        <section style={{ marginBottom: '1rem' }}>
+        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
           <h4 style={{ marginBottom: '.5rem' }}>Agregar materiales adicionales</h4>
+          <div style={{ display: 'grid', gap: '.45rem', marginBottom: '.6rem' }}>
+            <input
+              className="form-input"
+              placeholder="Buscar material por código, descripción o marca"
+              value={materialSearch}
+              onChange={(e) => setMaterialSearch(e.target.value)}
+            />
+            {!!filteredMaterials.length && (
+              <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
+                {filteredMaterials.map((it) => (
+                  <button key={it.id} type="button" className="btn btn-secondary btn-sm" onClick={() => addMaterialFromCatalog(it)}>
+                    + {it.codigo} · {it.descripcion}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ background: '#f3f4f6' }}>
+              <tr style={{ background: '#e5e7eb' }}>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Descripción</th>
                 <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Cantidad</th>
@@ -175,9 +263,9 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
             <tbody>
               {extraMaterials.map((row) => (
                 <tr key={row.id}>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input value={row.codigo} onChange={(e) => updateExtraMaterial(row.id, 'codigo', e.target.value)} style={{ width: '100%' }} /></td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input value={row.descripcion} onChange={(e) => updateExtraMaterial(row.id, 'descripcion', e.target.value)} style={{ width: '100%' }} /></td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input type="number" min="0" value={row.cantidad} onChange={(e) => updateExtraMaterial(row.id, 'cantidad', e.target.value)} style={{ width: '100%' }} /></td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.codigo} onChange={(e) => updateExtraMaterial(row.id, 'codigo', e.target.value)} /></td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.descripcion} onChange={(e) => updateExtraMaterial(row.id, 'descripcion', e.target.value)} /></td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', maxWidth: '130px' }}><input className="form-input" type="number" min="0" value={row.cantidad} onChange={(e) => updateExtraMaterial(row.id, 'cantidad', e.target.value)} /></td>
                 </tr>
               ))}
               {!extraMaterials.length && (
@@ -185,15 +273,16 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
               )}
             </tbody>
           </table>
-          <button type="button" className="btn btn-secondary" style={{ marginTop: '.5rem' }} onClick={() => setExtraMaterials((prev) => [...prev, createExtraMaterialRow()])}>
-            + Agregar material
-          </button>
-        </section>
 
-        <section style={{ marginBottom: '1rem' }}>
+          <button type="button" className="btn btn-secondary" style={{ marginTop: '.6rem' }} onClick={() => setExtraMaterials((prev) => [...prev, createExtraMaterialRow()])}>
+            + Agregar material manual
+          </button>
+        </div>
+
+        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
           <h4 style={{ marginBottom: '.5rem' }}>Observaciones</h4>
-          <textarea rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} style={{ width: '100%' }} placeholder="Notas finales del trabajo ejecutado" />
-        </section>
+          <textarea className="form-textarea" rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Notas finales del trabajo ejecutado" />
+        </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem' }}>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
@@ -207,6 +296,8 @@ function RegisterWorkModal({ alert, onClose, onSave }) {
 export default function WorkNotifications() {
   const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
   const [workReports, setWorkReports] = useState(() => readJson(OT_WORK_REPORTS_KEY, []));
+  const [rrhhItems] = useState(() => readJson(RRHH_KEY, []));
+  const [materialsCatalog] = useState(() => readJson(MATERIALES_KEY, []));
   const [selectedAlertId, setSelectedAlertId] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
 
@@ -320,6 +411,8 @@ export default function WorkNotifications() {
       {showRegisterModal && selectedAlert && (
         <RegisterWorkModal
           alert={selectedAlert}
+          rrhhItems={rrhhItems}
+          materialsCatalog={materialsCatalog}
           onClose={() => setShowRegisterModal(false)}
           onSave={saveWorkReport}
         />
