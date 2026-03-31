@@ -20,8 +20,40 @@ const writeJson = (key, value) => {
   localStorage.setItem(key, JSON.stringify(value));
 };
 
-const createEmptyTechRow = () => ({ id: `tech_${Date.now()}_${Math.random()}`, tecnicoId: null, tecnico: '', horas: '', actividades: '' });
-const createExtraMaterialRow = () => ({ id: `extra_${Date.now()}_${Math.random()}`, materialId: null, codigo: '', descripcion: '', cantidad: '' });
+function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, onClose }) {
+  const [query, setQuery] = useState('');
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((item) => filterFn(item, q)).slice(0, 30);
+  }, [items, query, filterFn]);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1100, padding: '1rem' }}>
+      <div className="card" style={{ width: 'min(760px, 95vw)', maxHeight: '88vh', overflow: 'auto', marginBottom: 0 }}>
+        <h3 className="card-title" style={{ marginBottom: '.6rem' }}>{title}</h3>
+        <input className="form-input" placeholder={placeholder} value={query} onChange={(e) => setQuery(e.target.value)} style={{ marginBottom: '.6rem' }} />
+
+        <div style={{ maxHeight: '56vh', overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: '.5rem' }}>
+          {filtered.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onPick(item)}
+              style={{ width: '100%', textAlign: 'left', padding: '.65rem .75rem', border: 'none', borderBottom: '1px solid #f3f4f6', background: '#fff', cursor: 'pointer' }}
+            >
+              {itemLabel(item)}
+            </button>
+          ))}
+          {!filtered.length && <div style={{ padding: '.8rem', color: '#6b7280' }}>Sin resultados.</div>}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '.75rem' }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave }) {
   const initialTechs = (alert.personal_mantenimiento || '')
@@ -30,7 +62,7 @@ function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave
     .filter(Boolean)
     .map((name, idx) => ({ id: `tech_${idx}_${name}`, tecnicoId: null, tecnico: name, horas: '', actividades: '' }));
 
-  const [techRows, setTechRows] = useState(initialTechs.length ? initialTechs : [createEmptyTechRow()]);
+  const [techRows, setTechRows] = useState(initialTechs.length ? initialTechs : []);
   const [materialsRows, setMaterialsRows] = useState(
     (alert.materiales_detalle || []).map((item, idx) => ({
       id: `mat_${idx}_${item.id || item.codigo || 'x'}`,
@@ -44,36 +76,8 @@ function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave
   );
   const [extraMaterials, setExtraMaterials] = useState([]);
   const [observaciones, setObservaciones] = useState('');
-  const [techSearch, setTechSearch] = useState('');
-  const [materialSearch, setMaterialSearch] = useState('');
-
-  const filteredTechs = useMemo(() => {
-    const q = techSearch.trim().toLowerCase();
-    if (!q) return rrhhItems.slice(0, 8);
-    return rrhhItems
-      .filter((it) => `${it.codigo} ${it.nombres_apellidos} ${it.especialidad}`.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [rrhhItems, techSearch]);
-
-  const filteredMaterials = useMemo(() => {
-    const q = materialSearch.trim().toLowerCase();
-    if (!q) return materialsCatalog.slice(0, 8);
-    return materialsCatalog
-      .filter((it) => `${it.codigo} ${it.descripcion} ${it.marca}`.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [materialsCatalog, materialSearch]);
-
-  const updateTech = (id, field, value) => {
-    setTechRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
-  };
-
-  const updateMaterial = (id, field, value) => {
-    setMaterialsRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
-  };
-
-  const updateExtraMaterial = (id, field, value) => {
-    setExtraMaterials((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
-  };
+  const [showTechPicker, setShowTechPicker] = useState(false);
+  const [showMaterialPicker, setShowMaterialPicker] = useState(false);
 
   const addTechFromRrhh = (item) => {
     setTechRows((prev) => {
@@ -87,7 +91,7 @@ function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave
         actividades: '',
       }];
     });
-    setTechSearch('');
+    setShowTechPicker(false);
   };
 
   const addMaterialFromCatalog = (item) => {
@@ -98,7 +102,27 @@ function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave
       descripcion: item.descripcion,
       cantidad: '',
     }]);
-    setMaterialSearch('');
+    setShowMaterialPicker(false);
+  };
+
+  const updateTech = (id, field, value) => {
+    setTechRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+  };
+
+  const removeTech = (id) => {
+    setTechRows((prev) => prev.filter((row) => row.id !== id));
+  };
+
+  const updateMaterial = (id, field, value) => {
+    setMaterialsRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+  };
+
+  const updateExtraMaterial = (id, field, value) => {
+    setExtraMaterials((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+  };
+
+  const removeExtraMaterial = (id) => {
+    setExtraMaterials((prev) => prev.filter((row) => row.id !== id));
   };
 
   const handleSubmit = () => {
@@ -144,152 +168,131 @@ function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem' }}>
-      <div className="card" style={{ width: 'min(1160px, 98vw)', maxHeight: '95vh', overflow: 'auto', padding: '1rem 1.1rem', marginBottom: 0 }}>
-        <h3 className="card-title" style={{ marginBottom: '.35rem' }}>Registrar Trabajo · OT #{alert.ot_numero || 'N.A.'}</h3>
-        <p style={{ color: '#6b7280', marginBottom: '.8rem' }}>Usa RRHH y Gestión de Materiales como catálogo para registrar la ejecución real.</p>
+    <>
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem' }}>
+        <div className="card" style={{ width: 'min(1160px, 98vw)', maxHeight: '95vh', overflow: 'auto', padding: '1rem 1.1rem', marginBottom: 0 }}>
+          <h3 className="card-title" style={{ marginBottom: '.35rem' }}>Registrar Trabajo · OT #{alert.ot_numero || 'N.A.'}</h3>
+          <p style={{ color: '#6b7280', marginBottom: '.8rem' }}>Selecciona técnicos y materiales desde sus catálogos para mantener consistencia.</p>
 
-        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-          <h4 style={{ marginBottom: '.5rem' }}>Horas y actividades por técnico</h4>
-          <div style={{ display: 'grid', gap: '.45rem', marginBottom: '.6rem' }}>
-            <input
-              className="form-input"
-              placeholder="Buscar técnico (código, nombre, especialidad)"
-              value={techSearch}
-              onChange={(e) => setTechSearch(e.target.value)}
-            />
-            {!!filteredTechs.length && (
-              <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
-                {filteredTechs.map((it) => (
-                  <button key={it.id} type="button" className="btn btn-secondary btn-sm" onClick={() => addTechFromRrhh(it)}>
-                    + {it.codigo} · {it.nombres_apellidos}
-                  </button>
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '.6rem' }}>
+              <h4>Horas y actividades por técnico</h4>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowTechPicker(true)}>+ Agregar técnico</button>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#e5e7eb' }}>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Técnico</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Horas</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Actividades realizadas</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Acción</th>
+                </tr>
+              </thead>
+              <tbody>
+                {techRows.map((row) => (
+                  <tr key={row.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" type="number" min="0" step="0.25" value={row.horas} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeTech(row.id)}>Quitar</button></td>
+                  </tr>
                 ))}
-              </div>
-            )}
+                {!techRows.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>No hay técnicos agregados.</td></tr>}
+              </tbody>
+            </table>
           </div>
 
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#e5e7eb' }}>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Técnico</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Horas</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Actividades realizadas</th>
-              </tr>
-            </thead>
-            <tbody>
-              {techRows.map((row) => (
-                <tr key={row.id}>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input className="form-input" value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} />
-                  </td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input className="form-input" type="number" min="0" step="0.25" value={row.horas} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} />
-                  </td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>
-                    <input className="form-input" value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} placeholder="Ej: ajuste de motor, cambio de sello..." />
-                  </td>
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <h4 style={{ marginBottom: '.55rem' }}>Confirmar materiales asignados</h4>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#e5e7eb' }}>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Descripción</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Planificada</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Confirmada</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>¿Correcta?</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <button type="button" className="btn btn-secondary" style={{ marginTop: '.6rem' }} onClick={() => setTechRows((prev) => [...prev, createEmptyTechRow()])}>
-            + Agregar técnico manual
-          </button>
-        </div>
-
-        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-          <h4 style={{ marginBottom: '.55rem' }}>Confirmar materiales asignados</h4>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#e5e7eb' }}>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Descripción</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Planificada</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Confirmada</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>¿Correcta?</th>
-              </tr>
-            </thead>
-            <tbody>
-              {materialsRows.map((row) => (
-                <tr key={row.id}>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.codigo || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.descripcion || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.cantidadPlanificada}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', maxWidth: '130px' }}>
-                    <input className="form-input" type="number" min="0" value={row.cantidadConfirmada} onChange={(e) => updateMaterial(row.id, 'cantidadConfirmada', e.target.value)} />
-                  </td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>
-                    <input type="checkbox" checked={row.confirmada} onChange={(e) => updateMaterial(row.id, 'confirmada', e.target.checked)} />
-                  </td>
-                </tr>
-              ))}
-              {!materialsRows.length && (
-                <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>No hay materiales asignados en la OT.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-          <h4 style={{ marginBottom: '.5rem' }}>Agregar materiales adicionales</h4>
-          <div style={{ display: 'grid', gap: '.45rem', marginBottom: '.6rem' }}>
-            <input
-              className="form-input"
-              placeholder="Buscar material por código, descripción o marca"
-              value={materialSearch}
-              onChange={(e) => setMaterialSearch(e.target.value)}
-            />
-            {!!filteredMaterials.length && (
-              <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
-                {filteredMaterials.map((it) => (
-                  <button key={it.id} type="button" className="btn btn-secondary btn-sm" onClick={() => addMaterialFromCatalog(it)}>
-                    + {it.codigo} · {it.descripcion}
-                  </button>
+              </thead>
+              <tbody>
+                {materialsRows.map((row) => (
+                  <tr key={row.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.codigo || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.descripcion || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.cantidadPlanificada}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', maxWidth: '130px' }}><input className="form-input" type="number" min="0" value={row.cantidadConfirmada} onChange={(e) => updateMaterial(row.id, 'cantidadConfirmada', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><input type="checkbox" checked={row.confirmada} onChange={(e) => updateMaterial(row.id, 'confirmada', e.target.checked)} /></td>
+                  </tr>
                 ))}
-              </div>
-            )}
+                {!materialsRows.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>No hay materiales asignados en la OT.</td></tr>}
+              </tbody>
+            </table>
           </div>
 
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#e5e7eb' }}>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Descripción</th>
-                <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Cantidad</th>
-              </tr>
-            </thead>
-            <tbody>
-              {extraMaterials.map((row) => (
-                <tr key={row.id}>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.codigo} onChange={(e) => updateExtraMaterial(row.id, 'codigo', e.target.value)} /></td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.descripcion} onChange={(e) => updateExtraMaterial(row.id, 'descripcion', e.target.value)} /></td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', maxWidth: '130px' }}><input className="form-input" type="number" min="0" value={row.cantidad} onChange={(e) => updateExtraMaterial(row.id, 'cantidad', e.target.value)} /></td>
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '.6rem' }}>
+              <h4>Agregar materiales adicionales</h4>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowMaterialPicker(true)}>+ Agregar material</button>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#e5e7eb' }}>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Descripción</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Cantidad</th>
+                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Acción</th>
                 </tr>
-              ))}
-              {!extraMaterials.length && (
-                <tr><td colSpan={3} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales adicionales.</td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {extraMaterials.map((row) => (
+                  <tr key={row.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.codigo} onChange={(e) => updateExtraMaterial(row.id, 'codigo', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.descripcion} onChange={(e) => updateExtraMaterial(row.id, 'descripcion', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', maxWidth: '130px' }}><input className="form-input" type="number" min="0" value={row.cantidad} onChange={(e) => updateExtraMaterial(row.id, 'cantidad', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeExtraMaterial(row.id)}>Quitar</button></td>
+                  </tr>
+                ))}
+                {!extraMaterials.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales adicionales.</td></tr>}
+              </tbody>
+            </table>
+          </div>
 
-          <button type="button" className="btn btn-secondary" style={{ marginTop: '.6rem' }} onClick={() => setExtraMaterials((prev) => [...prev, createExtraMaterialRow()])}>
-            + Agregar material manual
-          </button>
-        </div>
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <h4 style={{ marginBottom: '.5rem' }}>Observaciones</h4>
+            <textarea className="form-textarea" rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Notas finales del trabajo ejecutado" />
+          </div>
 
-        <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-          <h4 style={{ marginBottom: '.5rem' }}>Observaciones</h4>
-          <textarea className="form-textarea" rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Notas finales del trabajo ejecutado" />
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem' }}>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-          <button type="button" className="btn btn-primary" onClick={handleSubmit}>Guardar registro</button>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem' }}>
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+            <button type="button" className="btn btn-primary" onClick={handleSubmit}>Guardar registro</button>
+          </div>
         </div>
       </div>
-    </div>
+
+      {showTechPicker && (
+        <PickerModal
+          title="Seleccionar técnico (RRHH)"
+          placeholder="Buscar por código, nombre o especialidad"
+          items={rrhhItems}
+          filterFn={(item, q) => !q || `${item.codigo} ${item.nombres_apellidos} ${item.especialidad}`.toLowerCase().includes(q)}
+          itemLabel={(item) => `${item.codigo} · ${item.nombres_apellidos} · ${item.especialidad || 'N.A.'}`}
+          onPick={addTechFromRrhh}
+          onClose={() => setShowTechPicker(false)}
+        />
+      )}
+
+      {showMaterialPicker && (
+        <PickerModal
+          title="Seleccionar material (Gestión de Materiales)"
+          placeholder="Buscar por código, descripción, marca o proveedor"
+          items={materialsCatalog}
+          filterFn={(item, q) => !q || `${item.codigo} ${item.descripcion} ${item.marca} ${item.proveedor}`.toLowerCase().includes(q)}
+          itemLabel={(item) => `${item.codigo} · ${item.descripcion}`}
+          onPick={addMaterialFromCatalog}
+          onClose={() => setShowMaterialPicker(false)}
+        />
+      )}
+    </>
   );
 }
 
