@@ -66,6 +66,50 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
   );
 }
 
+function EditLiberatedOtModal({ alert, onClose, onSave }) {
+  const [form, setForm] = useState({
+    prioridad: alert.prioridad || '',
+    actividad: alert.actividad || '',
+    responsable: alert.responsable || '',
+    fecha_ejecutar: alert.fecha_ejecutar || '',
+    fecha_inicio_prop: alert.registro_ot?.fecha_inicio || '',
+    fecha_fin_prop: alert.registro_ot?.fecha_fin || '',
+  });
+
+  const handleSubmit = () => {
+    if (!form.fecha_inicio_prop || !form.fecha_fin_prop) {
+      window.alert('Debes completar fecha inicio y fin propuesta.');
+      return;
+    }
+    if (form.fecha_inicio_prop > form.fecha_fin_prop) {
+      window.alert('La fecha inicio propuesta no puede ser mayor que la fecha fin propuesta.');
+      return;
+    }
+    onSave(form);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1200, padding: '1rem' }}>
+      <div className="card" style={{ width: 'min(760px, 95vw)', maxHeight: '90vh', overflow: 'auto', marginBottom: 0 }}>
+        <h3 className="card-title" style={{ marginBottom: '.6rem' }}>Editar OT liberada #{alert.ot_numero || 'N.A.'}</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.65rem' }}>
+          <div><label className="form-label">Prioridad</label><input className="form-input" value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value })} /></div>
+          <div><label className="form-label">Responsable</label><input className="form-input" value={form.responsable} onChange={(e) => setForm({ ...form, responsable: e.target.value })} /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Actividad</label><input className="form-input" value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} /></div>
+          <div><label className="form-label">Fecha a ejecutar</label><input className="form-input" type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} /></div>
+          <div />
+          <div><label className="form-label">Inicio propuesto OT</label><input className="form-input" type="date" value={form.fecha_inicio_prop} onChange={(e) => setForm({ ...form, fecha_inicio_prop: e.target.value })} /></div>
+          <div><label className="form-label">Fin propuesto OT</label><input className="form-input" type="date" value={form.fecha_fin_prop} onChange={(e) => setForm({ ...form, fecha_fin_prop: e.target.value })} /></div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem', marginTop: '.8rem' }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button type="button" className="btn btn-primary" onClick={handleSubmit}>Guardar cambios OT</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RegisterWorkModal({
   alert, rrhhItems, materialsCatalog, initialReport = null, onClose, onSave,
 }) {
@@ -176,6 +220,12 @@ function RegisterWorkModal({
     }
     if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) {
       window.alert('Debes registrar fecha y hora de inicio y fin.');
+      return;
+    }
+    const proposedStart = alert.registro_ot?.fecha_inicio;
+    const proposedEnd = alert.registro_ot?.fecha_fin;
+    if (proposedStart && proposedEnd && (fechaInicio < proposedStart || fechaFin > proposedEnd)) {
+      window.alert(`Las fechas del registro deben estar dentro del rango propuesto de la OT: ${proposedStart} a ${proposedEnd}.`);
       return;
     }
 
@@ -349,7 +399,7 @@ function RegisterWorkModal({
   );
 }
 
-export default function WorkNotifications() {
+export default function WorkNotifications({ user }) {
   const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
   const [workReports, setWorkReports] = useState(() => readJson(OT_WORK_REPORTS_KEY, []));
   const [rrhhItems, setRrhhItems] = useState(() => readJson(RRHH_KEY, RRHH_FALLBACK));
@@ -357,6 +407,12 @@ export default function WorkNotifications() {
   const [selectedAlertId, setSelectedAlertId] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [editingReportId, setEditingReportId] = useState(null);
+  const [showEditOtModal, setShowEditOtModal] = useState(false);
+  const [expandedOtIds, setExpandedOtIds] = useState({});
+  const [filterArea, setFilterArea] = useState('');
+  const [filterWorker, setFilterWorker] = useState('');
+  const [filterDate, setFilterDate] = useState('');
+  const [filterEquipment, setFilterEquipment] = useState('');
 
   const liberatedNotifications = useMemo(
     () => alerts
@@ -373,6 +429,8 @@ export default function WorkNotifications() {
     () => workReports.find((item) => item.id === editingReportId) || null,
     [workReports, editingReportId],
   );
+  const normalizedRole = String(user?.role || '').toUpperCase();
+  const canEditLiberatedOt = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
 
   const reportByAlert = useMemo(() => {
     const map = new Map();
@@ -387,6 +445,26 @@ export default function WorkNotifications() {
     });
     return map;
   }, [workReports]);
+
+  const areaOptions = useMemo(
+    () => Array.from(new Set(liberatedNotifications.map((it) => (it.area || it.area_equipo || 'N.A.')))),
+    [liberatedNotifications],
+  );
+
+  const filteredNotifications = useMemo(() => liberatedNotifications.filter((item) => {
+    const reports = reportByAlert.get(String(item.id)) || [];
+    const areaValue = (item.area || item.area_equipo || 'N.A.').toLowerCase();
+    const workerValue = `${item.responsable || ''} ${item.personal_mantenimiento || ''}`.toLowerCase();
+    const equipmentValue = `${item.codigo || ''} ${item.descripcion || ''} ${item.equipo || ''}`.toLowerCase();
+    const dateMatches = !filterDate
+      || item.fecha_ejecutar === filterDate
+      || reports.some((r) => r.fechaInicio === filterDate || r.fechaFin === filterDate);
+
+    return (!filterArea || areaValue === filterArea.toLowerCase())
+      && (!filterWorker || workerValue.includes(filterWorker.toLowerCase()))
+      && (!filterEquipment || equipmentValue.includes(filterEquipment.toLowerCase()))
+      && dateMatches;
+  }), [liberatedNotifications, reportByAlert, filterArea, filterWorker, filterDate, filterEquipment]);
 
   const saveWorkReport = (payload) => {
     if (!selectedAlert) return;
@@ -448,12 +526,62 @@ export default function WorkNotifications() {
     setShowRegisterModal(true);
   };
 
+  const handleSaveOtChanges = (payload) => {
+    if (!selectedAlert) return;
+    const nextAlerts = alerts.map((item) => {
+      if (String(item.id) !== String(selectedAlert.id)) return item;
+      return {
+        ...item,
+        prioridad: payload.prioridad,
+        actividad: payload.actividad,
+        responsable: payload.responsable,
+        fecha_ejecutar: payload.fecha_ejecutar,
+        registro_ot: {
+          ...(item.registro_ot || {}),
+          fecha_inicio: payload.fecha_inicio_prop,
+          fecha_fin: payload.fecha_fin_prop,
+        },
+      };
+    });
+    setAlerts(nextAlerts);
+    writeJson(OT_ALERTS_KEY, nextAlerts);
+    setShowEditOtModal(false);
+  };
+
+  const toggleOtExpanded = (alertId) => {
+    setExpandedOtIds((prev) => ({ ...prev, [alertId]: !prev[alertId] }));
+  };
+
   return (
     <div>
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.35rem' }}>Notificaciones de Trabajo</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
         Selecciona una OT liberada y usa <strong>Registrar Trabajo</strong> para cargar horas por técnico, actividades y validación de materiales.
       </p>
+
+      <div className="card" style={{ marginBottom: '.8rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(160px, 1fr))', gap: '.65rem' }}>
+          <div>
+            <label className="form-label">Área</label>
+            <select className="form-select" value={filterArea} onChange={(e) => setFilterArea(e.target.value)}>
+              <option value="">Todas</option>
+              {areaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="form-label">Trabajador</label>
+            <input className="form-input" value={filterWorker} onChange={(e) => setFilterWorker(e.target.value)} placeholder="Nombre o responsable" />
+          </div>
+          <div>
+            <label className="form-label">Fecha</label>
+            <input className="form-input" type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="form-label">Equipo</label>
+            <input className="form-input" value={filterEquipment} onChange={(e) => setFilterEquipment(e.target.value)} placeholder="Código, equipo o descripción" />
+          </div>
+        </div>
+      </div>
 
       <div style={{ display: 'flex', gap: '.5rem', marginBottom: '.75rem' }}>
         <button
@@ -464,6 +592,11 @@ export default function WorkNotifications() {
         >
           Registrar Trabajo
         </button>
+        {canEditLiberatedOt && selectedAlert && (
+          <button type="button" className="btn btn-secondary" onClick={() => setShowEditOtModal(true)}>
+            Editar OT liberada
+          </button>
+        )}
       </div>
 
       <div className="card" style={{ overflowX: 'auto' }}>
@@ -476,17 +609,31 @@ export default function WorkNotifications() {
             </tr>
           </thead>
           <tbody>
-            {liberatedNotifications.map((item) => {
+            {filteredNotifications.map((item) => {
               const isSelected = String(item.id) === String(selectedAlertId);
               const reportRows = reportByAlert.get(String(item.id)) || [];
               const hasReport = reportRows.length > 0;
+              const isExpanded = !!expandedOtIds[item.id];
               return (
                 <React.Fragment key={item.id}>
                   <tr style={{ background: isSelected ? '#eff6ff' : 'transparent' }} onClick={() => setSelectedAlertId(item.id)}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', textAlign: 'center' }}>
                       <input type="radio" checked={isSelected} onChange={() => setSelectedAlertId(item.id)} />
                     </td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{hasReport ? `${reportRows.length} registro(s)` : 'Pendiente'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>
+                      {hasReport ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleOtExpanded(item.id);
+                          }}
+                        >
+                          {isExpanded ? 'Ocultar' : 'Ver'} registros ({reportRows.length})
+                        </button>
+                      ) : 'Pendiente'}
+                    </td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.status_ot}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.ot_numero || 'N.A.'}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.codigo}</td>
@@ -502,7 +649,7 @@ export default function WorkNotifications() {
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.personal_mantenimiento || 'N.A.'}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.materiales || 'N.A.'}</td>
                   </tr>
-                  {reportRows.map((report, idx) => (
+                  {isExpanded && reportRows.map((report, idx) => (
                     <tr key={report.id} style={{ background: '#f8fafc' }}>
                       <td />
                       <td colSpan={15} style={{ border: '1px solid #e5e7eb', padding: '.5rem .65rem' }}>
@@ -527,10 +674,10 @@ export default function WorkNotifications() {
                 </React.Fragment>
               );
             })}
-            {!liberatedNotifications.length && (
+            {!filteredNotifications.length && (
               <tr>
                 <td colSpan={16} style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', border: '1px solid #e5e7eb' }}>
-                  No hay notificaciones de trabajo liberadas.
+                  No hay notificaciones que coincidan con los filtros.
                 </td>
               </tr>
             )}
@@ -549,6 +696,14 @@ export default function WorkNotifications() {
             setEditingReportId(null);
           }}
           onSave={saveWorkReport}
+        />
+      )}
+
+      {showEditOtModal && selectedAlert && (
+        <EditLiberatedOtModal
+          alert={selectedAlert}
+          onClose={() => setShowEditOtModal(false)}
+          onSave={handleSaveOtChanges}
         />
       )}
     </div>
