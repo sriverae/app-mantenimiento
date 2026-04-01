@@ -157,6 +157,14 @@ function RegisterWorkModal({
   const [horaFin, setHoraFin] = useState(initialReport?.horaFin || alert.registro_ot?.hora_fin || '');
   const [showTechPicker, setShowTechPicker] = useState(false);
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
+  const maxHorasSugeridas = useMemo(() => {
+    if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) return 0;
+    const start = new Date(`${fechaInicio}T${horaInicio}:00`);
+    const end = new Date(`${fechaFin}T${horaFin}:00`);
+    const diffMs = end - start;
+    if (Number.isNaN(diffMs) || diffMs <= 0) return 0;
+    return Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+  }, [fechaInicio, horaInicio, fechaFin, horaFin]);
 
   const addTechFromRrhh = (item) => {
     setTechRows((prev) => {
@@ -166,7 +174,7 @@ function RegisterWorkModal({
         id: `tech_rrhh_${item.id}_${Date.now()}`,
         tecnicoId: item.id,
         tecnico: `${item.codigo} - ${item.nombres_apellidos}`,
-        horas: '',
+        horas: maxHorasSugeridas || '',
         actividades: '',
       }];
     });
@@ -185,7 +193,14 @@ function RegisterWorkModal({
   };
 
   const updateTech = (id, field, value) => {
-    setTechRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+    setTechRows((prev) => prev.map((row) => {
+      if (row.id !== id) return row;
+      if (field === 'horas') {
+        const num = Number(value);
+        if (maxHorasSugeridas > 0 && num > maxHorasSugeridas) return { ...row, horas: maxHorasSugeridas };
+      }
+      return { ...row, [field]: value };
+    }));
   };
 
   const removeTech = (id) => {
@@ -268,6 +283,19 @@ function RegisterWorkModal({
           <p style={{ color: '#6b7280', marginBottom: '.8rem' }}>Selecciona técnicos y materiales desde sus catálogos para mantener consistencia.</p>
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <h4 style={{ marginBottom: '.5rem' }}>Fecha y hora del trabajo</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(140px, 1fr))', gap: '.6rem' }}>
+              <div><label className="form-label">Fecha inicio</label><input className="form-input" type="date" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} /></div>
+              <div><label className="form-label">Hora inicio</label><input className="form-input" type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} /></div>
+              <div><label className="form-label">Fecha fin</label><input className="form-input" type="date" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} /></div>
+              <div><label className="form-label">Hora fin</label><input className="form-input" type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} /></div>
+            </div>
+            <p style={{ marginTop: '.5rem', color: '#374151', fontSize: '.92rem' }}>
+              Máximo sugerido de horas por técnico según rango ingresado: <strong>{maxHorasSugeridas || 0} h</strong>.
+            </p>
+          </div>
+
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '.6rem' }}>
               <h4>Horas y actividades por técnico</h4>
               <button type="button" className="btn btn-secondary" onClick={() => setShowTechPicker(true)}>+ Agregar técnico</button>
@@ -285,7 +313,7 @@ function RegisterWorkModal({
                 {techRows.map((row) => (
                   <tr key={row.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} /></td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" type="number" min="0" step="0.25" value={row.horas} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} /></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" type="number" min="0" max={maxHorasSugeridas || undefined} step="0.25" value={row.horas} placeholder={maxHorasSugeridas ? `Máx ${maxHorasSugeridas}` : ''} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} /></td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} /></td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeTech(row.id)}>Quitar</button></td>
                   </tr>
@@ -348,16 +376,6 @@ function RegisterWorkModal({
                 {!extraMaterials.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales adicionales.</td></tr>}
               </tbody>
             </table>
-          </div>
-
-          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-            <h4 style={{ marginBottom: '.5rem' }}>Fecha y hora del trabajo</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(140px, 1fr))', gap: '.6rem' }}>
-              <div><label className="form-label">Fecha inicio</label><input className="form-input" type="date" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} /></div>
-              <div><label className="form-label">Hora inicio</label><input className="form-input" type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} /></div>
-              <div><label className="form-label">Fecha fin</label><input className="form-input" type="date" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} /></div>
-              <div><label className="form-label">Hora fin</label><input className="form-input" type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} /></div>
-            </div>
           </div>
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
