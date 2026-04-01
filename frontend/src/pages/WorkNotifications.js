@@ -68,12 +68,22 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
 
 function EditLiberatedOtModal({ alert, onClose, onSave }) {
   const [form, setForm] = useState({
+    status_ot: alert.status_ot || 'Liberada',
+    ot_numero: alert.ot_numero || '',
+    codigo: alert.codigo || '',
+    descripcion: alert.descripcion || '',
+    area: alert.area || alert.area_equipo || '',
+    equipo: alert.equipo || '',
     prioridad: alert.prioridad || '',
     actividad: alert.actividad || '',
     responsable: alert.responsable || '',
     fecha_ejecutar: alert.fecha_ejecutar || '',
     fecha_inicio_prop: alert.registro_ot?.fecha_inicio || '',
+    hora_inicio_prop: alert.registro_ot?.hora_inicio || '',
     fecha_fin_prop: alert.registro_ot?.fecha_fin || '',
+    hora_fin_prop: alert.registro_ot?.hora_fin || '',
+    personal_mantenimiento: alert.personal_mantenimiento || '',
+    materiales: alert.materiales || '',
   });
 
   const handleSubmit = () => {
@@ -93,13 +103,23 @@ function EditLiberatedOtModal({ alert, onClose, onSave }) {
       <div className="card" style={{ width: 'min(760px, 95vw)', maxHeight: '90vh', overflow: 'auto', marginBottom: 0 }}>
         <h3 className="card-title" style={{ marginBottom: '.6rem' }}>Editar OT liberada #{alert.ot_numero || 'N.A.'}</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.65rem' }}>
+          <div><label className="form-label">Estado OT</label><input className="form-input" value={form.status_ot} onChange={(e) => setForm({ ...form, status_ot: e.target.value })} /></div>
+          <div><label className="form-label"># OT</label><input className="form-input" value={form.ot_numero} onChange={(e) => setForm({ ...form, ot_numero: e.target.value })} /></div>
+          <div><label className="form-label">Código</label><input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
+          <div><label className="form-label">Equipo</label><input className="form-input" value={form.equipo} onChange={(e) => setForm({ ...form, equipo: e.target.value })} /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Descripción</label><input className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
+          <div><label className="form-label">Área</label><input className="form-input" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} /></div>
           <div><label className="form-label">Prioridad</label><input className="form-input" value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value })} /></div>
           <div><label className="form-label">Responsable</label><input className="form-input" value={form.responsable} onChange={(e) => setForm({ ...form, responsable: e.target.value })} /></div>
           <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Actividad</label><input className="form-input" value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} /></div>
           <div><label className="form-label">Fecha a ejecutar</label><input className="form-input" type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} /></div>
           <div />
           <div><label className="form-label">Inicio propuesto OT</label><input className="form-input" type="date" value={form.fecha_inicio_prop} onChange={(e) => setForm({ ...form, fecha_inicio_prop: e.target.value })} /></div>
+          <div><label className="form-label">Hora inicio propuesta</label><input className="form-input" type="time" value={form.hora_inicio_prop} onChange={(e) => setForm({ ...form, hora_inicio_prop: e.target.value })} /></div>
           <div><label className="form-label">Fin propuesto OT</label><input className="form-input" type="date" value={form.fecha_fin_prop} onChange={(e) => setForm({ ...form, fecha_fin_prop: e.target.value })} /></div>
+          <div><label className="form-label">Hora fin propuesta</label><input className="form-input" type="time" value={form.hora_fin_prop} onChange={(e) => setForm({ ...form, hora_fin_prop: e.target.value })} /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Personal mantenimiento</label><textarea className="form-textarea" rows={2} value={form.personal_mantenimiento} onChange={(e) => setForm({ ...form, personal_mantenimiento: e.target.value })} /></div>
+          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Materiales asignados</label><textarea className="form-textarea" rows={2} value={form.materiales} onChange={(e) => setForm({ ...form, materiales: e.target.value })} /></div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem', marginTop: '.8rem' }}>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
@@ -550,14 +570,24 @@ export default function WorkNotifications({ user }) {
       if (String(item.id) !== String(selectedAlert.id)) return item;
       return {
         ...item,
+        status_ot: payload.status_ot,
+        ot_numero: payload.ot_numero,
+        codigo: payload.codigo,
+        descripcion: payload.descripcion,
+        area: payload.area,
+        equipo: payload.equipo,
         prioridad: payload.prioridad,
         actividad: payload.actividad,
         responsable: payload.responsable,
         fecha_ejecutar: payload.fecha_ejecutar,
+        personal_mantenimiento: payload.personal_mantenimiento,
+        materiales: payload.materiales,
         registro_ot: {
           ...(item.registro_ot || {}),
           fecha_inicio: payload.fecha_inicio_prop,
+          hora_inicio: payload.hora_inicio_prop,
           fecha_fin: payload.fecha_fin_prop,
+          hora_fin: payload.hora_fin_prop,
         },
       };
     });
