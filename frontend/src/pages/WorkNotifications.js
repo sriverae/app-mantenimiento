@@ -66,27 +66,47 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
   );
 }
 
-function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave }) {
+function RegisterWorkModal({
+  alert, rrhhItems, materialsCatalog, initialReport = null, onClose, onSave,
+}) {
   const initialTechs = (alert.personal_mantenimiento || '')
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean)
     .map((name, idx) => ({ id: `tech_${idx}_${name}`, tecnicoId: null, tecnico: name, horas: '', actividades: '' }));
 
-  const [techRows, setTechRows] = useState(initialTechs.length ? initialTechs : []);
+  const [techRows, setTechRows] = useState(
+    initialReport?.tecnicos?.length
+      ? initialReport.tecnicos.map((row, idx) => ({
+        id: `tech_saved_${idx}_${row.tecnicoId || 'x'}`,
+        tecnicoId: row.tecnicoId || null,
+        tecnico: row.tecnico || '',
+        horas: row.horas || '',
+        actividades: row.actividades || '',
+      }))
+      : (initialTechs.length ? initialTechs : []),
+  );
   const [materialsRows, setMaterialsRows] = useState(
-    (alert.materiales_detalle || []).map((item, idx) => ({
+    (initialReport?.materialesConfirmados || alert.materiales_detalle || []).map((item, idx) => ({
       id: `mat_${idx}_${item.id || item.codigo || 'x'}`,
-      materialId: item.id || null,
+      materialId: item.materialId || item.id || null,
       codigo: item.codigo || '',
       descripcion: item.descripcion || '',
-      cantidadPlanificada: Number(item.cantidad) || 0,
-      cantidadConfirmada: Number(item.cantidad) || 0,
-      confirmada: true,
+      cantidadPlanificada: Number(item.cantidadPlanificada ?? item.cantidad) || 0,
+      cantidadConfirmada: Number(item.cantidadConfirmada ?? item.cantidad) || 0,
+      confirmada: item.confirmada ?? true,
     })),
   );
-  const [extraMaterials, setExtraMaterials] = useState([]);
-  const [observaciones, setObservaciones] = useState('');
+  const [extraMaterials, setExtraMaterials] = useState(
+    (initialReport?.materialesExtra || []).map((row, idx) => ({
+      id: `extra_saved_${idx}_${row.materialId || row.codigo || 'x'}`,
+      materialId: row.materialId || null,
+      codigo: row.codigo || '',
+      descripcion: row.descripcion || '',
+      cantidad: row.cantidad || '',
+    })),
+  );
+  const [observaciones, setObservaciones] = useState(initialReport?.observaciones || '');
   const [showTechPicker, setShowTechPicker] = useState(false);
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
 
@@ -314,6 +334,7 @@ export default function WorkNotifications() {
   const [materialsCatalog, setMaterialsCatalog] = useState(() => readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
   const [selectedAlertId, setSelectedAlertId] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [editingReportId, setEditingReportId] = useState(null);
 
   const liberatedNotifications = useMemo(
     () => alerts
@@ -326,24 +347,42 @@ export default function WorkNotifications() {
     () => liberatedNotifications.find((item) => String(item.id) === String(selectedAlertId)) || null,
     [liberatedNotifications, selectedAlertId],
   );
+  const editingReport = useMemo(
+    () => workReports.find((item) => item.id === editingReportId) || null,
+    [workReports, editingReportId],
+  );
 
   const reportByAlert = useMemo(() => {
     const map = new Map();
-    workReports.forEach((item) => map.set(String(item.alertId), item));
+    workReports.forEach((item) => {
+      const key = String(item.alertId);
+      const existing = map.get(key) || [];
+      existing.push(item);
+      map.set(key, existing);
+    });
+    map.forEach((rows, key) => {
+      map.set(key, rows.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+    });
     return map;
   }, [workReports]);
 
   const saveWorkReport = (payload) => {
     if (!selectedAlert) return;
+    const isEditing = !!editingReportId;
     const report = {
-      id: `work_report_${Date.now()}`,
+      id: editingReportId || `work_report_${Date.now()}`,
       alertId: selectedAlert.id,
       otNumero: selectedAlert.ot_numero,
-      createdAt: new Date().toISOString(),
+      createdAt: isEditing
+        ? (workReports.find((item) => item.id === editingReportId)?.createdAt || new Date().toISOString())
+        : new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       ...payload,
     };
 
-    const nextReports = [...workReports.filter((item) => String(item.alertId) !== String(selectedAlert.id)), report];
+    const nextReports = isEditing
+      ? workReports.map((item) => (item.id === editingReportId ? report : item))
+      : [...workReports, report];
     setWorkReports(nextReports);
     writeJson(OT_WORK_REPORTS_KEY, nextReports);
 
@@ -354,12 +393,29 @@ export default function WorkNotifications() {
     writeJson(OT_ALERTS_KEY, nextAlerts);
 
     setShowRegisterModal(false);
+    setEditingReportId(null);
     window.alert('Trabajo registrado correctamente.');
+  };
+
+  const handleDeleteReport = (reportId) => {
+    if (!window.confirm('¿Eliminar este registro de trabajo?')) return;
+    const nextReports = workReports.filter((item) => item.id !== reportId);
+    setWorkReports(nextReports);
+    writeJson(OT_WORK_REPORTS_KEY, nextReports);
   };
 
   const handleOpenRegister = () => {
     setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
     setMaterialsCatalog(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+    setEditingReportId(null);
+    setShowRegisterModal(true);
+  };
+
+  const handleEditReport = (alertId, reportId) => {
+    setSelectedAlertId(alertId);
+    setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
+    setMaterialsCatalog(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+    setEditingReportId(reportId);
     setShowRegisterModal(true);
   };
 
@@ -393,28 +449,50 @@ export default function WorkNotifications() {
           <tbody>
             {liberatedNotifications.map((item) => {
               const isSelected = String(item.id) === String(selectedAlertId);
-              const hasReport = reportByAlert.has(String(item.id));
+              const reportRows = reportByAlert.get(String(item.id)) || [];
+              const hasReport = reportRows.length > 0;
               return (
-                <tr key={item.id} style={{ background: isSelected ? '#eff6ff' : 'transparent' }} onClick={() => setSelectedAlertId(item.id)}>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', textAlign: 'center' }}>
-                    <input type="radio" checked={isSelected} onChange={() => setSelectedAlertId(item.id)} />
-                  </td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{hasReport ? '✅ Registrado' : 'Pendiente'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.status_ot}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.ot_numero || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.codigo}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.descripcion}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.prioridad || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.actividad || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.responsable || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.fecha_ejecutar || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.fecha_inicio || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.hora_inicio || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.fecha_fin || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.hora_fin || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.personal_mantenimiento || 'N.A.'}</td>
-                  <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.materiales || 'N.A.'}</td>
-                </tr>
+                <React.Fragment key={item.id}>
+                  <tr style={{ background: isSelected ? '#eff6ff' : 'transparent' }} onClick={() => setSelectedAlertId(item.id)}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', textAlign: 'center' }}>
+                      <input type="radio" checked={isSelected} onChange={() => setSelectedAlertId(item.id)} />
+                    </td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{hasReport ? `${reportRows.length} registro(s)` : 'Pendiente'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.status_ot}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.ot_numero || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.codigo}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.descripcion}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.prioridad || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.actividad || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.responsable || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.fecha_ejecutar || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.fecha_inicio || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.hora_inicio || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.fecha_fin || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.hora_fin || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.personal_mantenimiento || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.materiales || 'N.A.'}</td>
+                  </tr>
+                  {reportRows.map((report, idx) => (
+                    <tr key={report.id} style={{ background: '#f8fafc' }}>
+                      <td />
+                      <td colSpan={15} style={{ border: '1px solid #e5e7eb', padding: '.5rem .65rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div>
+                            <strong>Sub-registro #{idx + 1}</strong>{' '}
+                            · Horas: <strong>{report.totalHoras || 0}</strong>{' '}
+                            · Técnicos: {report.tecnicos?.length || 0}{' '}
+                            · Materiales extra: {report.materialesExtra?.length || 0}
+                          </div>
+                          <div style={{ display: 'flex', gap: '.4rem' }}>
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleEditReport(item.id, report.id)}>Editar</button>
+                            <button type="button" className="btn btn-danger btn-sm" onClick={() => handleDeleteReport(report.id)}>Eliminar</button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               );
             })}
             {!liberatedNotifications.length && (
@@ -433,7 +511,11 @@ export default function WorkNotifications() {
           alert={selectedAlert}
           rrhhItems={rrhhItems}
           materialsCatalog={materialsCatalog}
-          onClose={() => setShowRegisterModal(false)}
+          initialReport={editingReport}
+          onClose={() => {
+            setShowRegisterModal(false);
+            setEditingReportId(null);
+          }}
           onSave={saveWorkReport}
         />
       )}
