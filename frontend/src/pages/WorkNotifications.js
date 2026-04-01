@@ -6,6 +6,16 @@ const OT_WORK_REPORTS_KEY = 'pmp_ot_work_reports_v1';
 const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
 const MATERIALES_KEY = 'pmp_materiales_v1';
 
+const RRHH_FALLBACK = [
+  { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', especialidad: 'Mecánico' },
+  { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', especialidad: 'Eléctrico' },
+];
+
+const MATERIALES_FALLBACK = [
+  { id: 1, codigo: 'PRD0000000', descripcion: 'ABRAZADERA 5"', marca: 'N.A.', proveedor: 'N.A.' },
+  { id: 2, codigo: 'PRD0000001', descripcion: 'ACEITE 15W40 CAT X 5 GL', marca: 'N.A.', proveedor: 'N.A.' },
+];
+
 const readJson = (key, fallback = []) => {
   try {
     const raw = localStorage.getItem(key);
@@ -26,6 +36,7 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
     const q = query.trim().toLowerCase();
     return items.filter((item) => filterFn(item, q)).slice(0, 30);
   }, [items, query, filterFn]);
+
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1100, padding: '1rem' }}>
@@ -299,8 +310,8 @@ function RegisterWorkModal({ alert, rrhhItems, materialsCatalog, onClose, onSave
 export default function WorkNotifications() {
   const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
   const [workReports, setWorkReports] = useState(() => readJson(OT_WORK_REPORTS_KEY, []));
-  const [rrhhItems] = useState(() => readJson(RRHH_KEY, []));
-  const [materialsCatalog] = useState(() => readJson(MATERIALES_KEY, []));
+  const [rrhhItems, setRrhhItems] = useState(() => readJson(RRHH_KEY, RRHH_FALLBACK));
+  const [materialsCatalog, setMaterialsCatalog] = useState(() => readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
   const [selectedAlertId, setSelectedAlertId] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
 
@@ -346,6 +357,12 @@ export default function WorkNotifications() {
     window.alert('Trabajo registrado correctamente.');
   };
 
+  const handleOpenRegister = () => {
+    setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
+    setMaterialsCatalog(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+    setShowRegisterModal(true);
+  };
+
   return (
     <div>
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.35rem' }}>Notificaciones de Trabajo</h1>
@@ -358,7 +375,7 @@ export default function WorkNotifications() {
           type="button"
           className="btn btn-primary"
           disabled={!selectedAlert}
-          onClick={() => setShowRegisterModal(true)}
+          onClick={handleOpenRegister}
         >
           Registrar Trabajo
         </button>
