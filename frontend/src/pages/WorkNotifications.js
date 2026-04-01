@@ -107,6 +107,10 @@ function RegisterWorkModal({
     })),
   );
   const [observaciones, setObservaciones] = useState(initialReport?.observaciones || '');
+  const [fechaInicio, setFechaInicio] = useState(initialReport?.fechaInicio || alert.registro_ot?.fecha_inicio || '');
+  const [horaInicio, setHoraInicio] = useState(initialReport?.horaInicio || alert.registro_ot?.hora_inicio || '');
+  const [fechaFin, setFechaFin] = useState(initialReport?.fechaFin || alert.registro_ot?.fecha_fin || '');
+  const [horaFin, setHoraFin] = useState(initialReport?.horaFin || alert.registro_ot?.hora_fin || '');
   const [showTechPicker, setShowTechPicker] = useState(false);
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
 
@@ -170,6 +174,10 @@ function RegisterWorkModal({
       window.alert('Debes registrar al menos un técnico con horas trabajadas.');
       return;
     }
+    if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) {
+      window.alert('Debes registrar fecha y hora de inicio y fin.');
+      return;
+    }
 
     const materialesConfirmados = materialsRows.map((row) => ({
       materialId: row.materialId,
@@ -194,6 +202,10 @@ function RegisterWorkModal({
       materialesConfirmados,
       materialesExtra,
       observaciones: observaciones.trim(),
+      fechaInicio,
+      horaInicio,
+      fechaFin,
+      horaFin,
       totalHoras: Number(tecnicosValidos.reduce((sum, row) => sum + row.horas, 0).toFixed(2)),
     });
   };
@@ -289,6 +301,16 @@ function RegisterWorkModal({
           </div>
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <h4 style={{ marginBottom: '.5rem' }}>Fecha y hora del trabajo</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(140px, 1fr))', gap: '.6rem' }}>
+              <div><label className="form-label">Fecha inicio</label><input className="form-input" type="date" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} /></div>
+              <div><label className="form-label">Hora inicio</label><input className="form-input" type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} /></div>
+              <div><label className="form-label">Fecha fin</label><input className="form-input" type="date" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} /></div>
+              <div><label className="form-label">Hora fin</label><input className="form-input" type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} /></div>
+            </div>
+          </div>
+
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
             <h4 style={{ marginBottom: '.5rem' }}>Observaciones</h4>
             <textarea className="form-textarea" rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Notas finales del trabajo ejecutado" />
           </div>
@@ -369,10 +391,17 @@ export default function WorkNotifications() {
   const saveWorkReport = (payload) => {
     if (!selectedAlert) return;
     const isEditing = !!editingReportId;
+    const existingForOt = workReports.filter((item) => String(item.alertId) === String(selectedAlert.id));
+    const nextSequence = isEditing
+      ? (workReports.find((item) => item.id === editingReportId)?.sequence || (existingForOt.length || 1))
+      : (existingForOt.length + 1);
+    const reportCode = `NT${nextSequence}-OT${selectedAlert.ot_numero || selectedAlert.id}`;
     const report = {
       id: editingReportId || `work_report_${Date.now()}`,
       alertId: selectedAlert.id,
       otNumero: selectedAlert.ot_numero,
+      sequence: nextSequence,
+      reportCode,
       createdAt: isEditing
         ? (workReports.find((item) => item.id === editingReportId)?.createdAt || new Date().toISOString())
         : new Date().toISOString(),
@@ -480,9 +509,12 @@ export default function WorkNotifications() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
                           <div>
                             <strong>Sub-registro #{idx + 1}</strong>{' '}
+                            · Código: <strong>{report.reportCode || `NT${idx + 1}-OT${item.ot_numero || item.id}`}</strong>{' '}
                             · Horas: <strong>{report.totalHoras || 0}</strong>{' '}
                             · Técnicos: {report.tecnicos?.length || 0}{' '}
-                            · Materiales extra: {report.materialesExtra?.length || 0}
+                            · Materiales extra: {report.materialesExtra?.length || 0}{' '}
+                            · Inicio: {report.fechaInicio || 'N.A.'} {report.horaInicio || ''}{' '}
+                            · Fin: {report.fechaFin || 'N.A.'} {report.horaFin || ''}
                           </div>
                           <div style={{ display: 'flex', gap: '.4rem' }}>
                             <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleEditReport(item.id, report.id)}>Editar</button>
