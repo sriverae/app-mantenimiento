@@ -102,7 +102,7 @@ export default function PmpPaquetesMantenimiento() {
       vc: form.vc,
       nombre: form.nombre.trim(),
       tiempo_min: Number(form.tiempo_min) || 0,
-      actividades,
+      actividades: activities,
     };
 
     if (editingId) {
