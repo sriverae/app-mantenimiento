@@ -104,7 +104,6 @@ export const reopenDay  = async (d)             => (await api.post(`/api/days/${
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 export const getTasks        = async (f = {})   => (await api.get('/api/tasks/', { params: f })).data;
 export const getTask         = async (id)        => (await api.get(`/api/tasks/${id}`)).data;
-export const createTask      = async (data)      => (await api.post('/api/tasks/', data)).data;
 export const updateTask      = async (id, data)  => (await api.put(`/api/tasks/${id}`, data)).data;
 export const deleteTask      = async (id)        => (await api.delete(`/api/tasks/${id}`)).data;
 export const addTaskMember   = async (tid, uid)  => (await api.post(`/api/tasks/${tid}/members/${uid}`)).data;
@@ -118,6 +117,12 @@ export const deleteWorkLog  = async (id)         => (await api.delete(`/api/work
 // ── Stats ─────────────────────────────────────────────────────────────────────
 export const getTodayStats  = async ()           => (await api.get('/api/stats/today')).data;
 export const getUserStats   = async (id, days=7) => (await api.get(`/api/stats/user/${id}`, { params: { days } })).data;
+
+// Shared documents (replaces browser-only localStorage for multi-user modules)
+export const getSharedDocument = async (key) =>
+  (await api.get(`/api/documents/${encodeURIComponent(key)}`)).data.data;
+export const putSharedDocument = async (key, data) =>
+  (await api.put(`/api/documents/${encodeURIComponent(key)}`, { data })).data.data;
 
 export default api;
 export const publishTask = async (id) => (await api.post(`/api/tasks/${id}/publish`)).data;

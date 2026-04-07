@@ -6,7 +6,7 @@ FastAPI · SQLAlchemy async · JWT · RBAC · Registro con aprobación
 import hashlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import (
     REFRESH_TOKEN_EXPIRE_DAYS,
     create_access_token, create_refresh_token,
+    decode_access_token,
     get_current_user, get_db,
     hash_password, verify_password,
     require_any_role, require_encargado_up,
@@ -291,6 +292,43 @@ class DayResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# -- Shared JSON documents ----------------------------------------------------
+class SharedDocumentPayload(BaseModel):
+    data: Any
+
+
+class SharedDocumentResponse(BaseModel):
+    key: str
+    data: Any
+
+
+DOCUMENT_RULES = {
+    "pmp_rrhh_tecnicos_v1": {"read": Role.TECNICO.value, "write": Role.INGENIERO.value, "default": []},
+    "pmp_materiales_v1": {"read": Role.TECNICO.value, "write": Role.INGENIERO.value, "default": []},
+    "pmp_equipos_columns_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_equipos_items_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_equipos_exchange_history_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_amef_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_fechas_plans_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_km_plans_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_paquetes_mantenimiento_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_alertas_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_historial_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_work_reports_v1": {"read": Role.TECNICO.value, "write": Role.TECNICO.value, "default": []},
+    "pmp_bajas_history_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+}
+
+
+def _assert_document_access(key: str, current_user: User, action: str):
+    rule = DOCUMENT_RULES.get(key)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+    min_role = rule[action]
+    if ROLE_HIERARCHY.get(current_user.role, 0) < ROLE_HIERARCHY[min_role]:
+        raise HTTPException(status_code=403, detail="Sin permisos para este documento")
+    return rule
 
 
 # ── Task access helper ───────────────────────────────────────────────────────
@@ -1806,6 +1844,42 @@ async def get_user_stats(user_id: int, days: int = 7, current_user: User = Depen
     total_h = sum((w.end_dt - w.start_dt).total_seconds() / 3600 for w in wls)
     return {"user_id": user_id, "period_days": days, "tasks_assigned": assigned,
             "total_hours": round(total_h, 2), "total_worklogs": len(wls)}
+
+
+@app.get("/api/documents/{key}", response_model=SharedDocumentResponse)
+async def get_shared_document(
+    key: str,
+    current_user: User = Depends(require_any_role),
+    db: AsyncSession = Depends(get_db),
+):
+    rule = _assert_document_access(key, current_user, "read")
+    setting = (await db.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
+    if not setting or not setting.value:
+        return SharedDocumentResponse(key=key, data=rule["default"])
+
+    try:
+        data = json.loads(setting.value)
+    except json.JSONDecodeError:
+        data = rule["default"]
+    return SharedDocumentResponse(key=key, data=data)
+
+
+@app.put("/api/documents/{key}", response_model=SharedDocumentResponse)
+async def put_shared_document(
+    key: str,
+    body: SharedDocumentPayload,
+    current_user: User = Depends(require_any_role),
+    db: AsyncSession = Depends(get_db),
+):
+    _assert_document_access(key, current_user, "write")
+    setting = (await db.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
+    serialized = json.dumps(body.data, ensure_ascii=False)
+    if setting:
+        setting.value = serialized
+    else:
+        db.add(Setting(key=key, value=serialized))
+    await db.commit()
+    return SharedDocumentResponse(key=key, data=body.data)
 
 
 @app.get("/")

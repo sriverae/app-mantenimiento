@@ -18,7 +18,7 @@ export default function Tasks({ user }) {
     status: '',
   });
 
-  useEffect(() => { loadTasks(); }, [filters] // eslint-disable-line react-hooks/exhaustive-deps);
+  useEffect(() => { loadTasks(); }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadTasks = async () => {
     try {
@@ -39,9 +39,6 @@ export default function Tasks({ user }) {
     <div>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1.5rem', flexWrap:'wrap', gap:'1rem' }}>
         <h1 style={{ fontSize:'2rem', fontWeight:700 }}>Tareas</h1>
-        {canManage(user.role) && (
-          <Link to="/tasks/new" className="btn btn-primary">+ Nueva Tarea</Link>
-        )}
       </div>
 
       {/* Draft info banner for managers */}
@@ -85,7 +82,7 @@ export default function Tasks({ user }) {
         <div className="card" style={{ textAlign:'center', padding:'3rem', color:'#9ca3af' }}>
           <div style={{ fontSize:'3rem', marginBottom:'1rem' }}>📋</div>
           <p style={{ fontWeight:600 }}>No hay tareas para mostrar</p>
-          <p style={{ fontSize:'.875rem', marginTop:'.4rem' }}>Cambia los filtros o crea una nueva tarea</p>
+          <p style={{ fontSize:'.875rem', marginTop:'.4rem' }}>Cambia los filtros para revisar otros registros</p>
         </div>
       ) : (
         <div style={{ display:'grid', gap:'.75rem' }}>
