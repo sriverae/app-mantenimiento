@@ -1,20 +1,31 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
-const BAJAS_HISTORY_KEY = 'pmp_bajas_history_v1';
-
-const readHistory = () => {
-  try {
-    const raw = localStorage.getItem(BAJAS_HISTORY_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
+const BAJAS_HISTORY_KEY = SHARED_DOCUMENT_KEYS.bajasHistory;
 
 export default function PmpBajasHistorial() {
-  const [history] = useState(() => readHistory());
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    loadSharedDocument(BAJAS_HISTORY_KEY, []).then((data) => {
+      if (!active) return;
+      setHistory(Array.isArray(data) ? data : []);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
   const sorted = useMemo(() => [...history].sort((a, b) => new Date(b.fecha) - new Date(a.fecha)), [history]);
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>

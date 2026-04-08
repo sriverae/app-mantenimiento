@@ -1,26 +1,28 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
-const EQUIPOS_KEY = 'pmp_equipos_items_v1';
-const BAJAS_HISTORY_KEY = 'pmp_bajas_history_v1';
-
-const readJson = (key, fallback) => {
-  try {
-    const raw = localStorage.getItem(key);
-    const parsed = raw ? JSON.parse(raw) : fallback;
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-};
+const EQUIPOS_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
+const BAJAS_HISTORY_KEY = SHARED_DOCUMENT_KEYS.bajasHistory;
 
 export default function PmpBajas() {
-  const [equipos, setEquipos] = useState(() => readJson(EQUIPOS_KEY, []));
+  const [equipos, setEquipos] = useState([]);
   const [q, setQ] = useState('');
   const [area, setArea] = useState('');
   const [codigo, setCodigo] = useState('');
   const [selectedId, setSelectedId] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    loadSharedDocument(EQUIPOS_KEY, []).then((data) => {
+      if (!active) return;
+      setEquipos(Array.isArray(data) ? data : []);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
 
   const selected = useMemo(() => equipos.find((e) => e.id === selectedId) || null, [equipos, selectedId]);
   const nodes = selected?.despiece || [];
@@ -36,23 +38,23 @@ export default function PmpBajas() {
     return matchQ && matchArea && matchCodigo;
   }), [equipos, q, area, codigo]);
 
-  const persistEquipos = (next) => {
+  const persistEquipos = async (next) => {
     setEquipos(next);
-    localStorage.setItem(EQUIPOS_KEY, JSON.stringify(next));
+    await saveSharedDocument(EQUIPOS_KEY, next);
   };
 
-  const saveHistory = (entry) => {
-    const prev = readJson(BAJAS_HISTORY_KEY, []);
-    localStorage.setItem(BAJAS_HISTORY_KEY, JSON.stringify([entry, ...prev]));
+  const saveHistory = async (entry) => {
+    const prev = await loadSharedDocument(BAJAS_HISTORY_KEY, []);
+    await saveSharedDocument(BAJAS_HISTORY_KEY, [entry, ...prev]);
   };
 
-  const downTotal = () => {
+  const downTotal = async () => {
     if (!selected) return;
     if (!window.confirm(`¿Dar de baja TOTAL al equipo ${selected.codigo} incluyendo todos sus subniveles?`)) return;
     const removedLevels = (selected.despiece || []).length;
     const next = equipos.filter((eq) => eq.id !== selected.id);
-    persistEquipos(next);
-    saveHistory({
+    await persistEquipos(next);
+    await saveHistory({
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       fecha: new Date().toISOString(),
       tipo: 'TOTAL',
@@ -69,17 +71,17 @@ export default function PmpBajas() {
     let changed = true;
     while (changed) {
       changed = false;
-      source.forEach((node) => {
+      for (const node of source) {
         if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
           ids.add(node.id);
           changed = true;
         }
-      });
+      }
     }
     return ids;
   };
 
-  const downPartial = () => {
+  const downPartial = async () => {
     if (!selected || !selectedNodeId) return;
     const targetNode = nodes.find((n) => n.id === selectedNodeId);
     if (!targetNode) return;
@@ -87,8 +89,8 @@ export default function PmpBajas() {
     const ids = getSubtreeIds(targetNode.id, nodes);
     const newNodes = nodes.filter((node) => !ids.has(node.id));
     const next = equipos.map((eq) => (eq.id === selected.id ? { ...eq, despiece: newNodes } : eq));
-    persistEquipos(next);
-    saveHistory({
+    await persistEquipos(next);
+    await saveHistory({
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       fecha: new Date().toISOString(),
       tipo: 'PARCIAL',
@@ -99,6 +101,14 @@ export default function PmpBajas() {
     });
     setSelectedNodeId('');
   };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>

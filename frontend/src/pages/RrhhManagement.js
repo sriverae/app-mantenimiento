@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
-
-const STORAGE_KEY = 'pmp_rrhh_tecnicos_v1';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
 const INITIAL_DATA = [
   { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', cargo: 'Técnico', especialidad: 'Mecánico', identificacion: 'N.A.', edad: 'N.A.', domicilio: 'Primero', capacidad_hh_dia: '12.00', costo_hora: '6.94', email: 'N.A.' },
@@ -20,26 +19,39 @@ const EMPTY_FORM = {
   email: '',
 };
 
-const readData = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : INITIAL_DATA;
-    return Array.isArray(parsed) ? parsed : INITIAL_DATA;
-  } catch {
-    return INITIAL_DATA;
-  }
-};
-
 export default function RrhhManagement() {
-  const [items, setItems] = useState(() => readData());
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
+  const [items, setItems] = useState(INITIAL_DATA);
+  const [selectedId, setSelectedId] = useState(INITIAL_DATA[0]?.id ?? null);
   const [query, setQuery] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const persist = (next) => {
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      const data = await loadSharedDocument(SHARED_DOCUMENT_KEYS.rrhh, INITIAL_DATA);
+      if (!active) return;
+      const nextItems = Array.isArray(data) && data.length ? data : INITIAL_DATA;
+      setItems(nextItems);
+      setSelectedId(nextItems[0]?.id ?? null);
+      setLoading(false);
+    };
+    load();
+    return () => { active = false; };
+  }, []);
+
+  const persist = async (next) => {
     setItems(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    try {
+      await saveSharedDocument(SHARED_DOCUMENT_KEYS.rrhh, next);
+      setError('');
+    } catch (err) {
+      console.error('Error guardando RRHH:', err);
+      setError('No se pudo guardar en el servidor. Revisa la conexión o tus permisos.');
+    }
   };
 
   const filtered = useMemo(
@@ -65,7 +77,7 @@ export default function RrhhManagement() {
     setForm(EMPTY_FORM);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const payload = {
       ...form,
@@ -84,30 +96,44 @@ export default function RrhhManagement() {
     if (!payload.codigo || !payload.nombres_apellidos) return;
 
     if (editingId) {
-      persist(items.map((item) => (item.id === editingId ? { ...item, ...payload } : item)));
+      await persist(items.map((item) => (item.id === editingId ? { ...item, ...payload } : item)));
     } else {
       const nextId = items.length ? Math.max(...items.map((item) => item.id)) + 1 : 1;
       const next = [{ ...payload, id: nextId }, ...items];
-      persist(next);
+      await persist(next);
       setSelectedId(nextId);
     }
 
     handleCancel();
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedItem) return;
     if (!window.confirm(`¿Eliminar técnico ${selectedItem.nombres_apellidos}?`)) return;
     const next = items.filter((item) => item.id !== selectedItem.id);
-    persist(next);
+    await persist(next);
     setSelectedId(next[0]?.id ?? null);
     handleCancel();
   };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestión de RRHH</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edición y eliminación de técnicos de mantenimiento.</p>
+
+      {error && (
+        <div className="alert alert-error">
+          {error}
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>

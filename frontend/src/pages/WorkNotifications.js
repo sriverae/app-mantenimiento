@@ -1,10 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
 // Nota: este archivo debe permanecer sin marcadores de conflicto de merge.
-const OT_ALERTS_KEY = 'pmp_ot_alertas_v1';
-const OT_WORK_REPORTS_KEY = 'pmp_ot_work_reports_v1';
-const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
-const MATERIALES_KEY = 'pmp_materiales_v1';
+const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
+const OT_WORK_REPORTS_KEY = SHARED_DOCUMENT_KEYS.otWorkReports;
+const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
+const RRHH_KEY = SHARED_DOCUMENT_KEYS.rrhh;
+const MATERIALES_KEY = SHARED_DOCUMENT_KEYS.materials;
 
 const RRHH_FALLBACK = [
   { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', especialidad: 'Mecánico' },
@@ -16,18 +18,182 @@ const MATERIALES_FALLBACK = [
   { id: 2, codigo: 'PRD0000001', descripcion: 'ACEITE 15W40 CAT X 5 GL', marca: 'N.A.', proveedor: 'N.A.' },
 ];
 
-const readJson = (key, fallback = []) => {
-  try {
-    const raw = localStorage.getItem(key);
-    const parsed = raw ? JSON.parse(raw) : fallback;
-    return Array.isArray(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
+const toPositiveNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
 
-const writeJson = (key, value) => {
-  localStorage.setItem(key, JSON.stringify(value));
+const getMaterialKey = (item) => {
+  if (item?.materialId !== null && item?.materialId !== undefined && item?.materialId !== '') {
+    return `id:${item.materialId}`;
+  }
+  const codigo = String(item?.codigo || '').trim().toLowerCase();
+  return codigo ? `code:${codigo}` : '';
+};
+
+const buildMaterialConsumptionMap = (report) => {
+  const consumption = new Map();
+  const addRow = (item, quantity) => {
+    const key = getMaterialKey(item);
+    const nextQuantity = toPositiveNumber(quantity);
+    if (!key || !nextQuantity) return;
+    const existing = consumption.get(key);
+    consumption.set(key, {
+      materialId: item.materialId ?? existing?.materialId ?? null,
+      codigo: item.codigo || existing?.codigo || '',
+      descripcion: item.descripcion || existing?.descripcion || '',
+      cantidad: Number(((existing?.cantidad || 0) + nextQuantity).toFixed(2)),
+    });
+  };
+
+  (report?.materialesConfirmados || []).forEach((item) => {
+    if (item.confirmada) addRow(item, item.cantidadConfirmada);
+  });
+  (report?.materialesExtra || []).forEach((item) => addRow(item, item.cantidad));
+
+  return consumption;
+};
+
+const updateCatalogStock = (catalog, consumptionMap, multiplier) => {
+  const nextCatalog = catalog.map((item) => ({ ...item }));
+  for (const row of consumptionMap.values()) {
+    const index = nextCatalog.findIndex((item) => (
+      String(item.id) === String(row.materialId)
+      || (
+        row.codigo
+        && String(item.codigo || '').trim().toLowerCase() === String(row.codigo || '').trim().toLowerCase()
+      )
+    ));
+
+    if (index < 0) {
+      if (multiplier < 0) {
+        return {
+          ok: false,
+          message: `El material ${row.codigo || row.descripcion || 'sin código'} ya no existe en el catálogo.`,
+        };
+      }
+      continue;
+    }
+
+    const currentStock = Number(nextCatalog[index].stock) || 0;
+    const nextStock = Number((currentStock + (multiplier * row.cantidad)).toFixed(2));
+    if (nextStock < 0) {
+      return {
+        ok: false,
+        message: `Stock insuficiente para ${nextCatalog[index].codigo || nextCatalog[index].descripcion}. Disponible: ${currentStock}, requerido: ${row.cantidad}.`,
+      };
+    }
+    nextCatalog[index].stock = nextStock;
+  }
+
+  return { ok: true, data: nextCatalog };
+};
+
+const calculateReportMaterialCost = (report, catalog) => {
+  const costByKey = new Map();
+  (catalog || []).forEach((item) => {
+    costByKey.set(`id:${item.id}`, Number(item.costo_unit) || 0);
+    if (item.codigo) costByKey.set(`code:${String(item.codigo).trim().toLowerCase()}`, Number(item.costo_unit) || 0);
+  });
+
+  let total = 0;
+  buildMaterialConsumptionMap(report).forEach((item) => {
+    const key = getMaterialKey(item);
+    total += (costByKey.get(key) || 0) * (Number(item.cantidad) || 0);
+  });
+  return Number(total.toFixed(2));
+};
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildCloseReportHtml = (alert, reports, catalog) => {
+  const reportRows = (reports || []).map((report, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(report.reportCode || '')}</td>
+      <td>${escapeHtml(`${report.fechaInicio || ''} ${report.horaInicio || ''}`.trim())}</td>
+      <td>${escapeHtml(`${report.fechaFin || ''} ${report.horaFin || ''}`.trim())}</td>
+      <td>${escapeHtml((report.tecnicos || []).map((item) => `${item.tecnico} (${item.horas} h)`).join(', '))}</td>
+      <td>${escapeHtml((report.materialesExtra || []).map((item) => `${item.codigo || item.descripcion} x${item.cantidad}`).join(', '))}</td>
+      <td>S/ ${calculateReportMaterialCost(report, catalog).toFixed(2)}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>OT ${escapeHtml(alert.ot_numero || '')}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+          h1, h2 { margin: 0 0 12px; }
+          .section { margin-top: 24px; }
+          .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 20px; }
+          .label { font-size: 12px; color: #6b7280; text-transform: uppercase; }
+          .value { font-size: 14px; font-weight: 600; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; font-size: 12px; }
+          th { background: #eff6ff; }
+        </style>
+      </head>
+      <body>
+        <h1>Orden de Trabajo ${escapeHtml(alert.ot_numero || 'N.A.')}</h1>
+        <div class="grid section">
+          <div><div class="label">Equipo</div><div class="value">${escapeHtml(alert.codigo || '')} - ${escapeHtml(alert.descripcion || '')}</div></div>
+          <div><div class="label">Estado final</div><div class="value">${escapeHtml(alert.status_ot || '')}</div></div>
+          <div><div class="label">Responsable</div><div class="value">${escapeHtml(alert.responsable || '')}</div></div>
+          <div><div class="label">Fecha a ejecutar</div><div class="value">${escapeHtml(alert.fecha_ejecutar || '')}</div></div>
+          <div><div class="label">Inicio OT</div><div class="value">${escapeHtml(`${alert.registro_ot?.fecha_inicio || ''} ${alert.registro_ot?.hora_inicio || ''}`.trim())}</div></div>
+          <div><div class="label">Fin OT</div><div class="value">${escapeHtml(`${alert.registro_ot?.fecha_fin || ''} ${alert.registro_ot?.hora_fin || ''}`.trim())}</div></div>
+        </div>
+
+        <div class="section">
+          <h2>Personal y materiales liberados</h2>
+          <div><strong>Personal:</strong> ${escapeHtml(alert.personal_mantenimiento || 'N.A.')}</div>
+          <div><strong>Materiales:</strong> ${escapeHtml(alert.materiales || 'N.A.')}</div>
+        </div>
+
+        <div class="section">
+          <h2>Registros de trabajo</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Codigo</th>
+                <th>Inicio</th>
+                <th>Fin</th>
+                <th>Tecnicos</th>
+                <th>Materiales extra</th>
+                <th>Costo materiales</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${reportRows || '<tr><td colspan="7">Sin registros.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </body>
+    </html>
+  `;
+};
+
+const openCloseReportPdf = (alert, reports, catalog) => {
+  const printWindow = window.open('', '_blank', 'width=1024,height=768');
+  if (!printWindow) {
+    window.alert('No se pudo abrir la ventana para generar el PDF.');
+    return;
+  }
+  printWindow.document.write(buildCloseReportHtml(alert, reports, catalog));
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+  }, 300);
 };
 
 function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, onClose }) {
@@ -36,7 +202,6 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
     const q = query.trim().toLowerCase();
     return items.filter((item) => filterFn(item, q)).slice(0, 30);
   }, [items, query, filterFn]);
-
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1100, padding: '1rem' }}>
@@ -66,25 +231,59 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
   );
 }
 
-function EditLiberatedOtModal({ alert, onClose, onSave }) {
+function EditLiberatedOtModal({
+  alert, rrhhItems, materialsCatalog, onClose, onSave,
+}) {
+  const [tab, setTab] = useState('registro');
   const [form, setForm] = useState({
-    status_ot: alert.status_ot || 'Liberada',
-    ot_numero: alert.ot_numero || '',
-    codigo: alert.codigo || '',
-    descripcion: alert.descripcion || '',
-    area: alert.area || alert.area_equipo || '',
-    equipo: alert.equipo || '',
     prioridad: alert.prioridad || '',
     actividad: alert.actividad || '',
     responsable: alert.responsable || '',
     fecha_ejecutar: alert.fecha_ejecutar || '',
     fecha_inicio_prop: alert.registro_ot?.fecha_inicio || '',
-    hora_inicio_prop: alert.registro_ot?.hora_inicio || '',
     fecha_fin_prop: alert.registro_ot?.fecha_fin || '',
+    hora_inicio_prop: alert.registro_ot?.hora_inicio || '',
     hora_fin_prop: alert.registro_ot?.hora_fin || '',
-    personal_mantenimiento: alert.personal_mantenimiento || '',
-    materiales: alert.materiales || '',
+    turno: alert.registro_ot?.turno || 'Primero',
+    observaciones: alert.registro_ot?.observaciones || '',
   });
+  const [personalAsignado, setPersonalAsignado] = useState(alert.personal_detalle || []);
+  const [materialesAsignados, setMaterialesAsignados] = useState(alert.materiales_detalle || []);
+  const [selectedPersonalId, setSelectedPersonalId] = useState('');
+  const [selectedMaterialId, setSelectedMaterialId] = useState('');
+  const [cantidadMaterial, setCantidadMaterial] = useState(1);
+
+  const eligibleRrhh = useMemo(
+    () => rrhhItems.filter((item) => ['tecnico', 'técnico', 'encargado'].includes(String(item.cargo || 'tecnico').toLowerCase())),
+    [rrhhItems],
+  );
+
+  const addPersonal = () => {
+    const item = eligibleRrhh.find((it) => String(it.id) === String(selectedPersonalId));
+    if (!item || personalAsignado.some((row) => String(row.id) === String(item.id))) return;
+    setPersonalAsignado((prev) => [...prev, item]);
+  };
+
+  const removePersonal = (id) => {
+    setPersonalAsignado((prev) => prev.filter((row) => String(row.id) !== String(id)));
+  };
+
+  const addMaterial = () => {
+    const item = materialsCatalog.find((it) => String(it.id) === String(selectedMaterialId));
+    const cantidad = Number(cantidadMaterial) || 0;
+    if (!item || cantidad <= 0) return;
+    setMaterialesAsignados((prev) => {
+      const existing = prev.find((row) => String(row.id) === String(item.id));
+      if (existing) {
+        return prev.map((row) => (String(row.id) === String(item.id) ? { ...row, cantidad: (Number(row.cantidad) || 0) + cantidad } : row));
+      }
+      return [...prev, { ...item, cantidad }];
+    });
+  };
+
+  const removeMaterial = (id) => {
+    setMaterialesAsignados((prev) => prev.filter((row) => String(row.id) !== String(id)));
+  };
 
   const handleSubmit = () => {
     if (!form.fecha_inicio_prop || !form.fecha_fin_prop) {
@@ -95,32 +294,121 @@ function EditLiberatedOtModal({ alert, onClose, onSave }) {
       window.alert('La fecha inicio propuesta no puede ser mayor que la fecha fin propuesta.');
       return;
     }
-    onSave(form);
+    onSave({
+      ...form,
+      personalAsignado,
+      materialesAsignados,
+    });
   };
+
+  const tabButton = (id, label) => (
+    <button
+      type="button"
+      className={`btn ${tab === id ? 'btn-primary' : 'btn-secondary'}`}
+      style={{ padding: '.45rem .9rem' }}
+      onClick={() => setTab(id)}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1200, padding: '1rem' }}>
-      <div className="card" style={{ width: 'min(760px, 95vw)', maxHeight: '90vh', overflow: 'auto', marginBottom: 0 }}>
-        <h3 className="card-title" style={{ marginBottom: '.6rem' }}>Editar OT liberada #{alert.ot_numero || 'N.A.'}</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.65rem' }}>
-          <div><label className="form-label">Estado OT</label><input className="form-input" value={form.status_ot} onChange={(e) => setForm({ ...form, status_ot: e.target.value })} /></div>
-          <div><label className="form-label"># OT</label><input className="form-input" value={form.ot_numero} onChange={(e) => setForm({ ...form, ot_numero: e.target.value })} /></div>
-          <div><label className="form-label">Código</label><input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
-          <div><label className="form-label">Equipo</label><input className="form-input" value={form.equipo} onChange={(e) => setForm({ ...form, equipo: e.target.value })} /></div>
-          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Descripción</label><input className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
-          <div><label className="form-label">Área</label><input className="form-input" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} /></div>
-          <div><label className="form-label">Prioridad</label><input className="form-input" value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value })} /></div>
-          <div><label className="form-label">Responsable</label><input className="form-input" value={form.responsable} onChange={(e) => setForm({ ...form, responsable: e.target.value })} /></div>
-          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Actividad</label><input className="form-input" value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} /></div>
-          <div><label className="form-label">Fecha a ejecutar</label><input className="form-input" type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} /></div>
-          <div />
-          <div><label className="form-label">Inicio propuesto OT</label><input className="form-input" type="date" value={form.fecha_inicio_prop} onChange={(e) => setForm({ ...form, fecha_inicio_prop: e.target.value })} /></div>
-          <div><label className="form-label">Hora inicio propuesta</label><input className="form-input" type="time" value={form.hora_inicio_prop} onChange={(e) => setForm({ ...form, hora_inicio_prop: e.target.value })} /></div>
-          <div><label className="form-label">Fin propuesto OT</label><input className="form-input" type="date" value={form.fecha_fin_prop} onChange={(e) => setForm({ ...form, fecha_fin_prop: e.target.value })} /></div>
-          <div><label className="form-label">Hora fin propuesta</label><input className="form-input" type="time" value={form.hora_fin_prop} onChange={(e) => setForm({ ...form, hora_fin_prop: e.target.value })} /></div>
-          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Personal mantenimiento</label><textarea className="form-textarea" rows={2} value={form.personal_mantenimiento} onChange={(e) => setForm({ ...form, personal_mantenimiento: e.target.value })} /></div>
-          <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Materiales asignados</label><textarea className="form-textarea" rows={2} value={form.materiales} onChange={(e) => setForm({ ...form, materiales: e.target.value })} /></div>
+      <div className="card" style={{ width: 'min(1080px, 96vw)', maxHeight: '92vh', overflow: 'auto', marginBottom: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.8rem', marginBottom: '.8rem' }}>
+          <h3 className="card-title" style={{ marginBottom: 0 }}>Editar OT liberada #{alert.ot_numero || 'N.A.'}</h3>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar</button>
         </div>
+
+        <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+          {tabButton('registro', 'Registro')}
+          {tabButton('personal', 'Personal')}
+          {tabButton('materiales', 'Materiales')}
+        </div>
+
+        {tab === 'registro' && (
+          <div className="card" style={{ marginBottom: 0, background: '#f8fafc' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.65rem' }}>
+              <div><label className="form-label">Prioridad</label><input className="form-input" value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value })} /></div>
+              <div><label className="form-label">Responsable</label><input className="form-input" value={form.responsable} onChange={(e) => setForm({ ...form, responsable: e.target.value })} /></div>
+              <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Actividad</label><textarea className="form-textarea" value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} /></div>
+              <div><label className="form-label">Fecha a ejecutar</label><input className="form-input" type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} /></div>
+              <div><label className="form-label">Turno</label><select className="form-select" value={form.turno} onChange={(e) => setForm({ ...form, turno: e.target.value })}><option>Primero</option><option>Segundo</option><option>Tercero</option></select></div>
+              <div><label className="form-label">Inicio propuesto OT</label><input className="form-input" type="date" value={form.fecha_inicio_prop} onChange={(e) => setForm({ ...form, fecha_inicio_prop: e.target.value })} /></div>
+              <div><label className="form-label">Fin propuesto OT</label><input className="form-input" type="date" value={form.fecha_fin_prop} onChange={(e) => setForm({ ...form, fecha_fin_prop: e.target.value })} /></div>
+              <div><label className="form-label">Hora inicio</label><input className="form-input" type="time" value={form.hora_inicio_prop} onChange={(e) => setForm({ ...form, hora_inicio_prop: e.target.value })} /></div>
+              <div><label className="form-label">Hora fin</label><input className="form-input" type="time" value={form.hora_fin_prop} onChange={(e) => setForm({ ...form, hora_fin_prop: e.target.value })} /></div>
+              <div style={{ gridColumn: '1 / -1' }}><label className="form-label">Observaciones</label><textarea className="form-textarea" value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} /></div>
+            </div>
+          </div>
+        )}
+
+        {tab === 'personal' && (
+          <div className="card" style={{ marginBottom: 0, background: '#f8fafc' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.7rem', marginBottom: '.8rem' }}>
+              <select className="form-select" value={selectedPersonalId} onChange={(e) => setSelectedPersonalId(e.target.value)}>
+                <option value="">Selecciona técnico...</option>
+                {eligibleRrhh.map((item) => (
+                  <option key={item.id} value={item.id}>{item.codigo} - {item.nombres_apellidos}</option>
+                ))}
+              </select>
+              <button type="button" className="btn btn-primary" onClick={addPersonal}>Agregar</button>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#e5e7eb' }}>
+                  {['Código', 'Nombre', 'Especialidad', 'Acción'].map((h) => <th key={h} style={{ border: '1px solid #d1d5db', padding: '.45rem', textAlign: 'left' }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {personalAsignado.map((item) => (
+                  <tr key={item.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.nombres_apellidos}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.especialidad || 'N.A.'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removePersonal(item.id)}>Quitar</button></td>
+                  </tr>
+                ))}
+                {!personalAsignado.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin técnicos asignados.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {tab === 'materiales' && (
+          <div className="card" style={{ marginBottom: 0, background: '#f8fafc' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px auto', gap: '.7rem', marginBottom: '.8rem' }}>
+              <select className="form-select" value={selectedMaterialId} onChange={(e) => setSelectedMaterialId(e.target.value)}>
+                <option value="">Selecciona material...</option>
+                {materialsCatalog.map((item) => (
+                  <option key={item.id} value={item.id}>{item.codigo} - {item.descripcion}</option>
+                ))}
+              </select>
+              <input type="number" min="1" className="form-input" value={cantidadMaterial} onChange={(e) => setCantidadMaterial(e.target.value)} />
+              <button type="button" className="btn btn-primary" onClick={addMaterial}>Agregar</button>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#e5e7eb' }}>
+                  {['Código', 'Descripción', 'Unidad', 'Cantidad', 'Acción'].map((h) => <th key={h} style={{ border: '1px solid #d1d5db', padding: '.45rem', textAlign: 'left' }}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {materialesAsignados.map((item) => (
+                  <tr key={item.id}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.descripcion}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.unidad || 'UND'}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.cantidad}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeMaterial(item.id)}>Quitar</button></td>
+                  </tr>
+                ))}
+                {!materialesAsignados.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales asignados.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem', marginTop: '.8rem' }}>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
           <button type="button" className="btn btn-primary" onClick={handleSubmit}>Guardar cambios OT</button>
@@ -255,6 +543,16 @@ function RegisterWorkModal({
     }
     if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) {
       window.alert('Debes registrar fecha y hora de inicio y fin.');
+      return;
+    }
+    const startDateTime = new Date(`${fechaInicio}T${horaInicio}:00`);
+    const endDateTime = new Date(`${fechaFin}T${horaFin}:00`);
+    if (
+      Number.isNaN(startDateTime.getTime())
+      || Number.isNaN(endDateTime.getTime())
+      || startDateTime >= endDateTime
+    ) {
+      window.alert('La fecha y hora de inicio deben ser menores a la fecha y hora de fin.');
       return;
     }
     const proposedStart = alert.registro_ot?.fecha_inicio;
@@ -438,10 +736,10 @@ function RegisterWorkModal({
 }
 
 export default function WorkNotifications({ user }) {
-  const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
-  const [workReports, setWorkReports] = useState(() => readJson(OT_WORK_REPORTS_KEY, []));
-  const [rrhhItems, setRrhhItems] = useState(() => readJson(RRHH_KEY, RRHH_FALLBACK));
-  const [materialsCatalog, setMaterialsCatalog] = useState(() => readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+  const [alerts, setAlerts] = useState([]);
+  const [workReports, setWorkReports] = useState([]);
+  const [rrhhItems, setRrhhItems] = useState(RRHH_FALLBACK);
+  const [materialsCatalog, setMaterialsCatalog] = useState(MATERIALES_FALLBACK);
   const [selectedAlertId, setSelectedAlertId] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [editingReportId, setEditingReportId] = useState(null);
@@ -451,6 +749,51 @@ export default function WorkNotifications({ user }) {
   const [filterWorker, setFilterWorker] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterEquipment, setFilterEquipment] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      const [alertsData, reportsData, rrhhData, materialsData] = await Promise.all([
+        loadSharedDocument(OT_ALERTS_KEY, []),
+        loadSharedDocument(OT_WORK_REPORTS_KEY, []),
+        loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
+        loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
+      ]);
+      if (!active) return;
+      setAlerts(Array.isArray(alertsData) ? alertsData : []);
+      setWorkReports(Array.isArray(reportsData) ? reportsData : []);
+      setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
+      setMaterialsCatalog(Array.isArray(materialsData) && materialsData.length ? materialsData : MATERIALES_FALLBACK);
+      setLoading(false);
+    };
+    load();
+    return () => { active = false; };
+  }, []);
+
+  const persistAlerts = async (nextAlerts) => {
+    setAlerts(nextAlerts);
+    try {
+      await saveSharedDocument(OT_ALERTS_KEY, nextAlerts);
+      setError('');
+    } catch (err) {
+      console.error('Error guardando alertas OT:', err);
+      setError('No se pudieron guardar las notificaciones de trabajo en el servidor.');
+    }
+  };
+
+  const persistWorkReports = async (nextReports) => {
+    setWorkReports(nextReports);
+    try {
+      await saveSharedDocument(OT_WORK_REPORTS_KEY, nextReports);
+      setError('');
+    } catch (err) {
+      console.error('Error guardando reportes OT:', err);
+      setError('No se pudieron guardar los reportes de trabajo en el servidor.');
+    }
+  };
 
   const liberatedNotifications = useMemo(
     () => alerts
@@ -459,16 +802,14 @@ export default function WorkNotifications({ user }) {
     [alerts],
   );
 
-  const selectedAlert = useMemo(
-    () => liberatedNotifications.find((item) => String(item.id) === String(selectedAlertId)) || null,
-    [liberatedNotifications, selectedAlertId],
-  );
   const editingReport = useMemo(
     () => workReports.find((item) => item.id === editingReportId) || null,
     [workReports, editingReportId],
   );
   const normalizedRole = String(user?.role || '').toUpperCase();
   const canEditLiberatedOt = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
+  const canRequestClose = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
+  const canApproveClose = ['PLANNER', 'INGENIERO'].includes(normalizedRole);
 
   const reportByAlert = useMemo(() => {
     const map = new Map();
@@ -484,12 +825,33 @@ export default function WorkNotifications({ user }) {
     return map;
   }, [workReports]);
 
-  const areaOptions = useMemo(
-    () => Array.from(new Set(liberatedNotifications.map((it) => (it.area || it.area_equipo || 'N.A.')))),
-    [liberatedNotifications],
+  const requestCloseNotifications = useMemo(
+    () => alerts
+      .filter((item) => item.status_ot === 'Solicitud de cierre')
+      .sort((a, b) => new Date(b.cierre_ot?.solicitud_cierre_fecha || 0) - new Date(a.cierre_ot?.solicitud_cierre_fecha || 0)),
+    [alerts],
   );
 
-  const filteredNotifications = useMemo(() => liberatedNotifications.filter((item) => {
+  const visibleNotifications = useMemo(() => {
+    if (canApproveClose) return [...requestCloseNotifications, ...liberatedNotifications];
+    return liberatedNotifications;
+  }, [canApproveClose, requestCloseNotifications, liberatedNotifications]);
+
+  const selectedAlert = useMemo(
+    () => visibleNotifications.find((item) => String(item.id) === String(selectedAlertId)) || null,
+    [visibleNotifications, selectedAlertId],
+  );
+
+  const areaOptions = useMemo(
+    () => Array.from(new Set(visibleNotifications.map((it) => (it.area || it.area_equipo || 'N.A.')))),
+    [visibleNotifications],
+  );
+  const totalMaterialCost = useMemo(
+    () => workReports.reduce((sum, report) => sum + calculateReportMaterialCost(report, materialsCatalog), 0),
+    [workReports, materialsCatalog],
+  );
+
+  const filteredNotifications = useMemo(() => visibleNotifications.filter((item) => {
     const reports = reportByAlert.get(String(item.id)) || [];
     const areaValue = (item.area || item.area_equipo || 'N.A.').toLowerCase();
     const workerValue = `${item.responsable || ''} ${item.personal_mantenimiento || ''}`.toLowerCase();
@@ -502,14 +864,15 @@ export default function WorkNotifications({ user }) {
       && (!filterWorker || workerValue.includes(filterWorker.toLowerCase()))
       && (!filterEquipment || equipmentValue.includes(filterEquipment.toLowerCase()))
       && dateMatches;
-  }), [liberatedNotifications, reportByAlert, filterArea, filterWorker, filterDate, filterEquipment]);
+  }), [visibleNotifications, reportByAlert, filterArea, filterWorker, filterDate, filterEquipment]);
 
-  const saveWorkReport = (payload) => {
+  const saveWorkReport = async (payload) => {
     if (!selectedAlert) return;
     const isEditing = !!editingReportId;
+    const currentReport = isEditing ? workReports.find((item) => item.id === editingReportId) || null : null;
     const existingForOt = workReports.filter((item) => String(item.alertId) === String(selectedAlert.id));
     const nextSequence = isEditing
-      ? (workReports.find((item) => item.id === editingReportId)?.sequence || (existingForOt.length || 1))
+      ? (currentReport?.sequence || (existingForOt.length || 1))
       : (existingForOt.length + 1);
     const reportCode = `NT${nextSequence}-OT${selectedAlert.ot_numero || selectedAlert.id}`;
     const report = {
@@ -519,86 +882,188 @@ export default function WorkNotifications({ user }) {
       sequence: nextSequence,
       reportCode,
       createdAt: isEditing
-        ? (workReports.find((item) => item.id === editingReportId)?.createdAt || new Date().toISOString())
+        ? (currentReport?.createdAt || new Date().toISOString())
         : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       ...payload,
     };
 
+    const catalogLoaded = await loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK);
+    const baseCatalog = Array.isArray(catalogLoaded) ? catalogLoaded : MATERIALES_FALLBACK;
+    const restoredCatalog = isEditing
+      ? updateCatalogStock(baseCatalog, buildMaterialConsumptionMap(currentReport), 1)
+      : { ok: true, data: baseCatalog.map((item) => ({ ...item })) };
+    if (!restoredCatalog.ok) {
+      window.alert(restoredCatalog.message);
+      return;
+    }
+
+    const discountedCatalog = updateCatalogStock(restoredCatalog.data, buildMaterialConsumptionMap(report), -1);
+    if (!discountedCatalog.ok) {
+      window.alert(discountedCatalog.message);
+      return;
+    }
+
     const nextReports = isEditing
       ? workReports.map((item) => (item.id === editingReportId ? report : item))
       : [...workReports, report];
-    setWorkReports(nextReports);
-    writeJson(OT_WORK_REPORTS_KEY, nextReports);
+    await saveSharedDocument(MATERIALES_KEY, discountedCatalog.data);
+    setMaterialsCatalog(discountedCatalog.data);
+    await persistWorkReports(nextReports);
 
     const nextAlerts = alerts.map((item) => (String(item.id) === String(selectedAlert.id)
-      ? { ...item, cierre_ot: { ...(item.cierre_ot || {}), trabajo_registrado: true, ultima_actualizacion: report.createdAt } }
+      ? { ...item, cierre_ot: { ...(item.cierre_ot || {}), trabajo_registrado: true, ultima_actualizacion: report.updatedAt } }
       : item));
-    setAlerts(nextAlerts);
-    writeJson(OT_ALERTS_KEY, nextAlerts);
+    await persistAlerts(nextAlerts);
 
     setShowRegisterModal(false);
     setEditingReportId(null);
     window.alert('Trabajo registrado correctamente.');
   };
 
-  const handleDeleteReport = (reportId) => {
+  const handleDeleteReport = async (reportId) => {
     if (!window.confirm('¿Eliminar este registro de trabajo?')) return;
+    const deletedReport = workReports.find((item) => item.id === reportId);
+    if (!deletedReport) return;
+    const catalogLoaded = await loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK);
+    const baseCatalog = Array.isArray(catalogLoaded) ? catalogLoaded : MATERIALES_FALLBACK;
+    const restoredCatalog = updateCatalogStock(baseCatalog, buildMaterialConsumptionMap(deletedReport), 1);
+    if (!restoredCatalog.ok) {
+      window.alert(restoredCatalog.message);
+      return;
+    }
+
     const nextReports = workReports.filter((item) => item.id !== reportId);
-    setWorkReports(nextReports);
-    writeJson(OT_WORK_REPORTS_KEY, nextReports);
+    await saveSharedDocument(MATERIALES_KEY, restoredCatalog.data);
+    setMaterialsCatalog(restoredCatalog.data);
+    await persistWorkReports(nextReports);
+
+    const reportsForAlert = nextReports
+      .filter((item) => String(item.alertId) === String(deletedReport.alertId))
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+    const nextAlerts = alerts.map((item) => {
+      if (String(item.id) !== String(deletedReport.alertId)) return item;
+      return {
+        ...item,
+        cierre_ot: {
+          ...(item.cierre_ot || {}),
+          trabajo_registrado: reportsForAlert.length > 0,
+          ultima_actualizacion: reportsForAlert[0]?.updatedAt || reportsForAlert[0]?.createdAt || '',
+        },
+      };
+    });
+    await persistAlerts(nextAlerts);
   };
 
-  const handleOpenRegister = () => {
-    setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
-    setMaterialsCatalog(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+  const handleOpenRegister = async () => {
+    const [rrhhData, materialsData] = await Promise.all([
+      loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
+      loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
+    ]);
+    setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
+    setMaterialsCatalog(Array.isArray(materialsData) && materialsData.length ? materialsData : MATERIALES_FALLBACK);
     setEditingReportId(null);
     setShowRegisterModal(true);
   };
 
-  const handleEditReport = (alertId, reportId) => {
+  const handleEditReport = async (alertId, reportId) => {
     setSelectedAlertId(alertId);
-    setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
-    setMaterialsCatalog(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+    const [rrhhData, materialsData] = await Promise.all([
+      loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
+      loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
+    ]);
+    setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
+    setMaterialsCatalog(Array.isArray(materialsData) && materialsData.length ? materialsData : MATERIALES_FALLBACK);
     setEditingReportId(reportId);
     setShowRegisterModal(true);
   };
 
-  const handleSaveOtChanges = (payload) => {
+  const handleSaveOtChanges = async (payload) => {
     if (!selectedAlert) return;
     const nextAlerts = alerts.map((item) => {
       if (String(item.id) !== String(selectedAlert.id)) return item;
       return {
         ...item,
-        status_ot: payload.status_ot,
-        ot_numero: payload.ot_numero,
-        codigo: payload.codigo,
-        descripcion: payload.descripcion,
-        area: payload.area,
-        equipo: payload.equipo,
         prioridad: payload.prioridad,
         actividad: payload.actividad,
         responsable: payload.responsable,
         fecha_ejecutar: payload.fecha_ejecutar,
-        personal_mantenimiento: payload.personal_mantenimiento,
-        materiales: payload.materiales,
+        personal_mantenimiento: (payload.personalAsignado || []).map((row) => `${row.codigo} - ${row.nombres_apellidos}`).join(', '),
+        materiales: (payload.materialesAsignados || []).map((row) => `${row.codigo} x${row.cantidad}`).join(', '),
+        personal_detalle: payload.personalAsignado || item.personal_detalle || [],
+        materiales_detalle: payload.materialesAsignados || item.materiales_detalle || [],
         registro_ot: {
           ...(item.registro_ot || {}),
           fecha_inicio: payload.fecha_inicio_prop,
-          hora_inicio: payload.hora_inicio_prop,
           fecha_fin: payload.fecha_fin_prop,
+          hora_inicio: payload.hora_inicio_prop,
           hora_fin: payload.hora_fin_prop,
+          turno: payload.turno,
+          observaciones: payload.observaciones,
         },
       };
     });
-    setAlerts(nextAlerts);
-    writeJson(OT_ALERTS_KEY, nextAlerts);
+    await persistAlerts(nextAlerts);
     setShowEditOtModal(false);
+  };
+
+  const handleRequestClose = async () => {
+    if (!selectedAlert) return;
+    const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
+    if (!reportsForAlert.length) {
+      window.alert('Debes tener al menos un registro de trabajo antes de solicitar cierre.');
+      return;
+    }
+    const nextAlerts = alerts.map((item) => {
+      if (String(item.id) !== String(selectedAlert.id)) return item;
+      return {
+        ...item,
+        status_ot: 'Solicitud de cierre',
+        cierre_ot: {
+          ...(item.cierre_ot || {}),
+          solicitud_cierre: true,
+          solicitud_cierre_fecha: new Date().toISOString(),
+          solicitud_cierre_por: user?.full_name || user?.username || 'Encargado',
+        },
+      };
+    });
+    await persistAlerts(nextAlerts);
+    setSelectedAlertId(null);
+  };
+
+  const handleApproveClose = async () => {
+    if (!selectedAlert) return;
+    const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
+    const history = await loadSharedDocument(OT_HISTORY_KEY, []);
+    const closedRow = {
+      ...selectedAlert,
+      status_ot: 'Cerrada',
+      fecha_cierre: new Date().toISOString().slice(0, 10),
+      cierre_ot: {
+        ...(selectedAlert.cierre_ot || {}),
+        cierre_aprobado_por: user?.full_name || user?.username || normalizedRole,
+        cierre_aprobado_fecha: new Date().toISOString(),
+      },
+      reportes_trabajo: reportsForAlert,
+    };
+    await saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]);
+    const nextAlerts = alerts.filter((item) => String(item.id) !== String(selectedAlert.id));
+    await persistAlerts(nextAlerts);
+    openCloseReportPdf(closedRow, reportsForAlert, materialsCatalog);
+    setSelectedAlertId(null);
   };
 
   const toggleOtExpanded = (alertId) => {
     setExpandedOtIds((prev) => ({ ...prev, [alertId]: !prev[alertId] }));
   };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -606,6 +1071,37 @@ export default function WorkNotifications({ user }) {
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
         Selecciona una OT liberada y usa <strong>Registrar Trabajo</strong> para cargar horas por técnico, actividades y validación de materiales.
       </p>
+
+      {error && (
+        <div className="alert alert-error">
+          {error}
+        </div>
+      )}
+
+      {canApproveClose && requestCloseNotifications.length > 0 && (
+        <div className="alert alert-warning">
+          Hay {requestCloseNotifications.length} solicitud(es) de cierre pendientes de revisión para PLANNER/INGENIERO.
+        </div>
+      )}
+
+      <div className="stats-grid" style={{ marginBottom: '.8rem' }}>
+        <div className="stat-card">
+          <div className="stat-label">OT Liberadas</div>
+          <div className="stat-value" style={{ color: '#2563eb' }}>{liberatedNotifications.length}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Solicitudes de Cierre</div>
+          <div className="stat-value" style={{ color: '#dc2626' }}>{requestCloseNotifications.length}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Registros de Trabajo</div>
+          <div className="stat-value" style={{ color: '#059669' }}>{workReports.length}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Costo Materiales</div>
+          <div className="stat-value" style={{ color: '#7c3aed' }}>S/ {totalMaterialCost.toFixed(2)}</div>
+        </div>
+      </div>
 
       <div className="card" style={{ marginBottom: '.8rem' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(160px, 1fr))', gap: '.65rem' }}>
@@ -635,7 +1131,7 @@ export default function WorkNotifications({ user }) {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!selectedAlert}
+          disabled={!selectedAlert || selectedAlert.status_ot !== 'Liberada'}
           onClick={handleOpenRegister}
         >
           Registrar Trabajo
@@ -643,6 +1139,16 @@ export default function WorkNotifications({ user }) {
         {canEditLiberatedOt && selectedAlert && (
           <button type="button" className="btn btn-secondary" onClick={() => setShowEditOtModal(true)}>
             Editar OT liberada
+          </button>
+        )}
+        {canRequestClose && selectedAlert?.status_ot === 'Liberada' && (
+          <button type="button" className="btn btn-danger" onClick={handleRequestClose}>
+            Solicitar cierre
+          </button>
+        )}
+        {canApproveClose && selectedAlert?.status_ot === 'Solicitud de cierre' && (
+          <button type="button" className="btn btn-primary" onClick={handleApproveClose}>
+            Cerrar OT y generar PDF
           </button>
         )}
       </div>
@@ -750,6 +1256,8 @@ export default function WorkNotifications({ user }) {
       {showEditOtModal && selectedAlert && (
         <EditLiberatedOtModal
           alert={selectedAlert}
+          rrhhItems={rrhhItems}
+          materialsCatalog={materialsCatalog}
           onClose={() => setShowEditOtModal(false)}
           onSave={handleSaveOtChanges}
         />

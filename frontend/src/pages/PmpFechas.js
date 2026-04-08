@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
 const INITIAL_PLANS = [
   { id: 1, codigo: 'IAISPL1', equipo: 'Pre Limpia Sabreca N 1', prioridad: 'Alta', frecuencia: 'Mensual', responsable: 'Mecánico', fecha_inicio: '2026-04-01', actividades: 'Inspección de fajas, limpieza y verificación de sensores.' },
@@ -16,9 +17,9 @@ const EMPTY_FORM = {
   paquete_id: '',
 };
 
-const PLAN_STORAGE_KEY = 'pmp_fechas_plans_v1';
-const EQUIPOS_STORAGE_KEY = 'pmp_equipos_items_v1';
-const PACKAGES_STORAGE_KEY = 'pmp_paquetes_mantenimiento_v1';
+const PLAN_STORAGE_KEY = SHARED_DOCUMENT_KEYS.maintenancePlans;
+const EQUIPOS_STORAGE_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
+const PACKAGES_STORAGE_KEY = SHARED_DOCUMENT_KEYS.maintenancePackages;
 const PACKAGES_FALLBACK = [
   {
     id: 1,
@@ -29,39 +30,6 @@ const PACKAGES_FALLBACK = [
     actividades: ['Inspección visual general', 'Limpieza de componentes', 'Verificación de ajuste de pernos'],
   },
 ];
-
-function getStoredPlans() {
-  try {
-    const raw = localStorage.getItem(PLAN_STORAGE_KEY);
-    if (!raw) return INITIAL_PLANS;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : INITIAL_PLANS;
-  } catch {
-    return INITIAL_PLANS;
-  }
-}
-
-function getStoredEquipos() {
-  try {
-    const raw = localStorage.getItem(EQUIPOS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function getStoredPackages() {
-  try {
-    const raw = localStorage.getItem(PACKAGES_STORAGE_KEY);
-    if (!raw) return PACKAGES_FALLBACK;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : PACKAGES_FALLBACK;
-  } catch {
-    return PACKAGES_FALLBACK;
-  }
-}
 
 const FREQ_TO_DAYS = {
   Semanal: 7,
@@ -115,14 +83,26 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+function normalizeEquiposList(items) {
+  return (Array.isArray(items) ? items : [])
+    .filter(Boolean)
+    .map((eq, index) => ({
+      id: eq.id ?? `eq_${index}_${eq.codigo || 'sin_codigo'}`,
+      codigo: eq.codigo || '',
+      descripcion: eq.descripcion || eq.equipo || '',
+      area_trabajo: eq.area_trabajo || '',
+      ...eq,
+    }));
+}
+
 export default function PmpFechas() {
-  const [plans, setPlans] = useState(() => getStoredPlans());
+  const [plans, setPlans] = useState(INITIAL_PLANS);
   const [selectedId, setSelectedId] = useState(INITIAL_PLANS[0]?.id ?? null);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
-  const [equipos, setEquipos] = useState(() => getStoredEquipos());
-  const [packages, setPackages] = useState(() => getStoredPackages());
+  const [equipos, setEquipos] = useState([]);
+  const [packages, setPackages] = useState(PACKAGES_FALLBACK);
   const [packageFilterText, setPackageFilterText] = useState('');
   const [manualActivityInput, setManualActivityInput] = useState('');
   const [manualActivities, setManualActivities] = useState([]);
@@ -132,64 +112,108 @@ export default function PmpFechas() {
   const [selectedEquipmentIds, setSelectedEquipmentIds] = useState([]);
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
+  const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(plans));
-  }, [plans]);
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      const [loadedPlans, loadedEquipos, loadedPackages] = await Promise.all([
+        loadSharedDocument(PLAN_STORAGE_KEY, INITIAL_PLANS),
+        loadSharedDocument(EQUIPOS_STORAGE_KEY, []),
+        loadSharedDocument(PACKAGES_STORAGE_KEY, PACKAGES_FALLBACK),
+      ]);
+      if (!active) return;
+      const nextPlans = Array.isArray(loadedPlans) && loadedPlans.length ? loadedPlans : INITIAL_PLANS;
+      const nextEquipos = normalizeEquiposList(loadedEquipos);
+      setPlans(nextPlans);
+      setSelectedId(nextPlans[0]?.id ?? null);
+      setEquipos(nextEquipos);
+      setPackages(Array.isArray(loadedPackages) && loadedPackages.length ? loadedPackages : PACKAGES_FALLBACK);
+      setHydrated(true);
+      setLoading(false);
+    };
+    load();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    saveSharedDocument(PLAN_STORAGE_KEY, plans).catch((err) => {
+      console.error('Error guardando planes PMP:', err);
+      setError('No se pudieron guardar los planes PMP en el servidor.');
+    });
+  }, [plans, hydrated]);
 
   useEffect(() => {
     if (!showModal) return;
-    const latestPackages = getStoredPackages();
-    setPackages(latestPackages);
-    if (form.paquete_id && !latestPackages.some((item) => String(item.id) === String(form.paquete_id))) {
-      setForm((prev) => ({ ...prev, paquete_id: '' }));
-    }
+    loadSharedDocument(PACKAGES_STORAGE_KEY, PACKAGES_FALLBACK).then((latestPackages) => {
+      const nextPackages = Array.isArray(latestPackages) && latestPackages.length ? latestPackages : PACKAGES_FALLBACK;
+      setPackages(nextPackages);
+      if (form.paquete_id && !nextPackages.some((item) => String(item.id) === String(form.paquete_id))) {
+        setForm((prev) => ({ ...prev, paquete_id: '' }));
+      }
+    });
   }, [showModal, form.paquete_id]);
 
   const selectedPlan = useMemo(
     () => plans.find((p) => p.id === selectedId) || null,
     [plans, selectedId],
   );
+  const equiposForSelection = useMemo(() => {
+    const normalized = normalizeEquiposList(equipos);
+    if (!editingId || !selectedPlan) return normalized;
+    const exists = normalized.some((eq) => (eq.codigo || '') === (selectedPlan.codigo || ''));
+    if (exists) return normalized;
+    return [{
+      id: `plan_${selectedPlan.id}`,
+      codigo: selectedPlan.codigo || '',
+      descripcion: selectedPlan.equipo || '',
+      area_trabajo: '',
+    }, ...normalized];
+  }, [equipos, editingId, selectedPlan]);
 
   const uniqueAreas = useMemo(
-    () => Array.from(new Set(equipos.map((e) => e.area_trabajo).filter(Boolean))).sort(),
-    [equipos],
+    () => Array.from(new Set(equiposForSelection.map((e) => e.area_trabajo).filter(Boolean))).sort(),
+    [equiposForSelection],
   );
 
-  const filteredEquipos = useMemo(() => equipos.filter((eq) => {
+  const filteredEquipos = useMemo(() => equiposForSelection.filter((eq) => {
     const areaOk = !equipmentAreaFilter || eq.area_trabajo === equipmentAreaFilter;
     const codeOk = !equipmentCodeFilter || (eq.codigo || '').toLowerCase().includes(equipmentCodeFilter.toLowerCase());
     const textOk = !equipmentTextFilter || `${eq.codigo} ${eq.descripcion}`.toLowerCase().includes(equipmentTextFilter.toLowerCase());
     return areaOk && codeOk && textOk;
-  }), [equipos, equipmentAreaFilter, equipmentCodeFilter, equipmentTextFilter]);
+  }), [equiposForSelection, equipmentAreaFilter, equipmentCodeFilter, equipmentTextFilter]);
 
-  const openCreate = () => {
+  const openCreate = async () => {
     setEditingId(null);
     setForm({ ...EMPTY_FORM, fecha_inicio: new Date().toISOString().split('T')[0] });
     setEquipmentAreaFilter('');
     setEquipmentCodeFilter('');
     setEquipmentTextFilter('');
     setSelectedEquipmentIds([]);
-    setEquipos(getStoredEquipos());
-    setPackages(getStoredPackages());
+    setEquipos(normalizeEquiposList(await loadSharedDocument(EQUIPOS_STORAGE_KEY, [])));
+    setPackages(await loadSharedDocument(PACKAGES_STORAGE_KEY, PACKAGES_FALLBACK));
     setPackageFilterText('');
     setManualActivityInput('');
     setManualActivities([]);
     setShowModal(true);
   };
 
-  const openEdit = () => {
+  const openEdit = async () => {
     if (!selectedPlan) return;
     setEditingId(selectedPlan.id);
     setForm({ ...selectedPlan });
-    const freshEquipos = getStoredEquipos();
+    const freshEquipos = normalizeEquiposList(await loadSharedDocument(EQUIPOS_STORAGE_KEY, []));
     setEquipos(freshEquipos);
     const matchEquipo = freshEquipos.find((eq) => eq.codigo === selectedPlan.codigo);
-    setSelectedEquipmentIds(matchEquipo ? [String(matchEquipo.id)] : []);
+    setSelectedEquipmentIds(matchEquipo ? [String(matchEquipo.id)] : [`plan_${selectedPlan.id}`]);
     setEquipmentAreaFilter('');
     setEquipmentCodeFilter('');
     setEquipmentTextFilter('');
-    setPackages(getStoredPackages());
+    setPackages(await loadSharedDocument(PACKAGES_STORAGE_KEY, PACKAGES_FALLBACK));
     setPackageFilterText('');
     setManualActivityInput('');
     setManualActivities((selectedPlan.actividades || '').split('\n').map((i) => i.trim()).filter(Boolean));
@@ -265,12 +289,26 @@ export default function PmpFechas() {
     setManualActivities((prev) => prev.filter((_, idx) => idx !== index));
   };
 
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ marginBottom: '1.25rem' }}>
         <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '.35rem' }}>Plan de mantenimiento preventivo</h1>
         <p style={{ color: '#6b7280' }}>Cronograma anual por fechas para equipos de planta.</p>
       </div>
+
+      {error && (
+        <div className="alert alert-error">
+          {error}
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap' }}>
@@ -429,7 +467,13 @@ export default function PmpFechas() {
                     value={packageFilterText}
                     onChange={(e) => setPackageFilterText(e.target.value)}
                   />
-                  <button type="button" className="btn btn-secondary" onClick={() => setPackages(getStoredPackages())}>Recargar paquetes</button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={async () => setPackages(await loadSharedDocument(PACKAGES_STORAGE_KEY, PACKAGES_FALLBACK))}
+                  >
+                    Recargar paquetes
+                  </button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.55rem' }}>
                   <select

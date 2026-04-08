@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
-const PACKAGES_KEY = 'pmp_paquetes_mantenimiento_v1';
+const PACKAGES_KEY = SHARED_DOCUMENT_KEYS.maintenancePackages;
 
 const INITIAL_PACKAGES = [
   {
@@ -13,16 +14,6 @@ const INITIAL_PACKAGES = [
   },
 ];
 
-const readPackages = () => {
-  try {
-    const raw = localStorage.getItem(PACKAGES_KEY);
-    const parsed = raw ? JSON.parse(raw) : INITIAL_PACKAGES;
-    return Array.isArray(parsed) ? parsed : INITIAL_PACKAGES;
-  } catch {
-    return INITIAL_PACKAGES;
-  }
-};
-
 const EMPTY_FORM = {
   codigo: '',
   vc: 'V.C - DÍA',
@@ -31,17 +22,30 @@ const EMPTY_FORM = {
 };
 
 export default function PmpPaquetesMantenimiento() {
-  const [items, setItems] = useState(() => readPackages());
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
+  const [items, setItems] = useState(INITIAL_PACKAGES);
+  const [selectedId, setSelectedId] = useState(INITIAL_PACKAGES[0]?.id ?? null);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [activityInput, setActivityInput] = useState('');
   const [activities, setActivities] = useState([]);
   const [filterVc, setFilterVc] = useState('TODOS');
+  const [loading, setLoading] = useState(true);
 
-  const persist = (next) => {
+  useEffect(() => {
+    let active = true;
+    loadSharedDocument(PACKAGES_KEY, INITIAL_PACKAGES).then((data) => {
+      if (!active) return;
+      const nextItems = Array.isArray(data) && data.length ? data : INITIAL_PACKAGES;
+      setItems(nextItems);
+      setSelectedId(nextItems[0]?.id ?? null);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
+  const persist = async (next) => {
     setItems(next);
-    localStorage.setItem(PACKAGES_KEY, JSON.stringify(next));
+    await saveSharedDocument(PACKAGES_KEY, next);
   };
 
   const filtered = useMemo(() => {
@@ -71,11 +75,11 @@ export default function PmpPaquetesMantenimiento() {
     setActivityInput('');
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selected) return;
     if (!window.confirm(`¿Eliminar paquete ${selected.nombre}?`)) return;
     const next = items.filter((item) => item.id !== selected.id);
-    persist(next);
+    await persist(next);
     setSelectedId(next[0]?.id ?? null);
     handleNew();
   };
@@ -91,7 +95,7 @@ export default function PmpPaquetesMantenimiento() {
     setActivities((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.codigo || !form.nombre || !activities.length) {
       window.alert('Completa código, nombre y agrega al menos una actividad.');
       return;
@@ -107,17 +111,25 @@ export default function PmpPaquetesMantenimiento() {
 
     if (editingId) {
       const next = items.map((item) => (item.id === editingId ? { ...item, ...payload } : item));
-      persist(next);
+      await persist(next);
       setSelectedId(editingId);
     } else {
       const nextId = items.length ? Math.max(...items.map((item) => item.id)) + 1 : 1;
       const next = [{ id: nextId, ...payload }, ...items];
-      persist(next);
+      await persist(next);
       setSelectedId(nextId);
     }
 
     handleNew();
   };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>

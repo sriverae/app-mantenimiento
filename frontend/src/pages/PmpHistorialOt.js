@@ -1,30 +1,141 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
-const OT_HISTORY_KEY = 'pmp_ot_historial_v1';
+const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
 
-const readHistory = () => {
-  try {
-    const raw = localStorage.getItem(OT_HISTORY_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildCloseReportHtml = (alert, reports) => {
+  const reportRows = (reports || []).map((report, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(report.reportCode || '')}</td>
+      <td>${escapeHtml(`${report.fechaInicio || ''} ${report.horaInicio || ''}`.trim())}</td>
+      <td>${escapeHtml(`${report.fechaFin || ''} ${report.horaFin || ''}`.trim())}</td>
+      <td>${escapeHtml((report.tecnicos || []).map((item) => `${item.tecnico} (${item.horas} h)`).join(', '))}</td>
+      <td>${escapeHtml((report.materialesExtra || []).map((item) => `${item.codigo || item.descripcion} x${item.cantidad}`).join(', '))}</td>
+      <td>${escapeHtml(report.observaciones || '')}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>OT ${escapeHtml(alert.ot_numero || '')}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+          h1, h2 { margin: 0 0 12px; }
+          .section { margin-top: 24px; }
+          .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 20px; }
+          .label { font-size: 12px; color: #6b7280; text-transform: uppercase; }
+          .value { font-size: 14px; font-weight: 600; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; font-size: 12px; }
+          th { background: #eff6ff; }
+        </style>
+      </head>
+      <body>
+        <h1>Orden de Trabajo ${escapeHtml(alert.ot_numero || 'N.A.')}</h1>
+        <div class="grid section">
+          <div><div class="label">Equipo</div><div class="value">${escapeHtml(alert.codigo || '')} - ${escapeHtml(alert.descripcion || '')}</div></div>
+          <div><div class="label">Estado final</div><div class="value">${escapeHtml(alert.status_ot || '')}</div></div>
+          <div><div class="label">Responsable</div><div class="value">${escapeHtml(alert.responsable || '')}</div></div>
+          <div><div class="label">Fecha a ejecutar</div><div class="value">${escapeHtml(alert.fecha_ejecutar || '')}</div></div>
+          <div><div class="label">Inicio OT</div><div class="value">${escapeHtml(`${alert.registro_ot?.fecha_inicio || ''} ${alert.registro_ot?.hora_inicio || ''}`.trim())}</div></div>
+          <div><div class="label">Fin OT</div><div class="value">${escapeHtml(`${alert.cierre_ot?.fecha_fin || alert.registro_ot?.fecha_fin || ''} ${alert.cierre_ot?.hora_fin || alert.registro_ot?.hora_fin || ''}`.trim())}</div></div>
+        </div>
+
+        <div class="section">
+          <h2>Personal y materiales</h2>
+          <div><strong>Personal:</strong> ${escapeHtml(alert.personal_mantenimiento || 'N.A.')}</div>
+          <div><strong>Materiales:</strong> ${escapeHtml(alert.materiales || 'N.A.')}</div>
+          <div><strong>Observaciones cierre:</strong> ${escapeHtml(alert.cierre_ot?.observaciones || '')}</div>
+        </div>
+
+        <div class="section">
+          <h2>Registros de trabajo</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Codigo</th>
+                <th>Inicio</th>
+                <th>Fin</th>
+                <th>Tecnicos</th>
+                <th>Materiales extra</th>
+                <th>Observaciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${reportRows || '<tr><td colspan="7">Sin registros.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </body>
+    </html>
+  `;
+};
+
+const openCloseReportPdf = (alert, reports) => {
+  const printWindow = window.open('', '_blank', 'width=1024,height=768');
+  if (!printWindow) {
+    window.alert('No se pudo abrir la ventana para generar el PDF.');
+    return;
   }
+  printWindow.document.write(buildCloseReportHtml(alert, reports));
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+  }, 300);
 };
 
 export default function PmpHistorialOt() {
-  const [items, setItems] = useState(() => readHistory());
+  const [items, setItems] = useState([]);
   const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    loadSharedDocument(OT_HISTORY_KEY, []).then((data) => {
+      if (!active) return;
+      setItems(Array.isArray(data) ? data : []);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
 
   const filtered = useMemo(() => items.filter((it) => (
     `${it.ot_numero} ${it.codigo} ${it.descripcion} ${it.area_trabajo} ${it.responsable} ${it.personal_mantenimiento}`.toLowerCase().includes(query.toLowerCase())
   )), [items, query]);
 
-  const clearHistory = () => {
+  const clearHistory = async () => {
     if (!window.confirm('¿Seguro que deseas limpiar el historial de OTs cerradas?')) return;
-    localStorage.setItem(OT_HISTORY_KEY, JSON.stringify([]));
+    await saveSharedDocument(OT_HISTORY_KEY, []);
     setItems([]);
   };
+
+  const reloadHistory = async () => {
+    setItems(await loadSharedDocument(OT_HISTORY_KEY, []));
+  };
+
+  const handleRegeneratePdf = (item) => {
+    openCloseReportPdf(item, item.reportes_trabajo || []);
+  };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -34,7 +145,7 @@ export default function PmpHistorialOt() {
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
           <input className="form-input" style={{ maxWidth: '420px' }} placeholder="Buscar por OT, código, descripción, área..." value={query} onChange={(e) => setQuery(e.target.value)} />
-          <button type="button" className="btn btn-secondary" onClick={() => setItems(readHistory())}>Recargar</button>
+          <button type="button" className="btn btn-secondary" onClick={reloadHistory}>Recargar</button>
           <button type="button" className="btn btn-danger" onClick={clearHistory}>Limpiar historial</button>
         </div>
       </div>
@@ -46,6 +157,7 @@ export default function PmpHistorialOt() {
               {[
                 'Fecha cierre', 'Fecha inicio', 'Hora inicio', 'Fecha fin', 'Hora fin', 'Código', 'Descripción', 'Área', '# OT', 'Var. Ctrl', 'Tipo mantto',
                 'Puesto trabajo resp.', 'Personal de trabajo', 'Materiales', 'Tiempo efectivo (Hh)', 'Estado equipo', 'Satisfacción', 'Observaciones',
+                'PDF',
               ].map((h) => (
                 <th key={h} style={{ border: '1px solid #2f6fb2', padding: '.55rem .5rem', fontSize: '.8rem', textAlign: 'left' }}>{h}</th>
               ))}
@@ -72,11 +184,16 @@ export default function PmpHistorialOt() {
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.estado_equipo || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.satisfaccion || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.observaciones || it.registro_ot?.observaciones || 'N.A.'}</td>
+                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleRegeneratePdf(it)}>
+                    Generar PDF
+                  </button>
+                </td>
               </tr>
             ))}
             {!filtered.length && (
               <tr>
-                <td colSpan={18} style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', border: '1px solid #d1d5db' }}>
+                <td colSpan={19} style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', border: '1px solid #d1d5db' }}>
                   No hay OTs cerradas en el historial.
                 </td>
               </tr>

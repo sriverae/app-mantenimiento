@@ -1,23 +1,34 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
-const HISTORY_KEY = 'pmp_equipos_exchange_history_v1';
-
-function getHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
+const HISTORY_KEY = SHARED_DOCUMENT_KEYS.equipmentExchangeHistory;
 
 export default function PmpIntercambiosHistorial() {
-  const [history] = useState(() => getHistory());
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    loadSharedDocument(HISTORY_KEY, []).then((data) => {
+      if (!active) return;
+      setHistory(Array.isArray(data) ? data : []);
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
   const sorted = useMemo(
     () => [...history].sort((a, b) => new Date(b.fecha) - new Date(a.fecha)),
     [history],
   );
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>

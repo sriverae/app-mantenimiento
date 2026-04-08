@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { loadSharedDocument, saveSharedDocument } from '../services/sharedDocuments';
 
 const BASE_COLUMNS = [
   { key: 'codigo', label: 'Código' },
   { key: 'descripcion', label: 'Descripción' },
   { key: 'area_trabajo', label: 'Área de trabajo' },
+  { key: 'criticidad', label: 'Criticidad' },
   { key: 'marca', label: 'Marca' },
   { key: 'capacidad', label: 'Capacidad' },
   { key: 'potencia_kw', label: 'Potencia (kW)' },
@@ -19,6 +21,7 @@ const INITIAL_EQUIPOS = [
     codigo: 'IAISPL1',
     descripcion: 'Pre Limpia Sabreca N 1',
     area_trabajo: 'Secado',
+    criticidad: 'Alta',
     marca: 'N.A.',
     capacidad: 'N.A.',
     potencia_kw: 'N.A.',
@@ -31,6 +34,7 @@ const INITIAL_EQUIPOS = [
     codigo: 'IAISPL2',
     descripcion: 'Pre Limpia Superbrix N 2',
     area_trabajo: 'Secado',
+    criticidad: 'Media',
     marca: 'Superbrix',
     capacidad: 'N.A.',
     potencia_kw: '2.2',
@@ -45,17 +49,6 @@ const STORAGE_KEYS = {
   equipos: 'pmp_equipos_items_v1',
   exchangeHistory: 'pmp_equipos_exchange_history_v1',
 };
-
-function getStoredJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 function Modal({ title, onClose, children, maxWidth = '860px' }) {
   return (
@@ -72,8 +65,8 @@ function Modal({ title, onClose, children, maxWidth = '860px' }) {
 }
 
 export default function PmpEquipos() {
-  const [columns, setColumns] = useState(() => getStoredJSON(STORAGE_KEYS.columns, BASE_COLUMNS));
-  const [equipos, setEquipos] = useState(() => getStoredJSON(STORAGE_KEYS.equipos, INITIAL_EQUIPOS));
+  const [columns, setColumns] = useState(BASE_COLUMNS);
+  const [equipos, setEquipos] = useState(INITIAL_EQUIPOS);
   const [selectedId, setSelectedId] = useState(INITIAL_EQUIPOS[0]?.id ?? null);
   const [showEquipoModal, setShowEquipoModal] = useState(false);
   const [showColModal, setShowColModal] = useState(false);
@@ -93,22 +86,64 @@ export default function PmpEquipos() {
   const [draftFeatures, setDraftFeatures] = useState([]);
   const [showNoteField, setShowNoteField] = useState(false);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
-  const [exchangeHistory, setExchangeHistory] = useState(() => getStoredJSON(STORAGE_KEYS.exchangeHistory, []));
+  const [exchangeHistory, setExchangeHistory] = useState([]);
   const [exchangeSourceId, setExchangeSourceId] = useState(INITIAL_EQUIPOS[0]?.id ?? null);
   const [exchangeNodeId, setExchangeNodeId] = useState('');
   const [exchangeTargetId, setExchangeTargetId] = useState(INITIAL_EQUIPOS[1]?.id ?? null);
+  const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.columns, JSON.stringify(columns));
-  }, [columns]);
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      const [loadedColumns, loadedEquipos, loadedExchangeHistory] = await Promise.all([
+        loadSharedDocument(STORAGE_KEYS.columns, BASE_COLUMNS),
+        loadSharedDocument(STORAGE_KEYS.equipos, INITIAL_EQUIPOS),
+        loadSharedDocument(STORAGE_KEYS.exchangeHistory, []),
+      ]);
+      if (!active) return;
+      const nextColumns = Array.isArray(loadedColumns) && loadedColumns.length ? loadedColumns : BASE_COLUMNS;
+      const nextEquipos = (Array.isArray(loadedEquipos) && loadedEquipos.length ? loadedEquipos : INITIAL_EQUIPOS)
+        .map((equipo) => ({ criticidad: 'Media', estado: 'Operativo', ...equipo }));
+      const nextHistory = Array.isArray(loadedExchangeHistory) ? loadedExchangeHistory : [];
+      setColumns(nextColumns);
+      setEquipos(nextEquipos);
+      setExchangeHistory(nextHistory);
+      setSelectedId(nextEquipos[0]?.id ?? null);
+      setExchangeSourceId(nextEquipos[0]?.id ?? null);
+      setExchangeTargetId(nextEquipos[1]?.id ?? null);
+      setHydrated(true);
+      setLoading(false);
+    };
+    load();
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.equipos, JSON.stringify(equipos));
-  }, [equipos]);
+    if (!hydrated) return;
+    saveSharedDocument(STORAGE_KEYS.columns, columns).catch((err) => {
+      console.error('Error guardando columnas de equipos:', err);
+      setError('No se pudo guardar control de equipos en el servidor.');
+    });
+  }, [columns, hydrated]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.exchangeHistory, JSON.stringify(exchangeHistory));
-  }, [exchangeHistory]);
+    if (!hydrated) return;
+    saveSharedDocument(STORAGE_KEYS.equipos, equipos).catch((err) => {
+      console.error('Error guardando equipos:', err);
+      setError('No se pudo guardar control de equipos en el servidor.');
+    });
+  }, [equipos, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    saveSharedDocument(STORAGE_KEYS.exchangeHistory, exchangeHistory).catch((err) => {
+      console.error('Error guardando historial de intercambios:', err);
+      setError('No se pudo guardar el historial de intercambios en el servidor.');
+    });
+  }, [exchangeHistory, hydrated]);
 
   useEffect(() => {
     if (!columns.some((col) => col.key === columnToRemove)) {
@@ -122,6 +157,9 @@ export default function PmpEquipos() {
   const selectedNode = despieceNodes.find((n) => n.id === selectedNodeId) || null;
   const exchangeSourceEquipo = equipos.find((e) => e.id === Number(exchangeSourceId)) || null;
   const exchangeSourceNodes = exchangeSourceEquipo?.despiece || [];
+  const totalEquipos = equipos.length;
+  const equiposCriticos = useMemo(() => equipos.filter((equipo) => String(equipo.criticidad || '').toLowerCase() === 'alta').length, [equipos]);
+  const equiposInoperativos = useMemo(() => equipos.filter((equipo) => String(equipo.estado || '').toLowerCase() !== 'operativo').length, [equipos]);
 
   const openNewEquipo = () => {
     const defaultForm = {};
@@ -299,12 +337,12 @@ export default function PmpEquipos() {
     let changed = true;
     while (changed) {
       changed = false;
-      despieceNodes.forEach((node) => {
+      for (const node of despieceNodes) {
         if (node.parentId && toDelete.has(node.parentId) && !toDelete.has(node.id)) {
           toDelete.add(node.id);
           changed = true;
         }
-      });
+      }
     }
     setEquipos((prev) => prev.map((eq) => (
       eq.id === despieceTarget.id
@@ -335,12 +373,12 @@ export default function PmpEquipos() {
     let changed = true;
     while (changed) {
       changed = false;
-      nodes.forEach((node) => {
+      for (const node of nodes) {
         if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
           ids.add(node.id);
           changed = true;
         }
-      });
+      }
     }
     return ids;
   };
@@ -445,11 +483,40 @@ export default function PmpEquipos() {
     );
   };
 
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ marginBottom: '1.2rem' }}>
         <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '.35rem' }}>Control de equipos</h1>
         <p style={{ color: '#6b7280' }}>Gestión de inventario PMP con columnas dinámicas para nuevos campos.</p>
+      </div>
+
+      {error && (
+        <div className="alert alert-error">
+          {error}
+        </div>
+      )}
+
+      <div className="stats-grid" style={{ marginBottom: '1rem' }}>
+        <div className="stat-card">
+          <div className="stat-label">Equipos registrados</div>
+          <div className="stat-value">{totalEquipos}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Criticidad alta</div>
+          <div className="stat-value" style={{ color: '#dc2626' }}>{equiposCriticos}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">No operativos</div>
+          <div className="stat-value" style={{ color: '#b45309' }}>{equiposInoperativos}</div>
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: '1rem' }}>

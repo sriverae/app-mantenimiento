@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
-
-const STORAGE_KEY = 'pmp_materiales_v1';
+import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
 const INITIAL_DATA = [
   { id: 1, codigo: 'PRD0000000', descripcion: 'ABRAZADERA 5"', marca: 'N.A.', proveedor: 'N.A.', stock: 1000, unidad: 'UND', costo_unit: 4, stock_min: 50 },
@@ -18,26 +17,44 @@ const EMPTY_FORM = {
   stock_min: 0,
 };
 
-const readData = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : INITIAL_DATA;
-    return Array.isArray(parsed) ? parsed : INITIAL_DATA;
-  } catch {
-    return INITIAL_DATA;
-  }
-};
-
 export default function MaterialsManagement() {
-  const [items, setItems] = useState(() => readData());
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
+  const [items, setItems] = useState(INITIAL_DATA);
+  const [otAlerts, setOtAlerts] = useState([]);
+  const [selectedId, setSelectedId] = useState(INITIAL_DATA[0]?.id ?? null);
   const [query, setQuery] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const persist = (next) => {
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      const [data, alertsData] = await Promise.all([
+        loadSharedDocument(SHARED_DOCUMENT_KEYS.materials, INITIAL_DATA),
+        loadSharedDocument(SHARED_DOCUMENT_KEYS.otAlerts, []),
+      ]);
+      if (!active) return;
+      const nextItems = Array.isArray(data) && data.length ? data : INITIAL_DATA;
+      setItems(nextItems);
+      setOtAlerts(Array.isArray(alertsData) ? alertsData : []);
+      setSelectedId(nextItems[0]?.id ?? null);
+      setLoading(false);
+    };
+    load();
+    return () => { active = false; };
+  }, []);
+
+  const persist = async (next) => {
     setItems(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    try {
+      await saveSharedDocument(SHARED_DOCUMENT_KEYS.materials, next);
+      setError('');
+    } catch (err) {
+      console.error('Error guardando materiales:', err);
+      setError('No se pudo guardar en el servidor. Revisa la conexion o tus permisos.');
+    }
   };
 
   const filtered = useMemo(
@@ -48,6 +65,31 @@ export default function MaterialsManagement() {
   const totalInventario = useMemo(
     () => items.reduce((sum, it) => sum + (Number(it.stock) * Number(it.costo_unit)), 0),
     [items],
+  );
+  const materialesBajoMinimo = useMemo(
+    () => items.filter((it) => (Number(it.stock) || 0) <= (Number(it.stock_min) || 0)).length,
+    [items],
+  );
+  const materialesSinStock = useMemo(
+    () => items.filter((it) => (Number(it.stock) || 0) <= 0).length,
+    [items],
+  );
+  const reservedByOt = useMemo(() => {
+    const reserved = new Map();
+    otAlerts
+      .filter((item) => ['Creada', 'Liberada'].includes(item.status_ot))
+      .forEach((item) => {
+        (item.materiales_detalle || []).forEach((material) => {
+          const key = String(material.id ?? material.materialId ?? material.codigo ?? '');
+          if (!key) return;
+          reserved.set(key, (reserved.get(key) || 0) + (Number(material.cantidad) || 0));
+        });
+      });
+    return reserved;
+  }, [otAlerts]);
+  const materialesReservados = useMemo(
+    () => items.filter((it) => (reservedByOt.get(String(it.id)) || 0) > 0).length,
+    [items, reservedByOt],
   );
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
@@ -68,7 +110,7 @@ export default function MaterialsManagement() {
     setForm(EMPTY_FORM);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.codigo.trim() || !form.descripcion.trim()) return;
 
@@ -85,30 +127,44 @@ export default function MaterialsManagement() {
     };
 
     if (editingId) {
-      persist(items.map((item) => (item.id === editingId ? { ...item, ...payload } : item)));
+      await persist(items.map((item) => (item.id === editingId ? { ...item, ...payload } : item)));
     } else {
       const nextId = items.length ? Math.max(...items.map((item) => item.id)) + 1 : 1;
       const next = [{ ...payload, id: nextId }, ...items];
-      persist(next);
+      await persist(next);
       setSelectedId(nextId);
     }
 
     handleCancel();
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedItem) return;
     if (!window.confirm(`¿Eliminar material ${selectedItem.descripcion}?`)) return;
     const next = items.filter((item) => item.id !== selectedItem.id);
-    persist(next);
+    await persist(next);
     setSelectedId(next[0]?.id ?? null);
     handleCancel();
   };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestión de Materiales</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edición y eliminación de materiales/repuestos.</p>
+
+      {error && (
+        <div className="alert alert-error">
+          {error}
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -129,8 +185,27 @@ export default function MaterialsManagement() {
         </div>
       </div>
 
+      <div className="stats-grid" style={{ marginBottom: '1rem' }}>
+        <div className="stat-card">
+          <div className="stat-label">Materiales Catalogados</div>
+          <div className="stat-value">{items.length}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Bajo Stock Mínimo</div>
+          <div className="stat-value" style={{ color: '#ea580c' }}>{materialesBajoMinimo}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Sin Stock</div>
+          <div className="stat-value" style={{ color: '#dc2626' }}>{materialesSinStock}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Reservados en OT</div>
+          <div className="stat-value" style={{ color: '#2563eb' }}>{materialesReservados}</div>
+        </div>
+      </div>
+
       <div className="card" style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1120px' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1320px' }}>
           <thead>
             <tr style={{ background: '#f3f4f6' }}>
               {['Código', 'Descripción', 'Marca', 'Proveedor', 'Stock', 'Unidad', 'Costo unit.', 'Costo total', 'Stock mín.'].map((h) => (
@@ -139,19 +214,36 @@ export default function MaterialsManagement() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((it) => (
-              <tr key={it.id} onClick={() => setSelectedId(it.id)} style={{ background: selectedId === it.id ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
+            {filtered.map((it) => {
+              const stock = Number(it.stock) || 0;
+              const reservado = reservedByOt.get(String(it.id)) || 0;
+              const disponible = Math.max(stock - reservado, 0);
+              const stockMin = Number(it.stock_min) || 0;
+              const isCritical = disponible <= 0;
+              const isLow = disponible > 0 && disponible <= stockMin;
+              return (
+              <tr
+                key={it.id}
+                onClick={() => setSelectedId(it.id)}
+                style={{
+                  background: selectedId === it.id ? '#eff6ff' : (isCritical ? '#fef2f2' : (isLow ? '#fff7ed' : '#fff')),
+                  cursor: 'pointer',
+                }}
+              >
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.codigo}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.descripcion}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.marca}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.proveedor}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem', color: reservado > 0 ? '#2563eb' : '#6b7280', fontWeight: reservado > 0 ? 700 : 400 }}>{reservado}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem', fontWeight: (isCritical || isLow) ? 700 : 400, color: isCritical ? '#dc2626' : (isLow ? '#c2410c' : '#111827') }}>{disponible}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.unidad}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {Number(it.costo_unit).toFixed(2)}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {(Number(it.stock) * Number(it.costo_unit)).toFixed(2)}</td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {(stock * Number(it.costo_unit)).toFixed(2)}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock_min}</td>
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
       </div>

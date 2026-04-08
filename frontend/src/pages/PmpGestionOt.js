@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 
-const PLANS_KEY = 'pmp_fechas_plans_v1';
-const EQUIPOS_KEY = 'pmp_equipos_items_v1';
-const OT_ALERTS_KEY = 'pmp_ot_alertas_v1';
-const OT_HISTORY_KEY = 'pmp_ot_historial_v1';
-const RRHH_KEY = 'pmp_rrhh_tecnicos_v1';
-const MATERIALES_KEY = 'pmp_materiales_v1';
+const PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlans;
+const KM_PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlansKm;
+const EQUIPOS_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
+const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
+const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
+const OT_WORK_REPORTS_KEY = SHARED_DOCUMENT_KEYS.otWorkReports;
+const RRHH_KEY = SHARED_DOCUMENT_KEYS.rrhh;
+const MATERIALES_KEY = SHARED_DOCUMENT_KEYS.materials;
 const RRHH_FALLBACK = [
   { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', cargo: 'Técnico', especialidad: 'Mecánico', capacidad_hh_dia: '12.00' },
   { id: 2, codigo: 'ELE-1', nombres_apellidos: 'Hernan Alauce Alarcón', cargo: 'Encargado', especialidad: 'Eléctrico', capacidad_hh_dia: '12.00' },
@@ -24,36 +27,156 @@ const FREQ_TO_DAYS = {
   Anual: 365,
 };
 
-const readJson = (key, fallback) => {
-  try {
-    const raw = localStorage.getItem(key);
-    const parsed = raw ? JSON.parse(raw) : fallback;
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const getDueDatesUntilToday = (plan, today, lookbackDays = 120) => {
+const getDueDatesInWindow = (plan, windowStart, windowEnd) => {
   const intervalDays = FREQ_TO_DAYS[plan.frecuencia] ?? 30;
   const start = new Date(`${plan.fecha_inicio}T00:00:00`);
   if (Number.isNaN(start.getTime())) return [];
 
-  const limitDate = new Date(today);
-  limitDate.setDate(limitDate.getDate() - lookbackDays);
+  const from = new Date(windowStart);
+  const to = new Date(windowEnd);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) return [];
 
   const cursor = new Date(start);
-  while (cursor < limitDate) cursor.setDate(cursor.getDate() + intervalDays);
+  while (cursor < from) cursor.setDate(cursor.getDate() + intervalDays);
 
   const result = [];
-  while (cursor <= today) {
+  while (cursor <= to) {
     result.push(cursor.toISOString().slice(0, 10));
     cursor.setDate(cursor.getDate() + intervalDays);
   }
   return result;
 };
 
+const isKmPlanInAlertWindow = (plan) => {
+  const actual = Number(plan.km_actual) || 0;
+  const target = Number(plan.proximo_km) || 0;
+  const alertKm = Number(plan.alerta_km) || 0;
+  return target > 0 && actual >= Math.max(target - alertKm, 0);
+};
+
+const buildKmAlertId = (plan) => `km_${plan.id}_${Number(plan.proximo_km) || 0}`;
+
+const compareOtAlerts = (a, b) => {
+  const aIsDate = /^\d{4}-\d{2}-\d{2}$/.test(String(a.fecha_ejecutar || ''));
+  const bIsDate = /^\d{4}-\d{2}-\d{2}$/.test(String(b.fecha_ejecutar || ''));
+
+  if (aIsDate && bIsDate) {
+    return new Date(a.fecha_ejecutar) - new Date(b.fecha_ejecutar);
+  }
+  if (!aIsDate && !bIsDate) {
+    return (Number(a.km_restantes) || 0) - (Number(b.km_restantes) || 0);
+  }
+  return aIsDate ? -1 : 1;
+};
+
 const buildOtNumber = () => `OT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
+
+const buildReservationMap = (alerts, excludeAlertId = null) => {
+  const reserved = new Map();
+  alerts
+    .filter((item) => item.id !== excludeAlertId && ['Creada', 'Liberada'].includes(item.status_ot))
+    .forEach((item) => {
+      (item.materiales_detalle || []).forEach((material) => {
+        const key = String(material.id ?? material.materialId ?? material.codigo ?? '');
+        if (!key) return;
+        reserved.set(key, (reserved.get(key) || 0) + (Number(material.cantidad) || 0));
+      });
+    });
+  return reserved;
+};
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildCloseReportHtml = (alert, reports) => {
+  const reportRows = (reports || []).map((report, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(report.reportCode || '')}</td>
+      <td>${escapeHtml(`${report.fechaInicio || ''} ${report.horaInicio || ''}`.trim())}</td>
+      <td>${escapeHtml(`${report.fechaFin || ''} ${report.horaFin || ''}`.trim())}</td>
+      <td>${escapeHtml((report.tecnicos || []).map((item) => `${item.tecnico} (${item.horas} h)`).join(', '))}</td>
+      <td>${escapeHtml((report.materialesExtra || []).map((item) => `${item.codigo || item.descripcion} x${item.cantidad}`).join(', '))}</td>
+      <td>${escapeHtml(report.observaciones || '')}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>OT ${escapeHtml(alert.ot_numero || '')}</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+          h1, h2 { margin: 0 0 12px; }
+          .section { margin-top: 24px; }
+          .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 20px; }
+          .label { font-size: 12px; color: #6b7280; text-transform: uppercase; }
+          .value { font-size: 14px; font-weight: 600; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; font-size: 12px; }
+          th { background: #eff6ff; }
+        </style>
+      </head>
+      <body>
+        <h1>Orden de Trabajo ${escapeHtml(alert.ot_numero || 'N.A.')}</h1>
+        <div class="grid section">
+          <div><div class="label">Equipo</div><div class="value">${escapeHtml(alert.codigo || '')} - ${escapeHtml(alert.descripcion || '')}</div></div>
+          <div><div class="label">Estado final</div><div class="value">${escapeHtml(alert.status_ot || '')}</div></div>
+          <div><div class="label">Responsable</div><div class="value">${escapeHtml(alert.responsable || '')}</div></div>
+          <div><div class="label">Fecha a ejecutar</div><div class="value">${escapeHtml(alert.fecha_ejecutar || '')}</div></div>
+          <div><div class="label">Inicio OT</div><div class="value">${escapeHtml(`${alert.registro_ot?.fecha_inicio || ''} ${alert.registro_ot?.hora_inicio || ''}`.trim())}</div></div>
+          <div><div class="label">Fin OT</div><div class="value">${escapeHtml(`${alert.cierre_ot?.fecha_fin || alert.registro_ot?.fecha_fin || ''} ${alert.cierre_ot?.hora_fin || alert.registro_ot?.hora_fin || ''}`.trim())}</div></div>
+        </div>
+
+        <div class="section">
+          <h2>Personal y materiales</h2>
+          <div><strong>Personal:</strong> ${escapeHtml(alert.personal_mantenimiento || 'N.A.')}</div>
+          <div><strong>Materiales:</strong> ${escapeHtml(alert.materiales || 'N.A.')}</div>
+          <div><strong>Observaciones cierre:</strong> ${escapeHtml(alert.cierre_ot?.observaciones || '')}</div>
+        </div>
+
+        <div class="section">
+          <h2>Registros de trabajo</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Codigo</th>
+                <th>Inicio</th>
+                <th>Fin</th>
+                <th>Tecnicos</th>
+                <th>Materiales extra</th>
+                <th>Observaciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${reportRows || '<tr><td colspan="7">Sin registros.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </body>
+    </html>
+  `;
+};
+
+const openCloseReportPdf = (alert, reports) => {
+  const printWindow = window.open('', '_blank', 'width=1024,height=768');
+  if (!printWindow) {
+    window.alert('No se pudo abrir la ventana para generar el PDF.');
+    return;
+  }
+  printWindow.document.write(buildCloseReportHtml(alert, reports));
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+  }, 300);
+};
 
 function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, maxHorasSugeridas, onClose, onSave }) {
   const [rows, setRows] = useState(() => {
@@ -305,7 +428,7 @@ function ModalCerrarOT({ alert, onClose, onSubmit }) {
   );
 }
 
-function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmit }) {
+function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, onClose, onSubmit }) {
   const [tab, setTab] = useState('registro');
   const [registro, setRegistro] = useState(() => {
     const now = new Date();
@@ -329,6 +452,15 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
 
   const eligibleRrhh = rrhhItems.filter((item) => ['técnico', 'tecnico', 'encargado'].includes(String(item.cargo || '').toLowerCase()));
 
+  const selectedMaterial = useMemo(
+    () => materialesItems.find((it) => String(it.id) === String(selectedMaterialId)) || null,
+    [materialesItems, selectedMaterialId],
+  );
+  const reservedByOthers = useMemo(
+    () => buildReservationMap(activeAlerts || [], alert.id),
+    [activeAlerts, alert.id],
+  );
+
   const addPersonal = () => {
     const item = eligibleRrhh.find((it) => String(it.id) === String(selectedPersonalId));
     if (!item) return;
@@ -344,11 +476,19 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
     const item = materialesItems.find((it) => String(it.id) === String(selectedMaterialId));
     const cantidad = Number(cantidadMaterial);
     if (!item || !cantidad || cantidad <= 0) return;
+    const reservedByOtherOt = reservedByOthers.get(String(item.id)) || 0;
+    const stockDisponible = Math.max((Number(item.stock) || 0) - reservedByOtherOt, 0);
 
     setMaterialesAsignados((prev) => {
       const existing = prev.find((m) => m.id === item.id);
+      const cantidadActual = Number(existing?.cantidad) || 0;
+      const nuevaCantidad = cantidadActual + cantidad;
+      if (nuevaCantidad > stockDisponible) {
+        window.alert(`No puedes asignar ${nuevaCantidad} ${item.unidad || 'UND'} de ${item.codigo}. Stock disponible: ${stockDisponible}.`);
+        return prev;
+      }
       if (existing) {
-        return prev.map((m) => (m.id === item.id ? { ...m, cantidad: m.cantidad + cantidad } : m));
+        return prev.map((m) => (m.id === item.id ? { ...m, cantidad: nuevaCantidad } : m));
       }
       return [...prev, { ...item, cantidad }];
     });
@@ -362,6 +502,17 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
     if (!personalAsignado.length) {
       window.alert('Debes asignar al menos un técnico en la pestaña Personal.');
       setTab('personal');
+      return;
+    }
+
+    const materialExcedido = materialesAsignados.find((item) => {
+      const reservedByOtherOt = reservedByOthers.get(String(item.id)) || 0;
+      const stockDisponible = Math.max((Number(item.stock) || 0) - reservedByOtherOt, 0);
+      return (Number(item.cantidad) || 0) > stockDisponible;
+    });
+    if (materialExcedido) {
+      window.alert(`El material ${materialExcedido.codigo} supera el stock disponible. Ajusta la cantidad antes de liberar la OT.`);
+      setTab('materiales');
       return;
     }
 
@@ -463,6 +614,12 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
                 <button type="button" className="btn btn-primary" onClick={addMaterial}>Agregar</button>
               </div>
 
+              <p style={{ color: '#6b7280', fontSize: '.9rem', marginBottom: '.8rem' }}>
+                {selectedMaterial
+                  ? `Stock fisico: ${Number(selectedMaterial.stock) || 0} ${selectedMaterial.unidad || 'UND'} | Reservado en otras OT: ${reservedByOthers.get(String(selectedMaterial.id)) || 0} | Disponible para esta OT: ${Math.max((Number(selectedMaterial.stock) || 0) - (reservedByOthers.get(String(selectedMaterial.id)) || 0), 0)}`
+                  : 'Selecciona un material para visualizar el stock disponible.'}
+              </p>
+
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '760px' }}>
                   <thead>
@@ -500,73 +657,149 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, onClose, onSubmi
 }
 
 export default function PmpGestionOt() {
-  const [alerts, setAlerts] = useState(() => readJson(OT_ALERTS_KEY, []));
+  const [alerts, setAlerts] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [showReleaseModal, setShowReleaseModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
-  const [rrhhItems, setRrhhItems] = useState(() => readJson(RRHH_KEY, RRHH_FALLBACK));
-  const [materialesItems, setMaterialesItems] = useState(() => readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+  const [rrhhItems, setRrhhItems] = useState(RRHH_FALLBACK);
+  const [materialesItems, setMaterialesItems] = useState(MATERIALES_FALLBACK);
+  const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    const plans = readJson(PLANS_KEY, []);
-    const equipos = readJson(EQUIPOS_KEY, []);
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    let active = true;
+    const load = async () => {
+      setLoading(true);
+      const [plans, plansKm, equipos, existing, history, rrhhData, materialesData] = await Promise.all([
+        loadSharedDocument(PLANS_KEY, []),
+        loadSharedDocument(KM_PLANS_KEY, []),
+        loadSharedDocument(EQUIPOS_KEY, []),
+        loadSharedDocument(OT_ALERTS_KEY, []),
+        loadSharedDocument(OT_HISTORY_KEY, []),
+        loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
+        loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
+      ]);
+      if (!active) return;
+      const today = new Date();
+      const todayStr = today.toISOString().split('T')[0];
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
-    const existing = readJson(OT_ALERTS_KEY, []);
-    const activeExisting = existing.filter((a) => a.status_ot !== 'Cerrada');
-    const mapExisting = new Map(activeExisting.map((a) => [a.id, a]));
-    const history = readJson(OT_HISTORY_KEY, []);
-    const closedHistoryIds = new Set(history.map((item) => item.id));
+      const activeExisting = existing.filter((a) => a.status_ot !== 'Cerrada');
+      const mapExisting = new Map(activeExisting.map((a) => [a.id, a]));
+      const closedHistoryIds = new Set(history.map((item) => item.id));
 
-    const dueUntilToday = plans
-      .flatMap((plan) => {
-        const eq = equipos.find((e) => (e.codigo || '') === (plan.codigo || ''));
-        const dueDates = getDueDatesUntilToday(plan, today, 120);
-        return dueDates.map((fecha, idx) => {
-          const id = `${fecha}_${plan.id}`;
+      const dueByDate = plans
+        .flatMap((plan) => {
+          const eq = equipos.find((e) => (e.codigo || '') === (plan.codigo || ''));
+          const dueDates = getDueDatesInWindow(plan, monthStart, monthEnd);
+          return dueDates.map((fecha, idx) => {
+            const id = `${fecha}_${plan.id}`;
+            if (closedHistoryIds.has(id)) return null;
+
+            const old = mapExisting.get(id);
+            return {
+              id,
+              fecha_ejecutar: fecha,
+              codigo: plan.codigo || '',
+              descripcion: plan.equipo || '',
+              area_trabajo: eq?.area_trabajo || 'N.A.',
+              prioridad: plan.prioridad || 'Media',
+              actividad: plan.actividades || '',
+              responsable: plan.responsable || 'N.A.',
+              status_ot: old?.status_ot || (fecha === todayStr ? 'Pendiente' : 'Pendiente'),
+              ot_numero: old?.ot_numero || '',
+              fecha_ejecucion: old?.fecha_ejecucion || '',
+              tipo_mantto: 'Preventivo',
+              personal_mantenimiento: old?.personal_mantenimiento || '',
+              materiales: old?.materiales || '',
+              personal_detalle: old?.personal_detalle || [],
+              materiales_detalle: old?.materiales_detalle || [],
+              registro_ot: old?.registro_ot || null,
+              cierre_ot: old?.cierre_ot || null,
+              orden: idx + 1,
+            };
+          });
+        })
+        .filter(Boolean)
+        .sort(compareOtAlerts);
+
+      const dueByKm = (Array.isArray(plansKm) ? plansKm : [])
+        .filter((plan) => plan.codigo && isKmPlanInAlertWindow(plan))
+        .map((plan) => {
+          const target = Number(plan.proximo_km) || 0;
+          const actual = Number(plan.km_actual) || 0;
+          const remaining = Math.max(target - actual, 0);
+          const id = buildKmAlertId(plan);
           if (closedHistoryIds.has(id)) return null;
 
+          const eq = equipos.find((e) => (e.codigo || '') === (plan.codigo || ''));
           const old = mapExisting.get(id);
           return {
             id,
-            fecha_ejecutar: fecha,
+            fecha_ejecutar: old?.fecha_ejecutar || todayStr,
             codigo: plan.codigo || '',
-            descripcion: plan.equipo || '',
+            descripcion: plan.equipo || eq?.descripcion || '',
             area_trabajo: eq?.area_trabajo || 'N.A.',
             prioridad: plan.prioridad || 'Media',
-            actividad: plan.actividades || '',
+            actividad: `${plan.actividades || 'Mantenimiento preventivo por kilometraje'}${target ? `\nObjetivo km: ${target.toLocaleString('es-PE')} | Restantes: ${remaining.toLocaleString('es-PE')}` : ''}`,
             responsable: plan.responsable || 'N.A.',
-            status_ot: old?.status_ot || (fecha === todayStr ? 'Pendiente' : 'Pendiente'),
+            status_ot: old?.status_ot || 'Pendiente',
             ot_numero: old?.ot_numero || '',
             fecha_ejecucion: old?.fecha_ejecucion || '',
-            tipo_mantto: 'Preventivo',
+            tipo_mantto: 'Preventivo por Km',
             personal_mantenimiento: old?.personal_mantenimiento || '',
             materiales: old?.materiales || '',
             personal_detalle: old?.personal_detalle || [],
             materiales_detalle: old?.materiales_detalle || [],
             registro_ot: old?.registro_ot || null,
             cierre_ot: old?.cierre_ot || null,
-            orden: idx + 1,
+            plan_km_id: plan.id,
+            km_actual: actual,
+            km_objetivo: target,
+            km_restantes: remaining,
+            alerta_km: Number(plan.alerta_km) || 0,
+            origen_programacion: 'KM',
           };
-        });
-      })
-      .filter(Boolean)
-      .sort((a, b) => new Date(a.fecha_ejecutar) - new Date(b.fecha_ejecutar))
-      .map((row, idx) => ({ ...row, orden: idx + 1 }));
+        })
+        .filter(Boolean)
+        .sort(compareOtAlerts);
 
-    const dueIds = new Set(dueUntilToday.map((item) => item.id));
-    const carryOver = activeExisting.filter((item) => !dueIds.has(item.id));
-    const mergedAlerts = [...carryOver, ...dueUntilToday];
+      const dueAlerts = [...dueByDate, ...dueByKm]
+        .sort(compareOtAlerts)
+        .map((row, idx) => ({ ...row, orden: idx + 1 }));
 
-    setAlerts(mergedAlerts);
+      const dueIds = new Set(dueAlerts.map((item) => item.id));
+      const carryOver = activeExisting.filter((item) => !dueIds.has(item.id));
+      const mergedAlerts = [...carryOver, ...dueAlerts]
+        .sort(compareOtAlerts)
+        .map((row, idx) => ({ ...row, orden: idx + 1 }));
+
+      setAlerts(mergedAlerts);
+      setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
+      setMaterialesItems(Array.isArray(materialesData) && materialesData.length ? materialesData : MATERIALES_FALLBACK);
+      setHydrated(true);
+      setLoading(false);
+    };
+    load();
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(OT_ALERTS_KEY, JSON.stringify(alerts));
-  }, [alerts]);
+    if (!hydrated) return;
+    saveSharedDocument(OT_ALERTS_KEY, alerts).catch((err) => {
+      console.error('Error guardando OT activas:', err);
+      setError('No se pudo guardar la gestión de OT en el servidor.');
+    });
+  }, [alerts, hydrated]);
 
   const selected = useMemo(() => alerts.find((a) => a.id === selectedId) || null, [alerts, selectedId]);
+  const otStats = useMemo(() => ({
+    pendientes: alerts.filter((item) => item.status_ot === 'Pendiente').length,
+    creadas: alerts.filter((item) => item.status_ot === 'Creada').length,
+    liberadas: alerts.filter((item) => item.status_ot === 'Liberada').length,
+  }), [alerts]);
 
   const createOt = () => {
     if (!selected) return;
@@ -574,10 +807,14 @@ export default function PmpGestionOt() {
     setAlerts((prev) => prev.map((a) => (a.id === selected.id ? { ...a, ot_numero: a.ot_numero || nextNumber, status_ot: a.status_ot === 'Pendiente' ? 'Creada' : a.status_ot } : a)));
   };
 
-  const openReleaseModal = () => {
+  const openReleaseModal = async () => {
     if (!selected) return;
-    setRrhhItems(readJson(RRHH_KEY, RRHH_FALLBACK));
-    setMaterialesItems(readJson(MATERIALES_KEY, MATERIALES_FALLBACK));
+    const [rrhhData, materialesData] = await Promise.all([
+      loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
+      loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
+    ]);
+    setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
+    setMaterialesItems(Array.isArray(materialesData) && materialesData.length ? materialesData : MATERIALES_FALLBACK);
     setShowReleaseModal(true);
   };
 
@@ -606,37 +843,95 @@ export default function PmpGestionOt() {
 
   const openCloseModal = () => {
     if (!selected) return;
-    if (selected.status_ot !== 'Liberada') {
-      window.alert('Solo puedes cerrar una OT que esté en estado Liberada.');
+    if (selected.status_ot !== 'Solicitud de cierre') {
+      window.alert('Solo puedes cerrar una OT que esté en estado Solicitud de cierre.');
       return;
     }
     setShowCloseModal(true);
   };
 
-  const confirmCloseOt = (cierreData) => {
+  const confirmCloseOt = async (cierreData) => {
     if (!selected) return;
     const todayStr = new Date().toISOString().split('T')[0];
-    const history = readJson(OT_HISTORY_KEY, []);
+    const history = await loadSharedDocument(OT_HISTORY_KEY, []);
+    const workReports = await loadSharedDocument(OT_WORK_REPORTS_KEY, []);
+    const reportsForOt = (Array.isArray(workReports) ? workReports : []).filter((item) => String(item.alertId) === String(selected.id));
     const closedRow = {
       ...selected,
       status_ot: 'Cerrada',
       fecha_ejecucion: selected.fecha_ejecucion || todayStr,
       cierre_ot: cierreData,
       fecha_cierre: todayStr,
+      reportes_trabajo: reportsForOt,
     };
-    localStorage.setItem(OT_HISTORY_KEY, JSON.stringify([closedRow, ...history]));
+
+    if (selected.tipo_mantto === 'Preventivo por Km' && selected.plan_km_id) {
+      try {
+        const plansKm = await loadSharedDocument(KM_PLANS_KEY, []);
+        const nextPlansKm = (Array.isArray(plansKm) ? plansKm : []).map((plan) => {
+          if (String(plan.id) !== String(selected.plan_km_id)) return plan;
+          const intervalo = Number(plan.intervalo_km) || 0;
+          const kmBase = Math.max(Number(plan.km_actual) || 0, Number(plan.proximo_km) || 0);
+          return {
+            ...plan,
+            km_ultimo_mantenimiento: kmBase,
+            proximo_km: intervalo > 0 ? kmBase + intervalo : Number(plan.proximo_km) || 0,
+          };
+        });
+        await saveSharedDocument(KM_PLANS_KEY, nextPlansKm);
+      } catch (err) {
+        console.error('Error actualizando ciclo por kilometraje:', err);
+        setError('Se cerro la OT, pero no se pudo actualizar el siguiente ciclo por kilometraje.');
+      }
+    }
+    try {
+      await saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]);
+      setError('');
+    } catch (err) {
+      console.error('Error guardando historial OT:', err);
+      setError('No se pudo guardar el historial de OT en el servidor.');
+    }
 
     setAlerts((prev) => prev.filter((a) => a.id !== selected.id));
     setSelectedId(null);
     setShowCloseModal(false);
+    openCloseReportPdf(closedRow, reportsForOt);
   };
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner"></div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '.35rem' }}>Gestión de Órdenes de Trabajo</h1>
+      {error && (
+        <div className="alert alert-error">
+          {error}
+        </div>
+      )}
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
-        Alertas del día según Cronograma Anual de Mantenimiento Preventivo.
+        Alertas de mantenimiento generadas por planes preventivos por fecha y por kilometraje.
       </p>
+
+      <div className="stats-grid" style={{ marginBottom: '1rem' }}>
+        <div className="stat-card">
+          <div className="stat-label">OT Pendientes</div>
+          <div className="stat-value" style={{ color: '#b45309' }}>{otStats.pendientes}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">OT Creadas</div>
+          <div className="stat-value" style={{ color: '#2563eb' }}>{otStats.creadas}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">OT Liberadas</div>
+          <div className="stat-value" style={{ color: '#059669' }}>{otStats.liberadas}</div>
+        </div>
+      </div>
 
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', gap: '.65rem', flexWrap: 'wrap' }}>
@@ -682,6 +977,7 @@ export default function PmpGestionOt() {
           alert={selected}
           rrhhItems={rrhhItems}
           materialesItems={materialesItems}
+          activeAlerts={alerts}
           onClose={() => setShowReleaseModal(false)}
           onSubmit={confirmRelease}
         />
