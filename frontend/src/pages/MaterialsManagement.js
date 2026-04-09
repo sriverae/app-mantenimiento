@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { DEFAULT_MATERIALS, normalizeMaterialsCatalog } from '../utils/materialsCatalog';
 
-const INITIAL_DATA = [
-  { id: 1, codigo: 'PRD0000000', descripcion: 'ABRAZADERA 5"', marca: 'N.A.', proveedor: 'N.A.', stock: 1000, unidad: 'UND', costo_unit: 4, stock_min: 50 },
-  { id: 2, codigo: 'PRD0000001', descripcion: 'ACEITE 15W40 CAT X 5 GL', marca: 'N.A.', proveedor: 'N.A.', stock: 1000, unidad: 'GLN', costo_unit: 136.67, stock_min: 50 },
-];
+const INITIAL_DATA = DEFAULT_MATERIALS;
 
 const EMPTY_FORM = {
   codigo: '',
@@ -36,7 +34,7 @@ export default function MaterialsManagement() {
         loadSharedDocument(SHARED_DOCUMENT_KEYS.otAlerts, []),
       ]);
       if (!active) return;
-      const nextItems = Array.isArray(data) && data.length ? data : INITIAL_DATA;
+      const nextItems = normalizeMaterialsCatalog(data);
       setItems(nextItems);
       setOtAlerts(Array.isArray(alertsData) ? alertsData : []);
       setSelectedId(nextItems[0]?.id ?? null);
@@ -47,9 +45,10 @@ export default function MaterialsManagement() {
   }, []);
 
   const persist = async (next) => {
-    setItems(next);
+    const normalized = normalizeMaterialsCatalog(next);
+    setItems(normalized);
     try {
-      await saveSharedDocument(SHARED_DOCUMENT_KEYS.materials, next);
+      await saveSharedDocument(SHARED_DOCUMENT_KEYS.materials, normalized);
       setError('');
     } catch (err) {
       console.error('Error guardando materiales:', err);
@@ -140,7 +139,7 @@ export default function MaterialsManagement() {
 
   const handleDelete = async () => {
     if (!selectedItem) return;
-    if (!window.confirm(`¿Eliminar material ${selectedItem.descripcion}?`)) return;
+    if (!window.confirm(`Eliminar material ${selectedItem.descripcion}?`)) return;
     const next = items.filter((item) => item.id !== selectedItem.id);
     await persist(next);
     setSelectedId(next[0]?.id ?? null);
@@ -157,8 +156,8 @@ export default function MaterialsManagement() {
 
   return (
     <div>
-      <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestión de Materiales</h1>
-      <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edición y eliminación de materiales/repuestos.</p>
+      <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestion de Materiales</h1>
+      <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edicion y eliminacion de materiales/repuestos.</p>
 
       {error && (
         <div className="alert alert-error">
@@ -171,7 +170,7 @@ export default function MaterialsManagement() {
           <input
             className="form-input"
             style={{ maxWidth: '460px' }}
-            placeholder="Buscar por código, descripción, marca o proveedor"
+            placeholder="Buscar por codigo, descripcion, marca o proveedor"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -191,7 +190,7 @@ export default function MaterialsManagement() {
           <div className="stat-value">{items.length}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Bajo Stock Mínimo</div>
+          <div className="stat-label">Bajo Stock Minimo</div>
           <div className="stat-value" style={{ color: '#ea580c' }}>{materialesBajoMinimo}</div>
         </div>
         <div className="stat-card">
@@ -205,10 +204,10 @@ export default function MaterialsManagement() {
       </div>
 
       <div className="card" style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1320px' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1520px' }}>
           <thead>
             <tr style={{ background: '#f3f4f6' }}>
-              {['Código', 'Descripción', 'Marca', 'Proveedor', 'Stock', 'Unidad', 'Costo unit.', 'Costo total', 'Stock mín.'].map((h) => (
+              {['Codigo', 'Descripcion', 'Marca', 'Proveedor', 'Stock fisico', 'Reservado OT', 'Disponible', 'Unidad', 'Costo unit.', 'Costo total', 'Stock min.'].map((h) => (
                 <th key={h} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'left', color: '#374151' }}>{h}</th>
               ))}
             </tr>
@@ -222,27 +221,27 @@ export default function MaterialsManagement() {
               const isCritical = disponible <= 0;
               const isLow = disponible > 0 && disponible <= stockMin;
               return (
-              <tr
-                key={it.id}
-                onClick={() => setSelectedId(it.id)}
-                style={{
-                  background: selectedId === it.id ? '#eff6ff' : (isCritical ? '#fef2f2' : (isLow ? '#fff7ed' : '#fff')),
-                  cursor: 'pointer',
-                }}
-              >
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.codigo}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.descripcion}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.marca}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.proveedor}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem', color: reservado > 0 ? '#2563eb' : '#6b7280', fontWeight: reservado > 0 ? 700 : 400 }}>{reservado}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem', fontWeight: (isCritical || isLow) ? 700 : 400, color: isCritical ? '#dc2626' : (isLow ? '#c2410c' : '#111827') }}>{disponible}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.unidad}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {Number(it.costo_unit).toFixed(2)}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {(stock * Number(it.costo_unit)).toFixed(2)}</td>
-                <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock_min}</td>
-              </tr>
-            );
+                <tr
+                  key={it.id}
+                  onClick={() => setSelectedId(it.id)}
+                  style={{
+                    background: selectedId === it.id ? '#eff6ff' : (isCritical ? '#fef2f2' : (isLow ? '#fff7ed' : '#fff')),
+                    cursor: 'pointer',
+                  }}
+                >
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.codigo}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.descripcion}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.marca}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.proveedor}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{stock}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem', color: reservado > 0 ? '#2563eb' : '#6b7280', fontWeight: reservado > 0 ? 700 : 400 }}>{reservado}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem', fontWeight: (isCritical || isLow) ? 700 : 400, color: isCritical ? '#dc2626' : (isLow ? '#c2410c' : '#111827') }}>{disponible}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.unidad}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {Number(it.costo_unit).toFixed(2)}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>S/ {(stock * Number(it.costo_unit)).toFixed(2)}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.55rem' }}>{it.stock_min}</td>
+                </tr>
+              );
             })}
           </tbody>
         </table>
@@ -251,14 +250,14 @@ export default function MaterialsManagement() {
       <div className="card" style={{ marginTop: '1rem' }}>
         <h3 className="card-title" style={{ marginBottom: '.8rem' }}>{editingId ? 'Editar material' : 'Registrar material'}</h3>
         <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
-          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
-          <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Descripción *</label><input required className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Codigo *</label><input required className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Descripcion *</label><input required className="form-input" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Marca</label><input className="form-input" value={form.marca} onChange={(e) => setForm({ ...form, marca: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Proveedor</label><input className="form-input" value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Stock</label><input type="number" className="form-input" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Unidad</label><input className="form-input" value={form.unidad} onChange={(e) => setForm({ ...form, unidad: e.target.value })} /></div>
           <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Costo unitario</label><input type="number" step="0.01" className="form-input" value={form.costo_unit} onChange={(e) => setForm({ ...form, costo_unit: e.target.value })} /></div>
-          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Stock mínimo</label><input type="number" className="form-input" value={form.stock_min} onChange={(e) => setForm({ ...form, stock_min: e.target.value })} /></div>
+          <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Stock minimo</label><input type="number" className="form-input" value={form.stock_min} onChange={(e) => setForm({ ...form, stock_min: e.target.value })} /></div>
           <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '.2rem' }}>
             <button type="submit" className="btn btn-primary">{editingId ? 'Actualizar' : 'Registrar'}</button>
           </div>

@@ -4,6 +4,7 @@ API REST — Sistema de Gestión de Mantenimiento  v3
 FastAPI · SQLAlchemy async · JWT · RBAC · Registro con aprobación
 """
 import hashlib
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional
@@ -37,10 +38,37 @@ import uuid
 import aiofiles
 from pathlib import Path
 
+try:
+    import cloudinary
+    import cloudinary.uploader
+    from cloudinary.utils import cloudinary_url
+except Exception:  # pragma: no cover - keeps local dev resilient before install
+    cloudinary = None
+    cloudinary_url = None
+
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "maintenance-app/tasks").strip().strip("/")
+CLOUDINARY_ENABLED = bool(
+    cloudinary
+    and CLOUDINARY_CLOUD_NAME
+    and CLOUDINARY_API_KEY
+    and CLOUDINARY_API_SECRET
+)
+
+if CLOUDINARY_ENABLED:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+        secure=True,
+    )
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -314,7 +342,10 @@ DOCUMENT_RULES = {
     "pmp_fechas_plans_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
     "pmp_km_plans_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
     "pmp_paquetes_mantenimiento_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_avisos_mantenimiento_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
     "pmp_ot_alertas_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_deleted_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_sequence_settings_v1": {"read": Role.TECNICO.value, "write": Role.INGENIERO.value, "default": []},
     "pmp_ot_historial_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
     "pmp_ot_work_reports_v1": {"read": Role.TECNICO.value, "write": Role.TECNICO.value, "default": []},
     "pmp_bajas_history_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
@@ -784,9 +815,7 @@ async def remove_task_member(task_id: int, user_id: int, current_user: User = De
         select(TaskPhoto).where(and_(TaskPhoto.task_id == task_id, TaskPhoto.uploaded_by == user_id))
     )).scalars().all()
     for photo in photos:
-        file_path = UPLOAD_DIR / photo.filename
-        if file_path.exists():
-            file_path.unlink()
+        await _delete_photo_asset(photo.filename)
     await db.execute(delete(TaskPhoto).where(and_(TaskPhoto.task_id == task_id, TaskPhoto.uploaded_by == user_id)))
 
     await db.commit()
@@ -1129,8 +1158,60 @@ class RescheduleResponse(BaseModel):
         from_attributes = True
 
 
+def _is_cloudinary_photo_ref(filename: str) -> bool:
+    return isinstance(filename, str) and filename.startswith("cloudinary:")
+
+
+def _cloudinary_public_id(filename: str) -> str:
+    return filename.split(":", 1)[1] if _is_cloudinary_photo_ref(filename) else filename
+
+
+async def _store_photo_asset(task_id: int, content: bytes, ext: str) -> str:
+    if CLOUDINARY_ENABLED:
+        upload_result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
+            content,
+            folder=CLOUDINARY_FOLDER or None,
+            public_id=f"task_{task_id}_{uuid.uuid4().hex[:10]}",
+            resource_type="image",
+            overwrite=True,
+        )
+        return f"cloudinary:{upload_result['public_id']}"
+
+    unique_name = f"task{task_id}_{uuid.uuid4().hex[:8]}{ext}"
+    file_path = UPLOAD_DIR / unique_name
+    async with aiofiles.open(file_path, "wb") as f_out:
+        await f_out.write(content)
+    return unique_name
+
+
+async def _delete_photo_asset(filename: str) -> None:
+    if not filename:
+        return
+
+    if _is_cloudinary_photo_ref(filename):
+        if CLOUDINARY_ENABLED:
+            await asyncio.to_thread(
+                cloudinary.uploader.destroy,
+                _cloudinary_public_id(filename),
+                resource_type="image",
+                invalidate=True,
+            )
+        return
+
+    file_path = UPLOAD_DIR / filename
+    if file_path.exists():
+        file_path.unlink()
+
+
 def _photo_url(filename: str, request_base: str = "") -> str:
-    base = os.getenv("API_BASE_URL", "http://localhost:8000")
+    if _is_cloudinary_photo_ref(filename):
+        if not cloudinary_url:
+            return ""
+        url, _ = cloudinary_url(_cloudinary_public_id(filename), secure=True, resource_type="image")
+        return url
+
+    base = (request_base or API_BASE_URL).rstrip("/")
     return f"{base}/uploads/{filename}"
 
 
@@ -1161,20 +1242,14 @@ async def upload_task_photo(
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="El archivo supera el límite de 10 MB")
 
-    # Save with unique name
-    unique_name = f"task{task_id}_{uuid.uuid4().hex[:8]}{ext}"
-    file_path   = UPLOAD_DIR / unique_name
-    async with aiofiles.open(file_path, "wb") as f_out:
-        await f_out.write(content)
+    stored_filename = await _store_photo_asset(task_id, content, ext)
 
     # Si ya existe una foto de esta categoría para la tarea, eliminar la anterior
     existing = (await db.execute(
         select(TaskPhoto).where(TaskPhoto.task_id == task_id, TaskPhoto.category == cat)
     )).scalar_one_or_none()
     if existing:
-        old_path = UPLOAD_DIR / existing.filename
-        if old_path.exists():
-            old_path.unlink()
+        await _delete_photo_asset(existing.filename)
         await db.execute(delete(TaskPhoto).where(TaskPhoto.id == existing.id))
 
     photo = TaskPhoto(
@@ -1182,7 +1257,7 @@ async def upload_task_photo(
         uploaded_by = current_user.id,
         user_name   = current_user.full_name,
         category    = cat,
-        filename    = unique_name,
+        filename    = stored_filename,
         caption     = caption.strip(),
     )
     db.add(photo)
@@ -1190,7 +1265,7 @@ async def upload_task_photo(
     await db.refresh(photo)
 
     resp = TaskPhotoResponse.model_validate(photo)
-    resp.url = _photo_url(unique_name)
+    resp.url = _photo_url(stored_filename)
     return resp
 
 
@@ -1231,10 +1306,7 @@ async def delete_task_photo(
     if photo.uploaded_by != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso para eliminar esta foto")
 
-    # Delete file from disk
-    file_path = UPLOAD_DIR / photo.filename
-    if file_path.exists():
-        file_path.unlink()
+    await _delete_photo_asset(photo.filename)
 
     await db.execute(delete(TaskPhoto).where(TaskPhoto.id == photo_id))
     await db.commit()
@@ -1298,12 +1370,17 @@ def _fmt_dt(dt):
 
 
 def _load_image(filename: str, max_w=8*cm, max_h=7*cm):
-    """Load image from disk and return scaled RLImage or None."""
+    """Load image from local disk or Cloudinary and return a scaled RLImage."""
     try:
-        path = UPLOAD_DIR / filename
-        if not path.exists():
-            return None
-        img = RLImage(str(path))
+        if _is_cloudinary_photo_ref(filename) or str(filename).startswith("http"):
+            with urllib.request.urlopen(_photo_url(filename), timeout=20) as response:
+                data = response.read()
+            img = RLImage(BytesIO(data))
+        else:
+            path = UPLOAD_DIR / filename
+            if not path.exists():
+                return None
+            img = RLImage(str(path))
         img._restrictSize(max_w, max_h)
         return img
     except Exception:
