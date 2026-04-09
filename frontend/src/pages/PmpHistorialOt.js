@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { formatDateDisplay, formatDateTimeDisplay } from '../utils/dateFormat';
 
 const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
 
@@ -15,8 +16,8 @@ const buildCloseReportHtml = (alert, reports) => {
     <tr>
       <td>${index + 1}</td>
       <td>${escapeHtml(report.reportCode || '')}</td>
-      <td>${escapeHtml(`${report.fechaInicio || ''} ${report.horaInicio || ''}`.trim())}</td>
-      <td>${escapeHtml(`${report.fechaFin || ''} ${report.horaFin || ''}`.trim())}</td>
+      <td>${escapeHtml(formatDateTimeDisplay(report.fechaInicio, report.horaInicio, 'N.A.'))}</td>
+      <td>${escapeHtml(formatDateTimeDisplay(report.fechaFin, report.horaFin, 'N.A.'))}</td>
       <td>${escapeHtml((report.tecnicos || []).map((item) => `${item.tecnico} (${item.horas} h)`).join(', '))}</td>
       <td>${escapeHtml((report.materialesExtra || []).map((item) => `${item.codigo || item.descripcion} x${item.cantidad}`).join(', '))}</td>
       <td>${escapeHtml(report.observaciones || '')}</td>
@@ -46,9 +47,9 @@ const buildCloseReportHtml = (alert, reports) => {
           <div><div class="label">Equipo</div><div class="value">${escapeHtml(alert.codigo || '')} - ${escapeHtml(alert.descripcion || '')}</div></div>
           <div><div class="label">Estado final</div><div class="value">${escapeHtml(alert.status_ot || '')}</div></div>
           <div><div class="label">Responsable</div><div class="value">${escapeHtml(alert.responsable || '')}</div></div>
-          <div><div class="label">Fecha a ejecutar</div><div class="value">${escapeHtml(alert.fecha_ejecutar || '')}</div></div>
-          <div><div class="label">Inicio OT</div><div class="value">${escapeHtml(`${alert.registro_ot?.fecha_inicio || ''} ${alert.registro_ot?.hora_inicio || ''}`.trim())}</div></div>
-          <div><div class="label">Fin OT</div><div class="value">${escapeHtml(`${alert.cierre_ot?.fecha_fin || alert.registro_ot?.fecha_fin || ''} ${alert.cierre_ot?.hora_fin || alert.registro_ot?.hora_fin || ''}`.trim())}</div></div>
+          <div><div class="label">Fecha a ejecutar</div><div class="value">${escapeHtml(formatDateDisplay(alert.fecha_ejecutar || '', 'N.A.'))}</div></div>
+          <div><div class="label">Inicio OT</div><div class="value">${escapeHtml(formatDateTimeDisplay(alert.cierre_ot?.fecha_inicio || alert.registro_ot?.fecha_inicio || '', alert.cierre_ot?.hora_inicio || alert.registro_ot?.hora_inicio || '', 'N.A.'))}</div></div>
+          <div><div class="label">Fin OT</div><div class="value">${escapeHtml(formatDateTimeDisplay(alert.cierre_ot?.fecha_fin || alert.registro_ot?.fecha_fin || '', alert.cierre_ot?.hora_fin || alert.registro_ot?.hora_fin || '', 'N.A.'))}</div></div>
         </div>
 
         <div class="section">
@@ -166,10 +167,10 @@ export default function PmpHistorialOt() {
           <tbody>
             {filtered.map((it) => (
               <tr key={it.id}>
-                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.fecha_cierre || 'N.A.'}</td>
-                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.registro_ot?.fecha_inicio || 'N.A.'}</td>
+                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{formatDateDisplay(it.fecha_cierre || '', 'N.A.')}</td>
+                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{formatDateDisplay(it.cierre_ot?.fecha_inicio || it.registro_ot?.fecha_inicio || '', 'N.A.')}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.hora_inicio || it.registro_ot?.hora_inicio || 'N.A.'}</td>
-                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.registro_ot?.fecha_fin || it.fecha_ejecucion || 'N.A.'}</td>
+                <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{formatDateDisplay(it.cierre_ot?.fecha_fin || it.registro_ot?.fecha_fin || it.fecha_ejecucion || '', 'N.A.')}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.cierre_ot?.hora_fin || it.registro_ot?.hora_fin || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.codigo || 'N.A.'}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{it.descripcion || 'N.A.'}</td>

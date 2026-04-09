@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: maintenance-app-api
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: API_BASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: CLOUDINARY_FOLDER
+        value: maintenance-app/tasks
