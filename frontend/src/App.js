@@ -66,6 +66,15 @@ function AppLayout() {
   const ROLE_COLORS = { INGENIERO: '#7c3aed', PLANNER: '#2563eb', ENCARGADO: '#0891b2', TECNICO: '#059669' };
   const roleColor = ROLE_COLORS[user?.role] || '#6b7280';
   const userInitial = String(user?.full_name || user?.username || 'U').trim().charAt(0).toUpperCase() || 'U';
+  const mobileLinks = [
+    { label: 'Dashboard', path: '/' },
+    { label: 'Notificaciones', path: '/tasks' },
+    { label: 'Registros', path: '/worklogs' },
+    ...(hasMinRole('ENCARGADO') ? [{ label: 'PMP', path: '/pmp/gestion-ot' }] : []),
+    ...(user?.role === 'INGENIERO' ? [{ label: 'RRHH', path: '/rrhh' }, { label: 'Materiales', path: '/materiales' }] : []),
+    ...(hasMinRole('ENCARGADO') ? [{ label: 'Usuarios', path: '/users' }] : []),
+    ...(user?.role === 'INGENIERO' ? [{ label: 'Configuraciones', path: '/settings/ordenes-trabajo' }] : []),
+  ];
 
   return (
     <div className="App">
@@ -73,6 +82,18 @@ function AppLayout() {
         <div className="navbar-container">
           <div className="navbar-main">
             <Link to="/" className="navbar-brand">Mantenimiento</Link>
+            <div className="mobile-nav">
+              <details className="mobile-nav-details">
+                <summary className="mobile-nav-summary">Menu</summary>
+                <div className="mobile-nav-menu">
+                  {mobileLinks.map((item) => (
+                    <Link key={item.path} to={item.path} className={`mobile-nav-item ${isActive(item.path) ? 'active' : ''}`}>
+                      {item.label}
+                    </Link>
+                  ))}
+                </div>
+              </details>
+            </div>
             <ul className="navbar-nav">
               <li><Link to="/" className={navLinkClass('/')}>Dashboard</Link></li>
               <li><Link to="/tasks" className={navLinkClass('/tasks', 'section')}>Notificaciones de Trabajo</Link></li>
@@ -176,17 +197,17 @@ function AppLayout() {
       <nav className="bottom-nav">
         <div className="bottom-nav-items">
           <Link to="/" className={`bottom-nav-item ${isActive('/') ? 'active' : ''}`}>
-            <span className="bottom-nav-icon">D</span><span>Dashboard</span>
+            <span className="bottom-nav-icon">IN</span><span className="bottom-nav-label">Inicio</span>
           </Link>
           <Link to="/tasks" className={`bottom-nav-item ${isActive('/tasks') ? 'active' : ''}`}>
-            <span className="bottom-nav-icon">N</span><span>Notif.</span>
+            <span className="bottom-nav-icon">OT</span><span className="bottom-nav-label">Trabajo</span>
           </Link>
           <Link to="/worklogs" className={`bottom-nav-item ${isActive('/worklogs') ? 'active' : ''}`}>
-            <span className="bottom-nav-icon">R</span><span>Registros</span>
+            <span className="bottom-nav-icon">HH</span><span className="bottom-nav-label">Registros</span>
           </Link>
           {hasMinRole('ENCARGADO') && (
             <Link to="/users" className={`bottom-nav-item ${isActive('/users') ? 'active' : ''}`}>
-              <span className="bottom-nav-icon">U</span><span>Usuarios</span>
+              <span className="bottom-nav-icon">US</span><span className="bottom-nav-label">Usuarios</span>
             </Link>
           )}
         </div>
