@@ -46,7 +46,12 @@ except Exception:  # pragma: no cover - keeps local dev resilient before install
     cloudinary = None
     cloudinary_url = None
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -82,6 +87,7 @@ app = FastAPI(title="Maintenance App API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

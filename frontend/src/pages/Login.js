@@ -388,7 +388,8 @@ export default function Login() {
       const user = await login(username.trim(), password);
       if (TEMP_PW.includes(password)) setMustChange({ ...user, _tempPw: password });
     } catch(e) {
-      setErr(e.response?.data?.detail || 'Usuario o contraseña incorrectos');
+      if (!e.response) setErr('No se pudo conectar con el servidor. Revisa CORS, REACT_APP_API_URL o el estado del backend.');
+      else setErr(e.response?.data?.detail || 'Usuario o contraseña incorrectos');
     } finally { setLoading(false); }
   };
 
