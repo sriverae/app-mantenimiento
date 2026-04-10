@@ -93,13 +93,13 @@ function Dashboard({ user }) {
   }
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', gap: '1rem', flexWrap: 'wrap' }}>
-        <div>
-          <h1 style={{ fontSize: '2rem', fontWeight: '700', marginBottom: '0.5rem' }}>
+    <div className="dashboard-page">
+      <div className="dashboard-hero">
+        <div className="dashboard-hero-copy">
+          <h1 className="dashboard-title">
             Bienvenido, {user.full_name}
           </h1>
-          <p style={{ color: '#6b7280' }}>
+          <p className="dashboard-date">
             {format(new Date(), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
           </p>
         </div>
@@ -138,20 +138,20 @@ function Dashboard({ user }) {
 
       <div className="card" style={{ marginTop: '2rem' }}>
         <h2 className="card-title">Resumen Operativo</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.85rem' }}>
-          <div style={{ padding: '.9rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+        <div className="dashboard-panel-grid">
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.3rem' }}>Planes por fecha</div>
             <strong style={{ fontSize: '1.4rem' }}>{maintenanceKpis.plansByDate}</strong>
           </div>
-          <div style={{ padding: '.9rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.3rem' }}>Planes por kilometraje</div>
             <strong style={{ fontSize: '1.4rem' }}>{maintenanceKpis.plansByKm}</strong>
           </div>
-          <div style={{ padding: '.9rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.3rem' }}>OT cerradas</div>
             <strong style={{ fontSize: '1.4rem' }}>{maintenanceKpis.closedOt}</strong>
           </div>
-          <div style={{ padding: '.9rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.3rem' }}>Materiales catalogados</div>
             <strong style={{ fontSize: '1.4rem' }}>{sharedMetrics.materials.length}</strong>
           </div>
@@ -160,20 +160,20 @@ function Dashboard({ user }) {
 
       <div className="card" style={{ marginTop: '2rem' }}>
         <h2 className="card-title">Control por Kilometraje</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '.85rem' }}>
-          <div style={{ padding: '.85rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+        <div className="dashboard-panel-grid dashboard-panel-grid-compact">
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.25rem' }}>Vencidos por km</div>
             <strong style={{ fontSize: '1.4rem', color: '#dc2626' }}>{maintenanceKpis.kmDue}</strong>
           </div>
-          <div style={{ padding: '.85rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.25rem' }}>Proximos por km</div>
             <strong style={{ fontSize: '1.4rem', color: '#c2410c' }}>{maintenanceKpis.kmUpcoming}</strong>
           </div>
-          <div style={{ padding: '.85rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.25rem' }}>Equipos registrados</div>
             <strong style={{ fontSize: '1.4rem' }}>{sharedMetrics.equipment.length}</strong>
           </div>
-          <div style={{ padding: '.85rem', border: '1px solid #e5e7eb', borderRadius: '.75rem', background: '#f8fafc' }}>
+          <div className="dashboard-panel-card">
             <div style={{ color: '#6b7280', fontSize: '.85rem', marginBottom: '.25rem' }}>Planes por fecha</div>
             <strong style={{ fontSize: '1.4rem' }}>{sharedMetrics.plans.length}</strong>
           </div>
