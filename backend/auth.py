@@ -5,6 +5,7 @@ Auth utilities: password hashing, JWT access/refresh tokens, RBAC helpers.
 import hashlib
 import os
 import secrets
+import warnings
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -21,7 +22,17 @@ from models import RefreshToken, Role, User
 # ---------------------------------------------------------------------------
 # Configuration (read from env; sensible defaults only for local dev)
 # ---------------------------------------------------------------------------
-SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+_SECRET_FROM_ENV = os.getenv("JWT_SECRET_KEY", "").strip()
+if not _SECRET_FROM_ENV and _ENV in {"prod", "production"}:
+    raise RuntimeError("JWT_SECRET_KEY es obligatorio en produccion")
+if not _SECRET_FROM_ENV:
+    warnings.warn(
+        "JWT_SECRET_KEY no esta configurado; se usara una clave temporal solo para desarrollo.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+SECRET_KEY: str = _SECRET_FROM_ENV or secrets.token_hex(32)
 ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
@@ -98,10 +109,12 @@ async def get_current_user(
 # Role-based access control helpers
 # ---------------------------------------------------------------------------
 ROLE_HIERARCHY: dict[str, int] = {
-    Role.INGENIERO.value: 4,
-    Role.PLANNER.value: 3,
-    Role.ENCARGADO.value: 2,
-    Role.TECNICO.value: 1,
+    Role.INGENIERO.value: 6,
+    Role.PLANNER.value: 5,
+    Role.ENCARGADO.value: 4,
+    Role.TECNICO.value: 3,
+    Role.SUPERVISOR.value: 2,
+    Role.OPERADOR.value: 1,
 }
 
 def require_roles(allowed: List[str]):
@@ -132,4 +145,4 @@ def require_min_role(min_role: str):
 require_ingeniero = require_roles([Role.INGENIERO.value])
 require_planner_up = require_min_role(Role.PLANNER.value)
 require_encargado_up = require_min_role(Role.ENCARGADO.value)
-require_any_role = require_min_role(Role.TECNICO.value)  # any authenticated user
+require_any_role = require_min_role(Role.OPERADOR.value)  # any authenticated user

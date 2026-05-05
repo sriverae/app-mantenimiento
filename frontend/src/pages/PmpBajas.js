@@ -1,11 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
+import TableFilterRow from '../components/TableFilterRow';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { isReadOnlyRole } from '../utils/roleAccess';
+import { filterRowsByColumns } from '../utils/tableFilters';
 
 const EQUIPOS_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
 const BAJAS_HISTORY_KEY = SHARED_DOCUMENT_KEYS.bajasHistory;
 
 export default function PmpBajas() {
+  const { user } = useAuth();
+  const isReadOnly = isReadOnlyRole(user);
   const [equipos, setEquipos] = useState([]);
   const [q, setQ] = useState('');
   const [area, setArea] = useState('');
@@ -37,18 +45,34 @@ export default function PmpBajas() {
     const matchCodigo = !codigo || (eq.codigo || '').toLowerCase().includes(codigo.toLowerCase());
     return matchQ && matchArea && matchCodigo;
   }), [equipos, q, area, codigo]);
+  const bajasTableColumns = useMemo(() => ([
+    { id: 'codigo', getValue: (eq) => eq.codigo },
+    { id: 'descripcion', getValue: (eq) => eq.descripcion },
+    { id: 'area', getValue: (eq) => eq.area_trabajo || '—' },
+    { id: 'marca', getValue: (eq) => eq.marca || '—' },
+    { id: 'estado', getValue: (eq) => eq.estado || '—' },
+    { id: 'accion', filterable: false },
+  ]), []);
+  const { filters: bajasFilters, setFilter: setBajasFilter } = useTableColumnFilters(bajasTableColumns);
+  const visibleRows = useMemo(
+    () => filterRowsByColumns(filtered, bajasTableColumns, bajasFilters),
+    [filtered, bajasTableColumns, bajasFilters],
+  );
 
   const persistEquipos = async (next) => {
+    if (isReadOnly) return;
     setEquipos(next);
     await saveSharedDocument(EQUIPOS_KEY, next);
   };
 
   const saveHistory = async (entry) => {
+    if (isReadOnly) return;
     const prev = await loadSharedDocument(BAJAS_HISTORY_KEY, []);
     await saveSharedDocument(BAJAS_HISTORY_KEY, [entry, ...prev]);
   };
 
   const downTotal = async () => {
+    if (isReadOnly) return;
     if (!selected) return;
     if (!window.confirm(`¿Dar de baja TOTAL al equipo ${selected.codigo} incluyendo todos sus subniveles?`)) return;
     const removedLevels = (selected.despiece || []).length;
@@ -82,6 +106,7 @@ export default function PmpBajas() {
   };
 
   const downPartial = async () => {
+    if (isReadOnly) return;
     if (!selected || !selectedNodeId) return;
     const targetNode = nodes.find((n) => n.id === selectedNodeId);
     if (!targetNode) return;
@@ -112,6 +137,9 @@ export default function PmpBajas() {
 
   return (
     <div>
+      {isReadOnly && (
+        <ReadOnlyAccessNotice message="Puedes revisar equipos dados de baja y su estructura, pero este perfil no puede ejecutar bajas totales ni parciales." />
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '.35rem' }}>Bajas de equipos</h1>
@@ -139,9 +167,10 @@ export default function PmpBajas() {
                 <th key={h} style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.55rem .5rem' }}>{h}</th>
               ))}
             </tr>
+            <TableFilterRow columns={bajasTableColumns} rows={filtered} filters={bajasFilters} onChange={setBajasFilter} dark />
           </thead>
           <tbody>
-            {filtered.map((eq) => (
+            {visibleRows.map((eq) => (
               <tr key={eq.id} style={{ background: selectedId === eq.id ? '#dbeafe' : '#fff' }}>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{eq.codigo}</td>
                 <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{eq.descripcion}</td>
@@ -153,6 +182,13 @@ export default function PmpBajas() {
                 </td>
               </tr>
             ))}
+            {!visibleRows.length && (
+              <tr>
+                <td colSpan={6} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
+                  No hay equipos que coincidan con los filtros aplicados.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -160,9 +196,11 @@ export default function PmpBajas() {
       {selected && (
         <div className="card">
           <h2 style={{ marginBottom: '.75rem', fontSize: '1.2rem' }}>Equipo seleccionado: {selected.codigo} - {selected.descripcion}</h2>
-          <div style={{ display: 'flex', gap: '.65rem', flexWrap: 'wrap', marginBottom: '.85rem' }}>
-            <button type="button" className="btn btn-danger" onClick={downTotal}>Dar de baja total</button>
-          </div>
+          {!isReadOnly && (
+            <div style={{ display: 'flex', gap: '.65rem', flexWrap: 'wrap', marginBottom: '.85rem' }}>
+              <button type="button" className="btn btn-danger" onClick={downTotal}>Dar de baja total</button>
+            </div>
+          )}
           <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '.85rem' }}>
             <h3 style={{ marginBottom: '.6rem', fontSize: '1rem' }}>Dar de baja parcial</h3>
             <div style={{ display: 'flex', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -172,7 +210,7 @@ export default function PmpBajas() {
                   <option key={n.id} value={n.id}>{n.codigo_sub || '-'} | {n.nombre}</option>
                 ))}
               </select>
-              <button type="button" className="btn btn-danger" onClick={downPartial} disabled={!selectedNodeId}>Dar de baja parcial</button>
+              {!isReadOnly && <button type="button" className="btn btn-danger" onClick={downPartial} disabled={!selectedNodeId}>Dar de baja parcial</button>}
             </div>
           </div>
         </div>

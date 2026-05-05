@@ -13,6 +13,8 @@ services:
         sync: false
       - key: JWT_SECRET_KEY
         sync: false
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false
       - key: API_BASE_URL
         sync: false
       - key: ALLOWED_ORIGINS

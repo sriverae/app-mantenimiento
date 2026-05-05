@@ -1,6 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getAlertConsistencySummary } from '../utils/otConsistency';
 import { formatDateDisplay } from '../utils/dateFormat';
+import ConfigurableSelectField from './ConfigurableSelectField';
+import TableFilterRow from './TableFilterRow';
+import useConfigurableLists from '../hooks/useConfigurableLists';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
+import { filterRowsByColumns } from '../utils/tableFilters';
+import {
+  firstValidationError,
+  validatePositiveFields,
+  validateRequiredFields,
+  validateTextFields,
+} from '../utils/formValidation';
 
 const buildFormFromAlert = (alert) => ({
   prioridad: alert?.prioridad || '',
@@ -11,7 +22,6 @@ const buildFormFromAlert = (alert) => ({
   fecha_fin_prop: alert?.registro_ot?.fecha_fin || '',
   hora_inicio_prop: alert?.registro_ot?.hora_inicio || '',
   hora_fin_prop: alert?.registro_ot?.hora_fin || '',
-  turno: alert?.registro_ot?.turno || 'Primero',
   observaciones: alert?.registro_ot?.observaciones || '',
 });
 
@@ -24,7 +34,6 @@ const FIELD_LABELS = {
   fecha_fin_prop: 'Fin propuesto OT',
   hora_inicio_prop: 'Hora inicio',
   hora_fin_prop: 'Hora fin',
-  turno: 'Turno',
   observaciones: 'Observaciones',
 };
 
@@ -37,6 +46,24 @@ const parseDateTime = (dateValue, timeValue, fallbackTime) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const normalizeAssignableText = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '');
+
+const isInternalOtStaff = (item) => {
+  const cargo = normalizeAssignableText(item?.cargo);
+  return cargo.includes('tecnico')
+    || cargo.includes('cnico')
+    || cargo.includes('encargado')
+    || cargo.includes('operador');
+};
+
+const isAssignableOtStaff = (item) => (
+  isInternalOtStaff(item) || normalizeAssignableText(item?.tipo_personal) === 'tercero'
+);
+
 export default function EditLiberatedOtModal({
   alert,
   rrhhItems = [],
@@ -45,6 +72,11 @@ export default function EditLiberatedOtModal({
   onClose,
   onSave,
 }) {
+  const {
+    getOptions,
+    addOptionQuickly,
+    canManage: canManageConfigurableLists,
+  } = useConfigurableLists();
   const originalForm = useMemo(() => buildFormFromAlert(alert), [alert]);
   const [tab, setTab] = useState('registro');
   const [form, setForm] = useState(originalForm);
@@ -65,8 +97,49 @@ export default function EditLiberatedOtModal({
   }, [alert]);
 
   const eligibleRrhh = useMemo(
-    () => rrhhItems.filter((item) => ['tecnico', 'técnico', 'encargado'].includes(String(item.cargo || 'tecnico').toLowerCase())),
+    () => rrhhItems.filter(isInternalOtStaff),
     [rrhhItems],
+  );
+
+  void eligibleRrhh;
+
+  const eligibleAssignableRrhh = useMemo(
+    () => rrhhItems.filter(isAssignableOtStaff),
+    [rrhhItems],
+  );
+
+  const priorityOptions = useMemo(
+    () => getOptions('prioridades', ['Alta', 'Media', 'Baja', 'Critica']),
+    [getOptions],
+  );
+  const responsibleOptions = useMemo(
+    () => getOptions('responsables', ['Mecanico', 'Electricista', 'Mecanicos', 'Ingeniero', 'Planner', 'Terceros']),
+    [getOptions],
+  );
+  const assignedPersonnelColumns = useMemo(() => [
+    { id: 'codigo', label: 'Codigo' },
+    { id: 'nombres_apellidos', label: 'Nombre' },
+    { id: 'especialidad', label: 'Especialidad' },
+    { id: 'tipo_personal', label: 'Tipo', getValue: (item) => item.tipo_personal || 'Propio' },
+    { id: 'empresa', label: 'Empresa' },
+    { id: 'accion', label: 'Accion', filterable: false },
+  ], []);
+  const assignedPersonnelFilters = useTableColumnFilters(assignedPersonnelColumns);
+  const visiblePersonalAsignado = useMemo(
+    () => filterRowsByColumns(personalAsignado, assignedPersonnelColumns, assignedPersonnelFilters.filters),
+    [personalAsignado, assignedPersonnelColumns, assignedPersonnelFilters.filters],
+  );
+  const assignedMaterialColumns = useMemo(() => [
+    { id: 'codigo', label: 'Codigo' },
+    { id: 'descripcion', label: 'Descripcion' },
+    { id: 'unidad', label: 'Unidad', getValue: (item) => item.unidad || 'UND' },
+    { id: 'cantidad', label: 'Cantidad' },
+    { id: 'accion', label: 'Accion', filterable: false },
+  ], []);
+  const assignedMaterialFilters = useTableColumnFilters(assignedMaterialColumns);
+  const visibleMaterialesAsignados = useMemo(
+    () => filterRowsByColumns(materialesAsignados, assignedMaterialColumns, assignedMaterialFilters.filters),
+    [materialesAsignados, assignedMaterialColumns, assignedMaterialFilters.filters],
   );
 
   const previewAlert = useMemo(() => ({
@@ -81,7 +154,7 @@ export default function EditLiberatedOtModal({
       fecha_fin: form.fecha_fin_prop,
       hora_inicio: form.hora_inicio_prop,
       hora_fin: form.hora_fin_prop,
-      turno: form.turno,
+      turno: alert?.registro_ot?.turno || '',
       observaciones: form.observaciones,
     },
   }), [alert, form]);
@@ -153,7 +226,7 @@ export default function EditLiberatedOtModal({
   };
 
   const addPersonal = () => {
-    const item = eligibleRrhh.find((it) => String(it.id) === String(selectedPersonalId));
+    const item = eligibleAssignableRrhh.find((it) => String(it.id) === String(selectedPersonalId));
     if (!item || personalAsignado.some((row) => String(row.id) === String(item.id))) return;
     setPersonalAsignado((prev) => [...prev, item]);
   };
@@ -165,7 +238,11 @@ export default function EditLiberatedOtModal({
   const addMaterial = () => {
     const item = materialsCatalog.find((it) => String(it.id) === String(selectedMaterialId));
     const cantidad = Number(cantidadMaterial) || 0;
-    if (!item || cantidad <= 0) return;
+    const validationError = validatePositiveFields([['Cantidad de material', cantidadMaterial]]);
+    if (!item || validationError) {
+      if (validationError) window.alert(validationError);
+      return;
+    }
     setMaterialesAsignados((prev) => {
       const existing = prev.find((row) => String(row.id) === String(item.id));
       if (existing) {
@@ -200,7 +277,7 @@ export default function EditLiberatedOtModal({
   };
 
   const renderLabel = (fieldName, fallbackLabel) => (
-    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '.45rem', flexWrap: 'wrap' }}>
+    <div className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '.45rem', flexWrap: 'wrap', marginBottom: 0 }}>
       <span>{fallbackLabel}</span>
       {fieldsNeedingAttention[fieldName] && (
         <span style={{
@@ -230,12 +307,35 @@ export default function EditLiberatedOtModal({
           Modificado
         </span>
       )}
-    </label>
+    </div>
   );
 
+  const handleQuickAdd = async (key, label, fieldName) => {
+    const result = await addOptionQuickly(key, label);
+    if (result?.added && fieldName) {
+      setForm((prev) => ({ ...prev, [fieldName]: result.value }));
+    }
+  };
+
   const handleSubmit = () => {
-    if (!form.fecha_inicio_prop || !form.fecha_fin_prop) {
-      window.alert('Debes completar fecha inicio y fin propuesta.');
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Actividad', form.actividad],
+        ['Responsable', form.responsable],
+        ['Fecha a ejecutar', form.fecha_ejecutar],
+        ['Fecha inicio propuesta', form.fecha_inicio_prop],
+        ['Fecha fin propuesta', form.fecha_fin_prop],
+      ]),
+      validateTextFields([
+        ['Prioridad', form.prioridad],
+        ['Actividad', form.actividad],
+        ['Responsable', form.responsable],
+        ['Observaciones', form.observaciones],
+      ]),
+      validatePositiveFields(materialesAsignados.map((item, index) => [`Cantidad material ${index + 1}`, item.cantidad])),
+    );
+    if (validationError) {
+      window.alert(validationError);
       return;
     }
     if (form.fecha_inicio_prop > form.fecha_fin_prop) {
@@ -329,12 +429,30 @@ export default function EditLiberatedOtModal({
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.65rem' }}>
               <div>
-                {renderLabel('prioridad', 'Prioridad')}
-                <input className="form-input" style={getInputStyle('prioridad')} value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value })} />
+                <ConfigurableSelectField
+                  label={renderLabel('prioridad', 'Prioridad')}
+                  manageLabel="Prioridad"
+                  value={form.prioridad}
+                  options={priorityOptions}
+                  onChange={(e) => setForm({ ...form, prioridad: e.target.value })}
+                  onQuickAdd={() => handleQuickAdd('prioridades', 'Prioridad', 'prioridad')}
+                  canManageOptions={canManageConfigurableLists}
+                  placeholder="Selecciona prioridad"
+                  selectStyle={getInputStyle('prioridad')}
+                />
               </div>
               <div>
-                {renderLabel('responsable', 'Responsable')}
-                <input className="form-input" style={getInputStyle('responsable')} value={form.responsable} onChange={(e) => setForm({ ...form, responsable: e.target.value })} />
+                <ConfigurableSelectField
+                  label={renderLabel('responsable', 'Responsable')}
+                  manageLabel="Responsable"
+                  value={form.responsable}
+                  options={responsibleOptions}
+                  onChange={(e) => setForm({ ...form, responsable: e.target.value })}
+                  onQuickAdd={() => handleQuickAdd('responsables', 'Responsable', 'responsable')}
+                  canManageOptions={canManageConfigurableLists}
+                  placeholder="Selecciona responsable"
+                  selectStyle={getInputStyle('responsable')}
+                />
               </div>
               <div style={{ gridColumn: '1 / -1' }}>
                 {renderLabel('actividad', 'Actividad')}
@@ -343,14 +461,6 @@ export default function EditLiberatedOtModal({
               <div>
                 {renderLabel('fecha_ejecutar', 'Fecha a ejecutar')}
                 <input className="form-input" style={getInputStyle('fecha_ejecutar')} type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} />
-              </div>
-              <div>
-                {renderLabel('turno', 'Turno')}
-                <select className="form-select" style={getInputStyle('turno')} value={form.turno} onChange={(e) => setForm({ ...form, turno: e.target.value })}>
-                  <option>Primero</option>
-                  <option>Segundo</option>
-                  <option>Tercero</option>
-                </select>
               </div>
               <div>
                 {renderLabel('fecha_inicio_prop', 'Inicio propuesto OT')}
@@ -380,8 +490,8 @@ export default function EditLiberatedOtModal({
           <div className="card" style={{ marginBottom: 0, background: '#f8fafc' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.7rem', marginBottom: '.8rem' }}>
               <select className="form-select" value={selectedPersonalId} onChange={(e) => setSelectedPersonalId(e.target.value)}>
-                <option value="">Selecciona técnico...</option>
-                {eligibleRrhh.map((item) => (
+                <option value="">Selecciona personal...</option>
+                {eligibleAssignableRrhh.map((item) => (
                   <option key={item.id} value={item.id}>{item.codigo} - {item.nombres_apellidos}{item.tipo_personal === 'Tercero' ? ` · ${item.empresa || 'Tercero'}` : ''}</option>
                 ))}
               </select>
@@ -392,9 +502,10 @@ export default function EditLiberatedOtModal({
                 <tr style={{ background: '#e5e7eb' }}>
                   {['Código', 'Nombre', 'Especialidad', 'Tipo', 'Empresa', 'Acción'].map((h) => <th key={h} style={{ border: '1px solid #d1d5db', padding: '.45rem', textAlign: 'left' }}>{h}</th>)}
                 </tr>
+                <TableFilterRow columns={assignedPersonnelColumns} rows={personalAsignado} filters={assignedPersonnelFilters.filters} onChange={assignedPersonnelFilters.setFilter} />
               </thead>
               <tbody>
-                {personalAsignado.map((item) => (
+                {visiblePersonalAsignado.map((item) => (
                   <tr key={item.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.nombres_apellidos}</td>
@@ -404,7 +515,7 @@ export default function EditLiberatedOtModal({
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removePersonal(item.id)}>Quitar</button></td>
                   </tr>
                 ))}
-                {!personalAsignado.length && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin técnicos asignados.</td></tr>}
+                {!visiblePersonalAsignado.length && <tr><td colSpan={6} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{personalAsignado.length ? 'Sin resultados para los filtros aplicados.' : 'Sin personal asignado.'}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -427,9 +538,10 @@ export default function EditLiberatedOtModal({
                 <tr style={{ background: '#e5e7eb' }}>
                   {['Código', 'Descripción', 'Unidad', 'Cantidad', 'Acción'].map((h) => <th key={h} style={{ border: '1px solid #d1d5db', padding: '.45rem', textAlign: 'left' }}>{h}</th>)}
                 </tr>
+                <TableFilterRow columns={assignedMaterialColumns} rows={materialesAsignados} filters={assignedMaterialFilters.filters} onChange={assignedMaterialFilters.setFilter} />
               </thead>
               <tbody>
-                {materialesAsignados.map((item) => (
+                {visibleMaterialesAsignados.map((item) => (
                   <tr key={item.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.descripcion}</td>
@@ -438,7 +550,7 @@ export default function EditLiberatedOtModal({
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeMaterial(item.id)}>Quitar</button></td>
                   </tr>
                 ))}
-                {!materialesAsignados.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales asignados.</td></tr>}
+                {!visibleMaterialesAsignados.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{materialesAsignados.length ? 'Sin resultados para los filtros aplicados.' : 'Sin materiales asignados.'}</td></tr>}
               </tbody>
             </table>
           </div>

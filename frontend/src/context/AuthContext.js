@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { login as apiLogin, logout as apiLogout, tokenStorage } from '../services/api';
+import { ROLE_HIERARCHY } from '../utils/roleAccess';
 
 const AuthContext = createContext(null);
-const HIERARCHY = { INGENIERO: 4, PLANNER: 3, ENCARGADO: 2, TECNICO: 1 };
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -32,7 +32,7 @@ export function AuthProvider({ children }) {
 
   const hasMinRole = useCallback((minRole) => {
     if (!user) return false;
-    return (HIERARCHY[user.role] || 0) >= (HIERARCHY[minRole] || 0);
+    return (ROLE_HIERARCHY[user.role] || 0) >= (ROLE_HIERARCHY[minRole] || 0);
   }, [user]);
 
   return (

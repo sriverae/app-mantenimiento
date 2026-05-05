@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import {
   formatOtNumber,
@@ -8,7 +7,8 @@ import {
   normalizeOtSequenceSettings,
   upsertOtSequenceConfig,
 } from '../utils/otSequence';
-import { SETTINGS_SECTIONS } from '../utils/settingsSections';
+import SettingsNav from '../components/SettingsNav';
+import { firstValidationError, validateNonNegativeFields, validatePositiveFields } from '../utils/formValidation';
 
 const OT_SEQUENCE_KEY = SHARED_DOCUMENT_KEYS.otSequenceSettings;
 const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
@@ -69,6 +69,18 @@ export default function SettingsOtOrders() {
   }, [form.start_number, form.last_number, detectedMax]);
 
   const save = async () => {
+    const validationError = firstValidationError(
+      validatePositiveFields([
+        ['Anio', year],
+        ['Numero inicial', form.start_number],
+      ]),
+      validateNonNegativeFields([['Ultimo numero usado', form.last_number]]),
+    );
+    if (validationError) {
+      setError(validationError);
+      setSuccess('');
+      return;
+    }
     const safeYear = Math.max(Number(year) || currentYear, 2000);
     const startNumber = Math.max(Number(form.start_number) || 1, 1);
     const typedLast = Math.max(Number(form.last_number) || 0, 0);
@@ -116,27 +128,7 @@ export default function SettingsOtOrders() {
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
 
-      <div className="card" style={{ marginBottom: '1rem' }}>
-        <div style={{ display: 'flex', gap: '.7rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          {SETTINGS_SECTIONS.map((section) => (
-            <Link
-              key={section.key}
-              to={section.path}
-              className="btn"
-              style={{
-                background: section.key === 'ordenes-trabajo' ? '#eff6ff' : '#f3f4f6',
-                color: section.key === 'ordenes-trabajo' ? '#1d4ed8' : '#374151',
-                border: '1px solid',
-                borderColor: section.key === 'ordenes-trabajo' ? '#bfdbfe' : '#e5e7eb',
-                fontWeight: 700,
-                textDecoration: 'none',
-              }}
-            >
-              {section.label}
-            </Link>
-          ))}
-        </div>
-      </div>
+      <SettingsNav activeKey="ordenes-trabajo" />
 
       <div className="stats-grid" style={{ marginBottom: '1rem' }}>
         <div className="stat-card">

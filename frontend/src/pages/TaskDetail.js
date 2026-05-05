@@ -13,8 +13,14 @@ import {
   getUsers,
 } from '../services/api';
 import { format } from 'date-fns';
+import {
+  firstValidationError,
+  validatePositiveFields,
+  validateRequiredFields,
+  validateTextFields,
+} from '../utils/formValidation';
 
-const ROLE_HIERARCHY = { TECNICO:1, ENCARGADO:2, PLANNER:3, INGENIERO:4 };
+const ROLE_HIERARCHY = { OPERADOR:1, SUPERVISOR:2, TECNICO:3, ENCARGADO:4, PLANNER:5, INGENIERO:6 };
 const canManage = (role) => ROLE_HIERARCHY[role] >= ROLE_HIERARCHY['ENCARGADO'];
 
 const STATUS_LABEL = { DRAFT:'Borrador', OPEN:'Abierta', IN_PROGRESS:'En Progreso', DONE:'Completada', CANCELLED:'Cancelada' };
@@ -96,15 +102,18 @@ export default function TaskDetail({ user }) {
   const load = async () => {
     try {
       setLoading(true);
-      const [t, wls, ns, ps, ph, rs, us] = await Promise.all([
-        getTask(taskId),
-        getWorkLogs({ task_id: taskId }),
-        getTaskNotes(taskId),
-        getTaskParts(taskId),
-        getTaskPhotos(taskId),
-        getReschedules(taskId),
-        canManage(user.role) ? getUsers() : Promise.resolve([]),
-      ]);
+      const t = await getTask(taskId);
+      const canReadDetails = canManage(user.role) || (Array.isArray(t.members) && t.members.includes(user.id));
+      const [wls, ns, ps, ph, rs, us] = canReadDetails
+        ? await Promise.all([
+          getWorkLogs({ task_id: taskId }),
+          getTaskNotes(taskId),
+          getTaskParts(taskId),
+          getTaskPhotos(taskId),
+          getReschedules(taskId),
+          canManage(user.role) ? getUsers() : Promise.resolve([]),
+        ])
+        : [[], [], [], [], [], []];
       setTask(t); setWorkLogs(wls); setNotes(ns); setParts(ps); setPhotos(ph); setReschedules(rs); setUsers(us);
     } catch { showAlert('err', 'Error cargando tarea'); }
     finally { setLoading(false); }
@@ -114,6 +123,9 @@ export default function TaskDetail({ user }) {
 
   // ── WebSocket presence ───────────────────────────────────────────────────────
   useEffect(() => {
+    if (!task) return undefined;
+    const canReadDetails = canManage(user.role) || (Array.isArray(task.members) && task.members.includes(user.id));
+    if (!canReadDetails) return undefined;
     const token = localStorage.getItem('access_token') || '';
     const wsBase = (window.location.protocol === 'https:' ? 'wss' : 'ws') + '://' + (process.env.REACT_APP_API_URL || 'localhost:8000').replace(/^https?:\/\//, '');
     const ws = new WebSocket(`${wsBase}/ws/tasks/${taskId}?token=${token}`);
@@ -129,7 +141,7 @@ export default function TaskDetail({ user }) {
     const ping = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping'); }, 20000);
 
     return () => { clearInterval(ping); ws.close(); };
-  }, [taskId]);
+  }, [taskId, task, user]);
 
 
 
@@ -139,6 +151,20 @@ export default function TaskDetail({ user }) {
     setEditing(true);
   };
   const saveEdit = async () => {
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Descripcion', editForm.description],
+        ['Area', editForm.area],
+        ['Equipo', editForm.equipo],
+        ['Fecha programada', editForm.day_date],
+      ]),
+      validateTextFields([
+        ['Descripcion', editForm.description],
+        ['Area', editForm.area],
+        ['Equipo', editForm.equipo],
+      ]),
+    );
+    if (validationError) { showAlert('err', validationError); return; }
     try { await updateTask(taskId, editForm); setEditing(false); await load(); showAlert('ok', 'Tarea actualizada'); }
     catch(e) { showAlert('err', e.response?.data?.detail || 'Error al guardar'); }
   };
@@ -171,6 +197,15 @@ export default function TaskDetail({ user }) {
   const handleWLSubmit = async (e) => {
     e.preventDefault();
     const start = new Date(wlForm.start_dt), end = new Date(wlForm.end_dt);
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Inicio', wlForm.start_dt],
+        ['Fin', wlForm.end_dt],
+      ]),
+      validateTextFields([['Notas de trabajo', wlForm.notes]]),
+    );
+    if (validationError) { showAlert('err', validationError); return; }
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) { showAlert('err', 'Ingresa fechas y horas validas para el registro de trabajo.'); return; }
     if (end <= start) { showAlert('err', 'La hora de fin debe ser posterior al inicio'); return; }
     try {
       const myLog = workLogs.find(l => l.telegram_id === user.id);
@@ -194,6 +229,12 @@ export default function TaskDetail({ user }) {
   const handleUploadPhoto = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    const validationError = validateTextFields([['Comentario de foto', photoCaption]]);
+    if (validationError) {
+      showAlert('err', validationError);
+      e.target.value = '';
+      return;
+    }
     setUploadingPhoto(true);
     try {
       const fd = new FormData();
@@ -218,6 +259,8 @@ export default function TaskDetail({ user }) {
   const handleAddNote = async (e) => {
     e.preventDefault();
     if (!newNote.trim()) return;
+    const validationError = validateTextFields([['Nota', newNote]]);
+    if (validationError) { showAlert('err', validationError); return; }
     setSavingNote(true);
     try { await addTaskNote(taskId, newNote.trim()); setNewNote(''); await load(); }
     catch(e) { showAlert('err', e.response?.data?.detail || 'Error'); }
@@ -266,6 +309,15 @@ export default function TaskDetail({ user }) {
 
   // ── Parts ─────────────────────────────────────────────────────────────────────
   const handleAddPart = async (e) => {
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Descripcion', newPart.description],
+        ['Cantidad', newPart.quantity],
+      ]),
+      validateTextFields([['Descripcion', newPart.description]]),
+      validatePositiveFields([['Cantidad', newPart.quantity]]),
+    );
+    if (validationError) { e.preventDefault(); showAlert('err', validationError); return; }
     e.preventDefault();
     if (!newPart.description.trim() || !newPart.quantity) { showAlert('err', 'Completa descripción y cantidad'); return; }
     setSavingPart(true);
@@ -289,6 +341,11 @@ export default function TaskDetail({ user }) {
   };
 
   const handleReschedule = async (e) => {
+    const validationError = firstValidationError(
+      validateRequiredFields([['Nueva fecha', rescheduleForm.new_date]]),
+      validateTextFields([['Motivo de reprogramacion', rescheduleForm.reason]]),
+    );
+    if (validationError) { e.preventDefault(); showAlert('err', validationError); return; }
     e.preventDefault();
     if (!rescheduleForm.new_date) { showAlert('err', 'Selecciona una nueva fecha'); return; }
     try {

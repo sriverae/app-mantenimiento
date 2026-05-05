@@ -3,19 +3,21 @@ import { useAuth } from '../context/AuthContext';
 import { register, changePassword, getSecretQuestions, getUserSecretQuestion, recoverPassword } from '../services/api';
 
 const ROLES = {
+  OPERADOR : { label: 'Operador',  icon: 'ðŸ§¾', color: '#64748b', desc: 'Registro de avisos y consulta operativa' },
+  SUPERVISOR: { label: 'Supervisor', icon: 'ðŸ›¡ï¸', color: '#ea580c', desc: 'Registro de avisos y seguimiento en campo' },
   TECNICO  : { label: 'Técnico',   icon: '🔧', color: '#059669', desc: 'Ejecución de tareas de mantenimiento' },
   ENCARGADO: { label: 'Encargado', icon: '🔑', color: '#0891b2', desc: 'Gestión de equipo y asignación de tareas' },
   PLANNER  : { label: 'Planner',   icon: '📋', color: '#2563eb', desc: 'Planificación y creación de tareas' },
   INGENIERO: { label: 'Ingeniero', icon: '👷', color: '#7c3aed', desc: 'Control total del sistema' },
 };
 
-const TEMP_PW = ['Cambiar1234!', 'Admin1234!'];
+const looksLikeTemporaryPassword = (pw) => /^Cambiar\d{6}!$/.test(pw);
 
 const pwRules = pw => [
   { label: 'Mínimo 8 caracteres',        ok: pw.length >= 8 },
   { label: 'Al menos una mayúscula',      ok: /[A-Z]/.test(pw) },
   { label: 'Al menos un número',          ok: /[0-9]/.test(pw) },
-  { label: 'No es contraseña temporal',   ok: !TEMP_PW.includes(pw) },
+  { label: 'No es contraseña temporal',   ok: !looksLikeTemporaryPassword(pw) },
 ];
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
@@ -386,7 +388,7 @@ export default function Login() {
     e.preventDefault(); setErr(''); setLoading(true);
     try {
       const user = await login(username.trim(), password);
-      if (TEMP_PW.includes(password)) setMustChange({ ...user, _tempPw: password });
+      if (looksLikeTemporaryPassword(password)) setMustChange({ ...user, _tempPw: password });
     } catch(e) {
       if (!e.response) setErr('No se pudo conectar con el servidor. Revisa CORS, REACT_APP_API_URL o el estado del backend.');
       else setErr(e.response?.data?.detail || 'Usuario o contraseña incorrectos');

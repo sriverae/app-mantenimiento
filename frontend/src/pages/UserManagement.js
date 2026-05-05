@@ -1,11 +1,86 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getUsers, getPendingUsers, createUser, updateUser, approveUser, resetUserPassword } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { ROLE_HIERARCHY } from '../utils/roleAccess';
+import {
+  firstValidationError,
+  validateRequiredFields,
+  validateTextFields,
+} from '../utils/formValidation';
 
-const ROLE_COLORS = { INGENIERO:'#7c3aed', PLANNER:'#2563eb', ENCARGADO:'#0891b2', TECNICO:'#059669' };
+const ROLE_COLORS = { INGENIERO:'#7c3aed', PLANNER:'#2563eb', ENCARGADO:'#0891b2', TECNICO:'#059669', SUPERVISOR:'#ea580c', OPERADOR:'#64748b' };
 const ROLE_LABELS = { INGENIERO:'Ingeniero', PLANNER:'Planner', ENCARGADO:'Encargado', TECNICO:'Técnico' };
 const ROLE_ICONS  = { INGENIERO:'👷', PLANNER:'📋', ENCARGADO:'🔑', TECNICO:'🔧' };
 const ROLES       = ['INGENIERO','PLANNER','ENCARGADO','TECNICO'];
+const AVAILABLE_ROLES = [...ROLES, 'SUPERVISOR', 'OPERADOR'];
+const USER_ROLE_TO_RRHH_CARGO = {
+  TECNICO: 'Tecnico',
+  OPERADOR: 'Operador',
+  SUPERVISOR: 'Supervisor',
+  ENCARGADO: 'Encargado',
+};
+
+const normalizePlainText = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '');
+
+const syncRrhhRoleFromUser = async (userRecord) => {
+  if (!userRecord?.id) return false;
+
+  const rrhhData = await loadSharedDocument(SHARED_DOCUMENT_KEYS.rrhh, []);
+  if (!Array.isArray(rrhhData) || !rrhhData.length) return false;
+
+  const normalizedUsername = normalizePlainText(userRecord.username);
+  const normalizedFullName = normalizePlainText(userRecord.full_name);
+  const cargoFromRole = USER_ROLE_TO_RRHH_CARGO[userRecord.role];
+  let synced = false;
+
+  const nextRrhh = rrhhData.map((person) => {
+    const linkedById = person.usuario_id && String(person.usuario_id) === String(userRecord.id);
+    const linkedByUsername = person.usuario_acceso && normalizePlainText(person.usuario_acceso) === normalizedUsername;
+    const unlinkedExactName = !person.usuario_id
+      && !person.usuario_acceso
+      && normalizedFullName
+      && normalizePlainText(person.nombres_apellidos) === normalizedFullName;
+
+    if (!linkedById && !linkedByUsername && !unlinkedExactName) return person;
+
+    synced = true;
+    return {
+      ...person,
+      nombres_apellidos: userRecord.full_name || person.nombres_apellidos,
+      cargo: cargoFromRole || person.cargo,
+      usuario_id: userRecord.id,
+      usuario_acceso: userRecord.username,
+      usuario_role: userRecord.role,
+      usuario_sync_at: new Date().toISOString(),
+      sincronizar_cuenta: true,
+    };
+  });
+
+  if (synced) {
+    await saveSharedDocument(SHARED_DOCUMENT_KEYS.rrhh, nextRrhh);
+  }
+
+  return synced;
+};
+
+const getRoleLabel = (role) => (
+  {
+    SUPERVISOR: 'Supervisor',
+    OPERADOR: 'Operador',
+  }[role] || ROLE_LABELS[role] || role
+);
+
+const getRoleIcon = (role) => (
+  {
+    SUPERVISOR: '🛡️',
+    OPERADOR: '🧾',
+  }[role] || ROLE_ICONS[role] || '👤'
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function Modal({ title, onClose, children }) {
@@ -25,7 +100,7 @@ function Modal({ title, onClose, children }) {
 function RoleBadge({ role }) {
   return (
     <span style={{ background: ROLE_COLORS[role]+'18', color: ROLE_COLORS[role], padding:'.25rem .75rem', borderRadius:'9999px', fontSize:'.78rem', fontWeight:700, whiteSpace:'nowrap' }}>
-      {ROLE_ICONS[role]} {ROLE_LABELS[role]}
+      {getRoleIcon(role)} {getRoleLabel(role)}
     </span>
   );
 }
@@ -72,14 +147,23 @@ function PendingPanel({ onRefresh }) {
   const openReview = (u) => { setSelected(u); setRoleOverride(u.role); setRejectNote(''); };
 
   const handleDecision = async (action) => {
+    const validationError = validateTextFields([['Motivo del rechazo', rejectNote]]);
+    if (validationError) {
+      setMsg(validationError);
+      return;
+    }
     setSaving(true);
     try {
-      await approveUser(selected.id, {
+      const approvedUser = await approveUser(selected.id, {
         action,
         role_override: action === 'approve' ? roleOverride : undefined,
         rejection_note: rejectNote,
       });
-      setMsg(action === 'approve' ? `✅ ${selected.full_name} aprobado como ${ROLE_LABELS[roleOverride]}` : `❌ ${selected.full_name} rechazado`);
+      if (action === 'approve') {
+        const approvedRecord = approvedUser?.id ? approvedUser : { ...selected, role: roleOverride };
+        await syncRrhhRoleFromUser(approvedRecord);
+      }
+      setMsg(action === 'approve' ? `✅ ${selected.full_name} aprobado como ${getRoleLabel(roleOverride)}` : `❌ ${selected.full_name} rechazado`);
       setSelected(null);
       await load();
       onRefresh();
@@ -99,7 +183,7 @@ function PendingPanel({ onRefresh }) {
           <div style={{ background:'#f9fafb', borderRadius:'.75rem', padding:'1rem', marginBottom:'1.5rem' }}>
             <div style={{ display:'flex', alignItems:'center', gap:'.75rem', marginBottom:'.75rem' }}>
               <div style={{ width:'2.5rem', height:'2.5rem', borderRadius:'50%', background: ROLE_COLORS[selected.role]+'22', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.2rem' }}>
-                {ROLE_ICONS[selected.role]}
+                {getRoleIcon(selected.role)}
               </div>
               <div>
                 <div style={{ fontWeight:700 }}>{selected.full_name}</div>
@@ -116,16 +200,16 @@ function PendingPanel({ onRefresh }) {
             </label>
             <select value={roleOverride} onChange={e => setRoleOverride(e.target.value)}
               style={{ width:'100%', padding:'.75rem', border:'1.5px solid #d1d5db', borderRadius:'.5rem', fontSize:'1rem' }}>
-              {ROLES.map(r => <option key={r} value={r}>{ROLE_ICONS[r]} {ROLE_LABELS[r]}</option>)}
+              {AVAILABLE_ROLES.map(r => <option key={r} value={r}>{getRoleIcon(r)} {getRoleLabel(r)}</option>)}
             </select>
             <p style={{ fontSize:'.78rem', color:'#9ca3af', marginTop:'.4rem' }}>
-              Puedes cambiar el rol antes de aprobar. El usuario solicitó: <strong>{ROLE_LABELS[selected.role]}</strong>.
+              Puedes cambiar el rol antes de aprobar. El usuario solicitó: <strong>{getRoleLabel(selected.role)}</strong>.
             </p>
           </div>
 
           <button onClick={() => handleDecision('approve')} disabled={saving}
             style={{ width:'100%', padding:'.875rem', background:'linear-gradient(135deg,#059669,#047857)', color:'#fff', border:'none', borderRadius:'.5rem', fontWeight:700, cursor:'pointer', fontSize:'1rem', marginBottom:'1rem' }}>
-            {saving ? 'Procesando...' : `✅ Aprobar como ${ROLE_LABELS[roleOverride]}`}
+            {saving ? 'Procesando...' : `✅ Aprobar como ${getRoleLabel(roleOverride)}`}
           </button>
 
           {/* Reject section */}
@@ -157,7 +241,7 @@ function PendingPanel({ onRefresh }) {
           {pending.map(u => (
             <div key={u.id} style={{ background:'#fff', border:'2px solid #fcd34d', borderRadius:'.75rem', padding:'1rem 1.25rem', display:'flex', alignItems:'center', gap:'1rem', flexWrap:'wrap' }}>
               <div style={{ width:'2.5rem', height:'2.5rem', borderRadius:'50%', background: ROLE_COLORS[u.role]+'22', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.2rem', flexShrink:0 }}>
-                {ROLE_ICONS[u.role]}
+                {getRoleIcon(u.role)}
               </div>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontWeight:700 }}>{u.full_name}</div>
@@ -180,7 +264,12 @@ function PendingPanel({ onRefresh }) {
 }
 
 // ── Active users panel ────────────────────────────────────────────────────────
-function UsersPanel({ isIngeniero }) {
+const canManageUserFromUi = (actor, target) => {
+  if (!actor?.role || !target?.role) return false;
+  return (ROLE_HIERARCHY[actor.role] || 0) > (ROLE_HIERARCHY[target.role] || 0);
+};
+
+function UsersPanel({ isIngeniero, currentUser }) {
   const [users, setUsers]       = useState([]);
   const [loading, setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -199,17 +288,44 @@ function UsersPanel({ isIngeniero }) {
   useEffect(() => { load(); }, [load]);
 
   const openCreate = () => { setForm({ username:'', full_name:'', password:'', role:'TECNICO' }); setEditUser(null); setErr(''); setShowModal(true); };
-  const openEdit   = u  => { setEditUser(u); setForm({ username:u.username, full_name:u.full_name, password:'', role:u.role }); setErr(''); setShowModal(true); };
+  const openEdit = (u) => {
+    if (!canManageUserFromUi(currentUser, u)) {
+      setErr('Solo puedes editar usuarios con un rol inferior al tuyo');
+      return;
+    }
+    setEditUser(u);
+    setForm({ username:u.username, full_name:u.full_name, password:'', role:u.role });
+    setErr('');
+    setShowModal(true);
+  };
 
   const save = async e => {
     e.preventDefault(); setSaving(true); setErr('');
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ...(!editUser ? [['Usuario', form.username], ['Contrasena', form.password]] : []),
+        ['Nombre completo', form.full_name],
+      ]),
+      validateTextFields([
+        ['Usuario', form.username],
+        ['Nombre completo', form.full_name],
+      ]),
+    );
+    if (validationError) {
+      setErr(validationError);
+      setSaving(false);
+      return;
+    }
     try {
+      let syncedWithRrhh = false;
       if (editUser) {
-        await updateUser(editUser.id, { full_name: form.full_name, role: form.role });
-        setSuccess('Usuario actualizado');
+        const updatedUser = await updateUser(editUser.id, { full_name: form.full_name, role: form.role });
+        syncedWithRrhh = await syncRrhhRoleFromUser(updatedUser || { ...editUser, full_name: form.full_name, role: form.role });
+        setSuccess(syncedWithRrhh ? 'Usuario actualizado y RRHH sincronizado' : 'Usuario actualizado');
       } else {
-        await createUser({ username: form.username, full_name: form.full_name, password: form.password, role: form.role });
-        setSuccess('Usuario creado correctamente');
+        const createdUser = await createUser({ username: form.username, full_name: form.full_name, password: form.password, role: form.role });
+        syncedWithRrhh = await syncRrhhRoleFromUser(createdUser);
+        setSuccess(syncedWithRrhh ? 'Usuario creado y vinculado con RRHH' : 'Usuario creado correctamente');
       }
       setShowModal(false); await load();
       setTimeout(() => setSuccess(''), 4000);
@@ -218,6 +334,10 @@ function UsersPanel({ isIngeniero }) {
   };
 
   const toggleActive = async u => {
+    if (!canManageUserFromUi(currentUser, u)) {
+      setErr('Solo puedes activar o desactivar usuarios con un rol inferior al tuyo');
+      return;
+    }
     const newStatus = u.account_status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     try { await updateUser(u.id, { account_status: newStatus }); await load(); }
     catch { setErr('Error actualizando usuario'); }
@@ -225,6 +345,10 @@ function UsersPanel({ isIngeniero }) {
 
   const [resetResult, setResetResult] = useState(null); // {username, full_name, temp_password}
   const handleReset = async u => {
+    if (!canManageUserFromUi(currentUser, u)) {
+      setErr('Solo puedes resetear contraseñas de usuarios con un rol inferior al tuyo');
+      return;
+    }
     if (!window.confirm(`¿Resetear la contraseña de ${u.full_name}? Se generará una contraseña temporal.`)) return;
     try {
       const res = await resetUserPassword(u.id);
@@ -286,7 +410,7 @@ function UsersPanel({ isIngeniero }) {
             <div className="form-group">
               <label className="form-label">Rol</label>
               <select className="form-select" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
-                {ROLES.map(r => <option key={r} value={r}>{ROLE_ICONS[r]} {ROLE_LABELS[r]}</option>)}
+                {AVAILABLE_ROLES.map(r => <option key={r} value={r}>{getRoleIcon(r)} {getRoleLabel(r)}</option>)}
               </select>
             </div>
             {err && <p style={{color:'#dc2626', marginBottom:'1rem', fontSize:'.875rem'}}>⚠️ {err}</p>}
@@ -304,17 +428,22 @@ function UsersPanel({ isIngeniero }) {
       </div>
 
       {success && <div className="alert alert-success" style={{marginBottom:'1rem'}}>{success}</div>}
+      {err && !showModal && (
+        <div style={{ background:'#fef2f2', color:'#dc2626', padding:'1rem', borderRadius:'.5rem', marginBottom:'1rem', fontWeight:600 }}>
+          {err}
+        </div>
+      )}
 
       {loading ? <div className="loading"><div className="spinner" /></div> : (
         <>
           <div style={{display:'grid', gap:'.6rem'}}>
-            {activeUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} onEdit={openEdit} onToggle={toggleActive} onReset={handleReset} />)}
+            {activeUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} canManage={canManageUserFromUi(currentUser, u)} onEdit={openEdit} onToggle={toggleActive} onReset={handleReset} />)}
           </div>
           {inactiveUsers.length > 0 && (
             <div style={{marginTop:'1.5rem'}}>
               <div style={{fontSize:'.85rem', fontWeight:700, color:'#6b7280', marginBottom:'.75rem'}}>Inactivos ({inactiveUsers.length})</div>
               <div style={{display:'grid', gap:'.6rem', opacity:.7}}>
-                {inactiveUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} onEdit={openEdit} onToggle={toggleActive} onReset={handleReset} />)}
+                {inactiveUsers.map(u => <UserRow key={u.id} u={u} isIngeniero={isIngeniero} canManage={canManageUserFromUi(currentUser, u)} onEdit={openEdit} onToggle={toggleActive} onReset={handleReset} />)}
               </div>
             </div>
           )}
@@ -324,12 +453,12 @@ function UsersPanel({ isIngeniero }) {
   );
 }
 
-function UserRow({ u, isIngeniero, onEdit, onToggle, onReset }) {
+function UserRow({ u, isIngeniero, canManage, onEdit, onToggle, onReset }) {
   const isActive = u.account_status === 'ACTIVE';
   return (
     <div style={{background:'#fff', border:'1px solid #e5e7eb', borderRadius:'.75rem', padding:'1rem 1.25rem', display:'flex', alignItems:'center', gap:'1rem', flexWrap:'wrap'}}>
       <div style={{width:'2.5rem', height:'2.5rem', borderRadius:'50%', background: ROLE_COLORS[u.role]+'22', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.2rem', flexShrink:0}}>
-        {ROLE_ICONS[u.role]}
+        {getRoleIcon(u.role)}
       </div>
       <div style={{flex:1, minWidth:0}}>
         <div style={{fontWeight:700}}>{u.full_name}</div>
@@ -339,7 +468,7 @@ function UserRow({ u, isIngeniero, onEdit, onToggle, onReset }) {
       <span style={{fontSize:'.78rem', fontWeight:600, color: isActive?'#059669':'#dc2626'}}>
         {isActive ? '● Activo' : '○ Inactivo'}
       </span>
-      {isIngeniero && (
+      {isIngeniero && canManage && (
         <div style={{display:'flex', gap:'.5rem', flexShrink:0}}>
           <button className="btn btn-sm btn-secondary" onClick={() => onEdit(u)}>Editar</button>
           <button onClick={() => onReset(u)}
@@ -353,13 +482,18 @@ function UserRow({ u, isIngeniero, onEdit, onToggle, onReset }) {
           </button>
         </div>
       )}
+      {isIngeniero && !canManage && (
+        <span style={{fontSize:'.78rem', fontWeight:600, color:'#6b7280', background:'#f3f4f6', padding:'.35rem .7rem', borderRadius:'9999px'}}>
+          Solo lectura
+        </span>
+      )}
     </div>
   );
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function UserManagement() {
-  const { hasRole } = useAuth();
+  const { user, hasRole } = useAuth();
   const isIngeniero = hasRole('INGENIERO');
   const [tab, setTab] = useState(isIngeniero ? 'pending' : 'users');
   const [pendingCount, setPendingCount] = useState(0);
@@ -380,7 +514,7 @@ export default function UserManagement() {
       <h1 style={{fontSize:'2rem', fontWeight:700, marginBottom:'2rem'}}>Gestión de Usuarios</h1>
       <Tabs tabs={tabs} active={tab} onChange={setTab} badge={{ pending: pendingCount }} />
       {tab === 'pending' && <PendingPanel onRefresh={refreshPending} />}
-      {tab === 'users'   && <UsersPanel  isIngeniero={isIngeniero} />}
+      {tab === 'users'   && <UsersPanel  isIngeniero={isIngeniero} currentUser={user} />}
     </div>
   );
 }

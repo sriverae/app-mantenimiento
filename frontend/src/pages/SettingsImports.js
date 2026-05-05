@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router-dom';
 import { createUser, getUsers } from '../services/api';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import {
@@ -17,10 +17,14 @@ import {
   parseSpreadsheetFile,
   splitTextList,
 } from '../utils/importUtils';
+import SettingsNav from '../components/SettingsNav';
+import TableFilterRow from '../components/TableFilterRow';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { SETTINGS_IMPORT_DESCRIPTIONS, SETTINGS_SECTIONS } from '../utils/settingsSections';
+import { filterRowsByColumns } from '../utils/tableFilters';
 
-const VALID_SECTIONS = SETTINGS_SECTIONS.map((item) => item.key);
-const IMPORTABLE_SECTIONS = VALID_SECTIONS.filter((key) => key !== 'ordenes-trabajo');
+const VALID_SECTIONS = SETTINGS_SECTIONS.filter((item) => item.importable).map((item) => item.key);
+const IMPORTABLE_SECTIONS = VALID_SECTIONS;
 const DEFAULT_PASSWORD = 'Manto2026!';
 
 const EMPTY_IMPORT_STATE = {
@@ -73,6 +77,7 @@ const SECTION_TEMPLATES = {
     'frecuencia',
     'responsable',
     'fecha_inicio',
+    'dias_anticipacion_alerta',
     'actividades',
   ],
   equipos: [
@@ -122,6 +127,7 @@ const TEMPLATE_SAMPLE_ROWS = {
       frecuencia: 'Mensual',
       responsable: 'Mecanico',
       fecha_inicio: '2026-04-01',
+      dias_anticipacion_alerta: '5',
       actividades: 'Inspeccion visual general; Limpieza de componentes; Verificacion de ajuste de pernos',
     },
   ],
@@ -181,38 +187,12 @@ const TEMPLATE_SAMPLE_ROWS = {
 
 const PREVIEW_COLUMNS = {
   'historial-ot': ['ot_numero', 'codigo', 'descripcion', 'fecha_cierre', 'tiempo_efectivo_hh'],
-  cronograma: ['codigo', 'equipo', 'frecuencia', 'fecha_inicio', 'responsable'],
+  cronograma: ['codigo', 'equipo', 'frecuencia', 'fecha_inicio', 'dias_anticipacion_alerta', 'responsable'],
   equipos: ['codigo', 'descripcion', 'area_trabajo', 'criticidad', 'estado'],
   paquetes: ['codigo', 'nombre', 'vc', 'tiempo_min', 'actividades'],
   materiales: ['codigo', 'descripcion', 'stock', 'unidad', 'costo_unit'],
   personal: ['codigo', 'nombres_apellidos', 'especialidad', 'usuario', 'rol_usuario'],
 };
-
-function SettingsNav({ activeKey }) {
-  return (
-    <div className="card" style={{ marginBottom: '1rem' }}>
-      <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap' }}>
-        {SETTINGS_SECTIONS.map((section) => (
-          <Link
-            key={section.key}
-            to={section.path}
-            className="btn"
-            style={{
-              background: activeKey === section.key ? '#eff6ff' : '#f3f4f6',
-              color: activeKey === section.key ? '#1d4ed8' : '#374151',
-              border: '1px solid',
-              borderColor: activeKey === section.key ? '#bfdbfe' : '#e5e7eb',
-              fontWeight: 700,
-              textDecoration: 'none',
-            }}
-          >
-            {section.label}
-          </Link>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function SummaryCard({ label, value, color = '#111827' }) {
   return (
@@ -272,6 +252,20 @@ function formatPreviewValue(value) {
 }
 
 function PreviewTable({ rows, columns }) {
+  const previewFilterColumns = useMemo(
+    () => columns.map((column) => ({
+      id: column,
+      label: column,
+      getValue: (row) => formatPreviewValue(row[column]),
+    })),
+    [columns],
+  );
+  const previewFilters = useTableColumnFilters(previewFilterColumns);
+  const visibleRows = useMemo(
+    () => filterRowsByColumns(rows, previewFilterColumns, previewFilters.filters),
+    [rows, previewFilterColumns, previewFilters.filters],
+  );
+
   if (!rows.length) return null;
   return (
     <div className="card" style={{ overflowX: 'auto', marginTop: '1rem' }}>
@@ -285,9 +279,17 @@ function PreviewTable({ rows, columns }) {
               </th>
             ))}
           </tr>
+          <TableFilterRow columns={previewFilterColumns} rows={rows} filters={previewFilters.filters} onChange={previewFilters.setFilter} dark />
         </thead>
         <tbody>
-          {rows.map((row, index) => (
+          {visibleRows.length === 0 && (
+            <tr>
+              <td colSpan={columns.length} style={{ padding: '.75rem', border: '1px solid #dbe4f0', color: '#64748b', textAlign: 'center' }}>
+                No hay filas para los filtros aplicados.
+              </td>
+            </tr>
+          )}
+          {visibleRows.map((row, index) => (
             <tr key={`${index}_${row.id || row.codigo || row.ot_numero || 'row'}`} style={{ background: index % 2 === 0 ? '#fff' : '#f8fafc' }}>
               {columns.map((column) => (
                 <td key={`${index}_${column}`} style={{ padding: '.5rem .6rem', border: '1px solid #dbe4f0', color: '#111827' }}>
@@ -713,18 +715,29 @@ export default function SettingsImports() {
 
     try {
       const drafts = [];
+      const warnings = [];
       for (let index = 0; index < fileList.length; index += 1) {
         const file = fileList[index];
-        const text = await extractPdfText(file);
-        const activities = extractActivitiesFromPdfText(text);
-        drafts.push(buildPackageDraftFromPdf(file.name, activities, text, index, packagePdfState.vc));
+        try {
+          const text = await extractPdfText(file);
+          const activities = extractActivitiesFromPdfText(text);
+          const draft = buildPackageDraftFromPdf(file.name, activities, text, index, packagePdfState.vc);
+          if (!activities.length) {
+            warnings.push(`${file.name}: no se detectaron actividades automaticamente. Completa la lista manualmente.`);
+          }
+          drafts.push(draft);
+        } catch (fileError) {
+          console.error(`Error leyendo PDF ${file.name}:`, fileError);
+          warnings.push(`${file.name}: no se pudo leer automaticamente. Se creo un borrador para completar manualmente.`);
+          drafts.push(buildPackageDraftFromPdf(file.name, [], '', index, packagePdfState.vc));
+        }
       }
 
       setPackagePdfState((prev) => ({
         ...prev,
         parsing: false,
         drafts,
-        error: drafts.length ? '' : 'No se pudieron extraer actividades desde los PDF seleccionados.',
+        error: warnings.length ? warnings.join(' ') : (drafts.length ? '' : 'No se pudieron extraer actividades desde los PDF seleccionados.'),
       }));
     } catch (error) {
       console.error('Error leyendo PDF:', error);
@@ -820,7 +833,7 @@ export default function SettingsImports() {
       {activeSection === 'cronograma' && (
         <SpreadsheetPanel
           title="Carga masiva del Cronograma de mantenimiento"
-          helperText="Importa planes preventivos por fecha. Si el codigo del equipo ya existe en Control de equipos, el nombre se completara automaticamente."
+          helperText="Importa planes preventivos por fecha. Si el codigo del equipo ya existe en Control de equipos, el nombre se completara automaticamente. Tambien puedes definir cuantos dias antes debe aparecer la alerta en Gestion de OT."
           templateHeaders={SECTION_TEMPLATES.cronograma}
           templateRows={TEMPLATE_SAMPLE_ROWS.cronograma}
           templateFileName="plantilla_cronograma_mantenimiento.xlsx"
@@ -901,6 +914,8 @@ export default function SettingsImports() {
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Rol por defecto</label>
                 <select className="form-select" value={defaultUserRole} onChange={(event) => setDefaultUserRole(event.target.value)}>
+                  <option value="OPERADOR">Operador</option>
+                  <option value="SUPERVISOR">Supervisor</option>
                   <option value="TECNICO">Tecnico</option>
                   <option value="ENCARGADO">Encargado</option>
                   <option value="PLANNER">Planner</option>

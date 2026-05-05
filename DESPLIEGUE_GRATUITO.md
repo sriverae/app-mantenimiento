@@ -53,6 +53,7 @@ Variables mínimas del backend:
 
 - `DATABASE_URL`
 - `JWT_SECRET_KEY`
+- `INITIAL_ADMIN_PASSWORD`
 - `API_BASE_URL`
 - `ALLOWED_ORIGINS`
 
@@ -68,6 +69,7 @@ Valores ejemplo:
 ```env
 DATABASE_URL=postgresql://usuario:clave@host:5432/base?sslmode=require
 JWT_SECRET_KEY=pon-aqui-una-clave-larga-y-segura
+INITIAL_ADMIN_PASSWORD=define-una-contrasena-inicial-segura
 API_BASE_URL=https://tu-backend.onrender.com
 ALLOWED_ORIGINS=http://localhost:3000,https://tu-frontend.vercel.app
 CLOUDINARY_CLOUD_NAME=xxxx
@@ -114,9 +116,10 @@ ALLOWED_ORIGINS=http://localhost:3000,https://maintenance-app.vercel.app
 Al iniciar con una base vacía:
 
 - se crean las tablas automáticamente
-- se crea el usuario inicial `admin / Admin1234!`
+- si `INITIAL_ADMIN_PASSWORD` está configurada, se crea el usuario inicial `admin` con esa contraseña
+- si `INITIAL_ADMIN_PASSWORD` no está configurada en producción, no se crea un usuario admin por seguridad
 
-Después del primer ingreso, cambia la contraseña.
+Después del primer ingreso, cambia la contraseña y guarda la credencial inicial fuera del repositorio.
 
 ## 7. Qué queda listo con estos cambios
 

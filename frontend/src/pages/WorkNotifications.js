@@ -1,16 +1,54 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
+import TableFilterRow from '../components/TableFilterRow';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
+import {
+  acquireWorkNotificationLock,
+  getWorkNotificationLock,
+  refreshWorkNotificationLock,
+  releaseWorkNotificationLock,
+  uploadPhotoAttachment,
+} from '../services/api';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import { DEFAULT_MATERIALS, normalizeMaterialsCatalog } from '../utils/materialsCatalog';
 import { evaluateWorkReportConsistency, getAlertConsistencySummary } from '../utils/otConsistency';
 import { formatDateDisplay, formatDateTimeDisplay } from '../utils/dateFormat';
 import { getWorkReportOwnerLabel, isWorkReportOwnedByUser } from '../utils/workReportOwnership';
 import {
+  summarizeServiceReports,
+} from '../utils/workReportServices';
+import { isReadOnlyRole } from '../utils/roleAccess';
+import {
   buildMaintenanceNoticesFromReports,
   buildObservationText,
   getObservationPreset,
   WORK_OBSERVATION_PRESETS,
 } from '../utils/maintenanceNotices';
+import { advanceKmPlanCycle } from '../utils/kmCounters';
+import { appendAuditEntry } from '../utils/auditLog';
+import { ModalCerrarOT, ModalReprogramarOt } from './PmpGestionOt';
+import ConfigurableSelectField from '../components/ConfigurableSelectField';
+import useConfigurableLists from '../hooks/useConfigurableLists';
+import { filterRowsByColumns } from '../utils/tableFilters';
+import { DEFAULT_OT_PDF_SETTINGS, normalizeOtPdfSettings, openIndustrialOtReportPdf } from '../utils/otPdfReport';
+import { applyOtReprogramming } from '../utils/otReprogramming';
+import {
+  firstValidationError,
+  validateNonNegativeFields,
+  validatePositiveFields,
+  validateRequiredFields,
+} from '../utils/formValidation';
+import {
+  buildUploadedPhotoPayload,
+  findReportsMissingRequiredEvidence,
+  getBlockedTextMessage,
+  getPhotoSource,
+  getWorkReportEvidencePhotos,
+  hasBlockedMaintenanceTextChars,
+  hasRequiredWorkReportEvidence,
+  WORK_REPORT_PHOTO_SLOTS,
+} from '../utils/workReportEvidence';
 
 // Nota: este archivo debe permanecer sin marcadores de conflicto de merge.
 const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
@@ -19,6 +57,8 @@ const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
 const NOTICES_KEY = SHARED_DOCUMENT_KEYS.maintenanceNotices;
 const RRHH_KEY = SHARED_DOCUMENT_KEYS.rrhh;
 const MATERIALES_KEY = SHARED_DOCUMENT_KEYS.materials;
+const KM_PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlansKm;
+const PDF_FORMAT_KEY = SHARED_DOCUMENT_KEYS.otPdfFormat;
 
 const RRHH_FALLBACK = [
   { id: 1, codigo: 'MEC-1', nombres_apellidos: 'Manuel de la Cruz Jimenez', especialidad: 'Mecánico' },
@@ -26,6 +66,68 @@ const RRHH_FALLBACK = [
 ];
 
 const MATERIALES_FALLBACK = DEFAULT_MATERIALS;
+
+const normalizeIdentityText = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .trim()
+  .toLowerCase();
+
+const getUserIdentityTokens = (user) => {
+  const tokens = new Set();
+  [user?.id, user?.username, user?.full_name, user?.email].forEach((value) => {
+    const normalized = normalizeIdentityText(value);
+    if (normalized) tokens.add(normalized);
+  });
+  return tokens;
+};
+
+const doesStaffRowMatchUser = (row, user) => {
+  if (!row || !user) return false;
+  const userTokens = getUserIdentityTokens(user);
+  if (!userTokens.size) return false;
+
+  const rowTokens = [
+    row.id,
+    row.codigo,
+    row.nombres_apellidos,
+    row.email,
+    row.username,
+    `${row.codigo || ''} ${row.nombres_apellidos || ''}`,
+  ]
+    .map((value) => normalizeIdentityText(value))
+    .filter(Boolean);
+
+  return rowTokens.some((token) => userTokens.has(token));
+};
+
+const isAlertAssignedToUser = (alert, user) => {
+  if (!alert || !user) return false;
+
+  const detailRows = Array.isArray(alert.personal_detalle) ? alert.personal_detalle : [];
+  if (detailRows.some((row) => doesStaffRowMatchUser(row, user))) return true;
+
+  const assignedText = normalizeIdentityText(alert.personal_mantenimiento);
+  if (!assignedText) return false;
+
+  return Array.from(getUserIdentityTokens(user)).some((token) => assignedText.includes(token));
+};
+
+const getNotificationArea = (item) => item?.area_trabajo || item?.area || item?.area_equipo || 'N.A.';
+
+const buildAssignedPersonnelSummary = (rows = []) => (rows || [])
+  .map((row) => {
+    const code = String(row.codigo || '').trim();
+    const name = String(row.nombres_apellidos || '').trim();
+    if (code && name) return `${code} - ${name}`;
+    return name || code || 'Sin identificar';
+  })
+  .join(', ');
+
+const findMatchingRrhhForUser = (rrhhItems = [], user) => {
+  const items = Array.isArray(rrhhItems) ? rrhhItems : [];
+  return items.find((row) => doesStaffRowMatchUser(row, user)) || null;
+};
 
 const toPositiveNumber = (value) => {
   const parsed = Number(value);
@@ -113,96 +215,8 @@ const calculateReportMaterialCost = (report, catalog) => {
   return Number(total.toFixed(2));
 };
 
-const escapeHtml = (value) => String(value ?? '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
-
-const buildCloseReportHtml = (alert, reports, catalog) => {
-  const reportRows = (reports || []).map((report, index) => `
-    <tr>
-      <td>${index + 1}</td>
-      <td>${escapeHtml(report.reportCode || '')}</td>
-      <td>${escapeHtml(formatDateTimeDisplay(report.fechaInicio, report.horaInicio, 'N.A.'))}</td>
-      <td>${escapeHtml(formatDateTimeDisplay(report.fechaFin, report.horaFin, 'N.A.'))}</td>
-      <td>${escapeHtml((report.tecnicos || []).map((item) => `${item.tecnico} (${item.horas} h)`).join(', '))}</td>
-      <td>${escapeHtml((report.materialesExtra || []).map((item) => `${item.codigo || item.descripcion} x${item.cantidad}`).join(', '))}</td>
-      <td>S/ ${calculateReportMaterialCost(report, catalog).toFixed(2)}</td>
-    </tr>
-  `).join('');
-
-  return `
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>OT ${escapeHtml(alert.ot_numero || '')}</title>
-        <style>
-          body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
-          h1, h2 { margin: 0 0 12px; }
-          .section { margin-top: 24px; }
-          .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px 20px; }
-          .label { font-size: 12px; color: #6b7280; text-transform: uppercase; }
-          .value { font-size: 14px; font-weight: 600; }
-          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-          th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; font-size: 12px; }
-          th { background: #eff6ff; }
-        </style>
-      </head>
-      <body>
-        <h1>Orden de Trabajo ${escapeHtml(alert.ot_numero || 'N.A.')}</h1>
-        <div class="grid section">
-          <div><div class="label">Equipo</div><div class="value">${escapeHtml(alert.codigo || '')} - ${escapeHtml(alert.descripcion || '')}</div></div>
-          <div><div class="label">Estado final</div><div class="value">${escapeHtml(alert.status_ot || '')}</div></div>
-          <div><div class="label">Responsable</div><div class="value">${escapeHtml(alert.responsable || '')}</div></div>
-          <div><div class="label">Fecha a ejecutar</div><div class="value">${escapeHtml(formatDateDisplay(alert.fecha_ejecutar || '', 'N.A.'))}</div></div>
-          <div><div class="label">Inicio OT</div><div class="value">${escapeHtml(formatDateTimeDisplay(alert.cierre_ot?.fecha_inicio || alert.registro_ot?.fecha_inicio || '', alert.cierre_ot?.hora_inicio || alert.registro_ot?.hora_inicio || '', 'N.A.'))}</div></div>
-          <div><div class="label">Fin OT</div><div class="value">${escapeHtml(formatDateTimeDisplay(alert.registro_ot?.fecha_fin || '', alert.registro_ot?.hora_fin || '', 'N.A.'))}</div></div>
-        </div>
-
-        <div class="section">
-          <h2>Personal y materiales liberados</h2>
-          <div><strong>Personal:</strong> ${escapeHtml(alert.personal_mantenimiento || 'N.A.')}</div>
-          <div><strong>Materiales:</strong> ${escapeHtml(alert.materiales || 'N.A.')}</div>
-        </div>
-
-        <div class="section">
-          <h2>Registros de trabajo</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Codigo</th>
-                <th>Inicio</th>
-                <th>Fin</th>
-                <th>Tecnicos</th>
-                <th>Materiales extra</th>
-                <th>Costo materiales</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${reportRows || '<tr><td colspan="7">Sin registros.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </body>
-    </html>
-  `;
-};
-
-const openCloseReportPdf = (alert, reports, catalog) => {
-  const printWindow = window.open('', '_blank', 'width=1024,height=768');
-  if (!printWindow) {
-    window.alert('No se pudo abrir la ventana para generar el PDF.');
-    return;
-  }
-  printWindow.document.write(buildCloseReportHtml(alert, reports, catalog));
-  printWindow.document.close();
-  printWindow.focus();
-  setTimeout(() => {
-    printWindow.print();
-  }, 300);
+const openCloseReportPdf = (alert, reports, catalog, pdfSettings) => {
+  openIndustrialOtReportPdf(alert, reports, catalog, pdfSettings);
 };
 
 function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, onClose }) {
@@ -243,6 +257,11 @@ function PickerModal({ title, placeholder, items, filterFn, itemLabel, onPick, o
 function EditLiberatedOtModal({
   alert, rrhhItems, materialsCatalog, reports = [], onClose, onSave,
 }) {
+  const {
+    getOptions,
+    addOptionQuickly,
+    canManage: canManageConfigurableLists,
+  } = useConfigurableLists();
   const [tab, setTab] = useState('registro');
   const [form, setForm] = useState({
     prioridad: alert.prioridad || '',
@@ -253,7 +272,6 @@ function EditLiberatedOtModal({
     fecha_fin_prop: alert.registro_ot?.fecha_fin || '',
     hora_inicio_prop: alert.registro_ot?.hora_inicio || '',
     hora_fin_prop: alert.registro_ot?.hora_fin || '',
-    turno: alert.registro_ot?.turno || 'Primero',
     observaciones: alert.registro_ot?.observaciones || '',
   });
   const [personalAsignado, setPersonalAsignado] = useState(alert.personal_detalle || []);
@@ -267,6 +285,39 @@ function EditLiberatedOtModal({
     [rrhhItems],
   );
 
+  const priorityOptions = useMemo(
+    () => getOptions('prioridades', ['Alta', 'Media', 'Baja', 'Critica']),
+    [getOptions],
+  );
+
+  const responsibleOptions = useMemo(
+    () => getOptions('responsables', ['Mecanico', 'Electricista', 'Mecanicos', 'Ingeniero', 'Planner', 'Terceros']),
+    [getOptions],
+  );
+  const assignedPersonnelColumns = useMemo(() => [
+    { id: 'codigo', label: 'Codigo' },
+    { id: 'nombres_apellidos', label: 'Nombre' },
+    { id: 'especialidad', label: 'Especialidad' },
+    { id: 'accion', label: 'Accion', filterable: false },
+  ], []);
+  const assignedPersonnelFilters = useTableColumnFilters(assignedPersonnelColumns);
+  const visiblePersonalAsignado = useMemo(
+    () => filterRowsByColumns(personalAsignado, assignedPersonnelColumns, assignedPersonnelFilters.filters),
+    [personalAsignado, assignedPersonnelColumns, assignedPersonnelFilters.filters],
+  );
+  const assignedMaterialColumns = useMemo(() => [
+    { id: 'codigo', label: 'Codigo' },
+    { id: 'descripcion', label: 'Descripcion' },
+    { id: 'unidad', label: 'Unidad', getValue: (item) => item.unidad || 'UND' },
+    { id: 'cantidad', label: 'Cantidad' },
+    { id: 'accion', label: 'Accion', filterable: false },
+  ], []);
+  const assignedMaterialFilters = useTableColumnFilters(assignedMaterialColumns);
+  const visibleMaterialesAsignados = useMemo(
+    () => filterRowsByColumns(materialesAsignados, assignedMaterialColumns, assignedMaterialFilters.filters),
+    [materialesAsignados, assignedMaterialColumns, assignedMaterialFilters.filters],
+  );
+
   const previewAlert = useMemo(() => ({
     ...alert,
     registro_ot: {
@@ -275,7 +326,7 @@ function EditLiberatedOtModal({
       fecha_fin: form.fecha_fin_prop,
       hora_inicio: form.hora_inicio_prop,
       hora_fin: form.hora_fin_prop,
-      turno: form.turno,
+      turno: alert.registro_ot?.turno || '',
       observaciones: form.observaciones,
     },
   }), [alert, form]);
@@ -333,7 +384,6 @@ function EditLiberatedOtModal({
     fecha_fin_prop: alert.registro_ot?.fecha_fin || '',
     hora_inicio_prop: alert.registro_ot?.hora_inicio || '',
     hora_fin_prop: alert.registro_ot?.hora_fin || '',
-    turno: alert.registro_ot?.turno || 'Primero',
     observaciones: alert.registro_ot?.observaciones || '',
   }), [alert]);
 
@@ -346,7 +396,6 @@ function EditLiberatedOtModal({
     fecha_fin_prop: String(form.fecha_fin_prop || '') !== String(originalForm.fecha_fin_prop || ''),
     hora_inicio_prop: String(form.hora_inicio_prop || '') !== String(originalForm.hora_inicio_prop || ''),
     hora_fin_prop: String(form.hora_fin_prop || '') !== String(originalForm.hora_fin_prop || ''),
-    turno: String(form.turno || '') !== String(originalForm.turno || ''),
     observaciones: String(form.observaciones || '') !== String(originalForm.observaciones || ''),
   }), [form, originalForm]);
 
@@ -360,7 +409,6 @@ function EditLiberatedOtModal({
       fecha_fin_prop: 'Fin propuesto OT',
       hora_inicio_prop: 'Hora inicio',
       hora_fin_prop: 'Hora fin',
-      turno: 'Turno',
       observaciones: 'Observaciones',
     };
     return Object.entries(changedFields)
@@ -404,7 +452,7 @@ function EditLiberatedOtModal({
   };
 
   const renderLabel = (fieldName, label) => (
-    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '.4rem', flexWrap: 'wrap' }}>
+    <div className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '.4rem', flexWrap: 'wrap', marginBottom: 0 }}>
       <span>{label}</span>
       {fieldsNeedingAttention[fieldName] && (
         <span style={{
@@ -434,8 +482,15 @@ function EditLiberatedOtModal({
           Modificado
         </span>
       )}
-    </label>
+    </div>
   );
+
+  const handleQuickAdd = async (key, label, fieldName) => {
+    const result = await addOptionQuickly(key, label);
+    if (result?.added && fieldName) {
+      setForm((prev) => ({ ...prev, [fieldName]: result.value }));
+    }
+  };
 
   const addPersonal = () => {
     const item = eligibleRrhh.find((it) => String(it.id) === String(selectedPersonalId));
@@ -450,7 +505,11 @@ function EditLiberatedOtModal({
   const addMaterial = () => {
     const item = materialsCatalog.find((it) => String(it.id) === String(selectedMaterialId));
     const cantidad = Number(cantidadMaterial) || 0;
-    if (!item || cantidad <= 0) return;
+    const validationError = validatePositiveFields([['Cantidad de material', cantidadMaterial]]);
+    if (!item || validationError) {
+      if (validationError) window.alert(validationError);
+      return;
+    }
     setMaterialesAsignados((prev) => {
       const existing = prev.find((row) => String(row.id) === String(item.id));
       if (existing) {
@@ -465,8 +524,22 @@ function EditLiberatedOtModal({
   };
 
   const handleSubmit = () => {
-    if (!form.fecha_inicio_prop || !form.fecha_fin_prop) {
-      window.alert('Debes completar fecha inicio y fin propuesta.');
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Actividad', form.actividad],
+        ['Responsable', form.responsable],
+        ['Fecha a ejecutar', form.fecha_ejecutar],
+        ['Fecha inicio propuesta', form.fecha_inicio_prop],
+        ['Fecha fin propuesta', form.fecha_fin_prop],
+      ]),
+      validatePositiveFields(materialesAsignados.map((item, index) => [`Cantidad material ${index + 1}`, item.cantidad])),
+    );
+    if (validationError) {
+      window.alert(validationError);
+      return;
+    }
+    if (hasBlockedMaintenanceTextChars(form.actividad) || hasBlockedMaintenanceTextChars(form.responsable) || hasBlockedMaintenanceTextChars(form.observaciones)) {
+      window.alert(getBlockedTextMessage('Datos de la OT'));
       return;
     }
     if (form.fecha_inicio_prop > form.fecha_fin_prop) {
@@ -559,11 +632,34 @@ function EditLiberatedOtModal({
             )}
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.65rem' }}>
-              <div>{renderLabel('prioridad', 'Prioridad')}<input className="form-input" style={getInputStyle('prioridad')} value={form.prioridad} onChange={(e) => setForm({ ...form, prioridad: e.target.value })} /></div>
-              <div>{renderLabel('responsable', 'Responsable')}<input className="form-input" style={getInputStyle('responsable')} value={form.responsable} onChange={(e) => setForm({ ...form, responsable: e.target.value })} /></div>
+              <div>
+                <ConfigurableSelectField
+                  label={renderLabel('prioridad', 'Prioridad')}
+                  manageLabel="Prioridad"
+                  value={form.prioridad}
+                  options={priorityOptions}
+                  onChange={(e) => setForm({ ...form, prioridad: e.target.value })}
+                  onQuickAdd={() => handleQuickAdd('prioridades', 'Prioridad', 'prioridad')}
+                  canManageOptions={canManageConfigurableLists}
+                  placeholder="Selecciona prioridad"
+                  selectStyle={getInputStyle('prioridad')}
+                />
+              </div>
+              <div>
+                <ConfigurableSelectField
+                  label={renderLabel('responsable', 'Responsable')}
+                  manageLabel="Responsable"
+                  value={form.responsable}
+                  options={responsibleOptions}
+                  onChange={(e) => setForm({ ...form, responsable: e.target.value })}
+                  onQuickAdd={() => handleQuickAdd('responsables', 'Responsable', 'responsable')}
+                  canManageOptions={canManageConfigurableLists}
+                  placeholder="Selecciona responsable"
+                  selectStyle={getInputStyle('responsable')}
+                />
+              </div>
               <div style={{ gridColumn: '1 / -1' }}>{renderLabel('actividad', 'Actividad')}<textarea className="form-textarea" style={getInputStyle('actividad')} value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} /></div>
               <div>{renderLabel('fecha_ejecutar', 'Fecha a ejecutar')}<input className="form-input" style={getInputStyle('fecha_ejecutar')} type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} /></div>
-              <div>{renderLabel('turno', 'Turno')}<select className="form-select" style={getInputStyle('turno')} value={form.turno} onChange={(e) => setForm({ ...form, turno: e.target.value })}><option>Primero</option><option>Segundo</option><option>Tercero</option></select></div>
               <div>{renderLabel('fecha_inicio_prop', 'Inicio propuesto OT')}<input className="form-input" style={getInputStyle('fecha_inicio_prop')} type="date" value={form.fecha_inicio_prop} onChange={(e) => setForm({ ...form, fecha_inicio_prop: e.target.value })} /></div>
               <div>{renderLabel('fecha_fin_prop', 'Fin propuesto OT')}<input className="form-input" style={getInputStyle('fecha_fin_prop')} type="date" value={form.fecha_fin_prop} onChange={(e) => setForm({ ...form, fecha_fin_prop: e.target.value })} /></div>
               <div>{renderLabel('hora_inicio_prop', 'Hora inicio')}<input className="form-input" style={getInputStyle('hora_inicio_prop')} type="time" value={form.hora_inicio_prop} onChange={(e) => setForm({ ...form, hora_inicio_prop: e.target.value })} /></div>
@@ -589,9 +685,10 @@ function EditLiberatedOtModal({
                 <tr style={{ background: '#e5e7eb' }}>
                   {['Código', 'Nombre', 'Especialidad', 'Acción'].map((h) => <th key={h} style={{ border: '1px solid #d1d5db', padding: '.45rem', textAlign: 'left' }}>{h}</th>)}
                 </tr>
+                <TableFilterRow columns={assignedPersonnelColumns} rows={personalAsignado} filters={assignedPersonnelFilters.filters} onChange={assignedPersonnelFilters.setFilter} />
               </thead>
               <tbody>
-                {personalAsignado.map((item) => (
+                {visiblePersonalAsignado.map((item) => (
                   <tr key={item.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.nombres_apellidos}</td>
@@ -599,7 +696,7 @@ function EditLiberatedOtModal({
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removePersonal(item.id)}>Quitar</button></td>
                   </tr>
                 ))}
-                {!personalAsignado.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin técnicos asignados.</td></tr>}
+                {!visiblePersonalAsignado.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{personalAsignado.length ? 'Sin resultados para los filtros aplicados.' : 'Sin técnicos asignados.'}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -622,9 +719,10 @@ function EditLiberatedOtModal({
                 <tr style={{ background: '#e5e7eb' }}>
                   {['Código', 'Descripción', 'Unidad', 'Cantidad', 'Acción'].map((h) => <th key={h} style={{ border: '1px solid #d1d5db', padding: '.45rem', textAlign: 'left' }}>{h}</th>)}
                 </tr>
+                <TableFilterRow columns={assignedMaterialColumns} rows={materialesAsignados} filters={assignedMaterialFilters.filters} onChange={assignedMaterialFilters.setFilter} />
               </thead>
               <tbody>
-                {materialesAsignados.map((item) => (
+                {visibleMaterialesAsignados.map((item) => (
                   <tr key={item.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.descripcion}</td>
@@ -633,7 +731,7 @@ function EditLiberatedOtModal({
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeMaterial(item.id)}>Quitar</button></td>
                   </tr>
                 ))}
-                {!materialesAsignados.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales asignados.</td></tr>}
+                {!visibleMaterialesAsignados.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{materialesAsignados.length ? 'Sin resultados para los filtros aplicados.' : 'Sin materiales asignados.'}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -649,7 +747,7 @@ function EditLiberatedOtModal({
 }
 
 function RegisterWorkModal({
-  alert, rrhhItems, materialsCatalog, initialReport = null, onClose, onSave,
+  alert, rrhhItems, materialsCatalog, initialReport = null, canCreateServiceReport = false, onClose, onSave,
 }) {
   const initialTechs = (alert.personal_mantenimiento || '')
     .split(',')
@@ -665,6 +763,10 @@ function RegisterWorkModal({
         tecnico: row.tecnico || '',
         horas: row.horas || '',
         actividades: row.actividades || '',
+        codigo: row.codigo || '',
+        nombres_apellidos: row.nombres_apellidos || '',
+        especialidad: row.especialidad || '',
+        costo_hora: row.costo_hora || '',
       }))
       : (initialTechs.length ? initialTechs : []),
   );
@@ -697,6 +799,13 @@ function RegisterWorkModal({
   const [horaFin, setHoraFin] = useState(initialReport?.horaFin || alert.registro_ot?.hora_fin || '');
   const [showTechPicker, setShowTechPicker] = useState(false);
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
+  const [reportType, setReportType] = useState(initialReport?.reportType || 'TRABAJO');
+  const [serviceProviderId, setServiceProviderId] = useState(initialReport?.serviceProviderId || '');
+  const [serviceActivity, setServiceActivity] = useState(initialReport?.serviceActivity || '');
+  const [serviceCost, setServiceCost] = useState(initialReport?.serviceCost || '');
+  const [serviceAllInclusive, setServiceAllInclusive] = useState(!!initialReport?.serviceAllInclusive);
+  const [evidencePhotos, setEvidencePhotos] = useState(() => getWorkReportEvidencePhotos(initialReport || {}));
+  const [uploadingEvidenceSlot, setUploadingEvidenceSlot] = useState('');
   const maxHorasSugeridas = useMemo(() => {
     if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) return 0;
     const start = new Date(`${fechaInicio}T${horaInicio}:00`);
@@ -718,6 +827,53 @@ function RegisterWorkModal({
     () => getObservationPreset(observationPreset),
     [observationPreset],
   );
+  const isServiceReport = reportType === 'SERVICIO';
+  const eligibleTechItems = useMemo(
+    () => rrhhItems.filter((item) => String(item.tipo_personal || '').toLowerCase() !== 'tercero'),
+    [rrhhItems],
+  );
+  const thirdPartyItems = useMemo(
+    () => rrhhItems.filter((item) => String(item.tipo_personal || '').toLowerCase() === 'tercero'),
+    [rrhhItems],
+  );
+  const selectedThirdParty = useMemo(
+    () => thirdPartyItems.find((item) => String(item.id) === String(serviceProviderId)) || null,
+    [thirdPartyItems, serviceProviderId],
+  );
+  const techTableColumns = useMemo(() => [
+    { id: 'tecnico', label: 'Tecnico' },
+    { id: 'horas', label: 'Horas' },
+    { id: 'actividades', label: 'Actividades realizadas' },
+    { id: 'accion', label: 'Accion', filterable: false },
+  ], []);
+  const techTableFilters = useTableColumnFilters(techTableColumns);
+  const visibleTechRows = useMemo(
+    () => filterRowsByColumns(techRows, techTableColumns, techTableFilters.filters),
+    [techRows, techTableColumns, techTableFilters.filters],
+  );
+  const materialConfirmColumns = useMemo(() => [
+    { id: 'codigo', label: 'Codigo' },
+    { id: 'descripcion', label: 'Descripcion' },
+    { id: 'cantidadPlanificada', label: 'Planificada' },
+    { id: 'cantidadConfirmada', label: 'Confirmada' },
+    { id: 'confirmada', label: 'Correcta', getValue: (row) => (row.confirmada ? 'Si' : 'No') },
+  ], []);
+  const materialConfirmFilters = useTableColumnFilters(materialConfirmColumns);
+  const visibleMaterialsRows = useMemo(
+    () => filterRowsByColumns(materialsRows, materialConfirmColumns, materialConfirmFilters.filters),
+    [materialsRows, materialConfirmColumns, materialConfirmFilters.filters],
+  );
+  const extraMaterialColumns = useMemo(() => [
+    { id: 'codigo', label: 'Codigo' },
+    { id: 'descripcion', label: 'Descripcion' },
+    { id: 'cantidad', label: 'Cantidad' },
+    { id: 'accion', label: 'Accion', filterable: false },
+  ], []);
+  const extraMaterialFilters = useTableColumnFilters(extraMaterialColumns);
+  const visibleExtraMaterials = useMemo(
+    () => filterRowsByColumns(extraMaterials, extraMaterialColumns, extraMaterialFilters.filters),
+    [extraMaterials, extraMaterialColumns, extraMaterialFilters.filters],
+  );
 
   useEffect(() => {
     if (!observationPreset) return;
@@ -734,9 +890,22 @@ function RegisterWorkModal({
         tecnico: `${item.codigo} - ${item.nombres_apellidos}`,
         horas: maxHorasSugeridas || '',
         actividades: '',
+        codigo: item.codigo || '',
+        nombres_apellidos: item.nombres_apellidos || '',
+        especialidad: item.especialidad || '',
+        costo_hora: item.costo_hora || '',
       }];
     });
     setShowTechPicker(false);
+  };
+
+  const findRrhhForTechRow = (row) => {
+    const rowId = String(row.tecnicoId || '').trim();
+    const rowCode = String(row.codigo || row.tecnico || '').split(/\s+-\s+|\s+·\s+/)[0].trim().toLowerCase();
+    return rrhhItems.find((item) => (
+      (rowId && String(item.id) === rowId)
+      || (rowCode && String(item.codigo || '').trim().toLowerCase() === rowCode)
+    )) || null;
   };
 
   const addMaterialFromCatalog = (item) => {
@@ -755,6 +924,7 @@ function RegisterWorkModal({
       if (row.id !== id) return row;
       if (field === 'horas') {
         const num = Number(value);
+        if (num < 0) return { ...row, horas: 0 };
         if (maxHorasSugeridas > 0 && num > maxHorasSugeridas) return { ...row, horas: maxHorasSugeridas };
       }
       return { ...row, [field]: value };
@@ -766,31 +936,58 @@ function RegisterWorkModal({
   };
 
   const updateMaterial = (id, field, value) => {
-    setMaterialsRows((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+    setMaterialsRows((prev) => prev.map((row) => {
+      if (row.id !== id) return row;
+      if (field === 'cantidadConfirmada' && Number(value) < 0) return { ...row, [field]: 0 };
+      return { ...row, [field]: value };
+    }));
   };
 
   const updateExtraMaterial = (id, field, value) => {
-    setExtraMaterials((prev) => prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
+    setExtraMaterials((prev) => prev.map((row) => {
+      if (row.id !== id) return row;
+      if (field === 'cantidad' && Number(value) < 0) return { ...row, [field]: 0 };
+      return { ...row, [field]: value };
+    }));
   };
 
   const removeExtraMaterial = (id) => {
     setExtraMaterials((prev) => prev.filter((row) => row.id !== id));
   };
 
-  const handleSubmit = () => {
-    const tecnicosValidos = techRows
-      .map((row) => ({
-        tecnicoId: row.tecnicoId,
-        tecnico: row.tecnico.trim(),
-        horas: Number(row.horas) || 0,
-        actividades: row.actividades.trim(),
-      }))
-      .filter((row) => row.tecnico && row.horas > 0);
-
-    if (!tecnicosValidos.length) {
-      window.alert('Debes registrar al menos un técnico con horas trabajadas.');
+  const uploadEvidencePhoto = async (slotKey, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      window.alert('Selecciona una imagen valida.');
       return;
     }
+    const slot = WORK_REPORT_PHOTO_SLOTS.find((item) => item.key === slotKey);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('scope', `work_notification_${alert.id}_${initialReport?.id || Date.now()}_${slotKey}`);
+    formData.append('category', slot?.label || slotKey);
+    formData.append('caption', file.name);
+    setUploadingEvidenceSlot(slotKey);
+    try {
+      const uploaded = await uploadPhotoAttachment(formData);
+      setEvidencePhotos((prev) => ({
+        ...prev,
+        [slotKey]: buildUploadedPhotoPayload(uploaded, {
+          category: slot?.label || slotKey,
+          original_name: file.name,
+        }),
+      }));
+    } catch (err) {
+      console.error('Error subiendo evidencia de trabajo:', err);
+      window.alert(err?.response?.data?.detail || 'No se pudo subir la foto de evidencia.');
+    } finally {
+      setUploadingEvidenceSlot('');
+    }
+  };
+
+  const handleSubmit = () => {
     if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) {
       window.alert('Debes registrar fecha y hora de inicio y fin.');
       return;
@@ -811,29 +1008,113 @@ function RegisterWorkModal({
       if (!confirmInconsistentSave) return;
     }
 
-    const materialesConfirmados = materialsRows.map((row) => ({
-      materialId: row.materialId,
-      codigo: row.codigo,
-      descripcion: row.descripcion,
-      cantidadPlanificada: row.cantidadPlanificada,
-      cantidadConfirmada: Number(row.cantidadConfirmada) || 0,
-      confirmada: !!row.confirmada,
-    }));
+    if (!getPhotoSource(evidencePhotos.before) || !getPhotoSource(evidencePhotos.after)) {
+      window.alert('Debes subir exactamente una foto ANTES y una foto DESPUES para esta notificacion de trabajo.');
+      return;
+    }
+    if (hasBlockedMaintenanceTextChars(observaciones) || hasBlockedMaintenanceTextChars(observationDetail)) {
+      window.alert(getBlockedTextMessage('Observaciones'));
+      return;
+    }
+    if (hasBlockedMaintenanceTextChars(serviceActivity)) {
+      window.alert(getBlockedTextMessage('Actividades del servicio'));
+      return;
+    }
+    const numericValidationError = firstValidationError(
+      validateNonNegativeFields([
+        ['Costo del servicio', serviceCost],
+        ...techRows.map((row, index) => [`Horas tecnico ${index + 1}`, row.horas]),
+        ...materialsRows.map((row, index) => [`Cantidad material planificado ${index + 1}`, row.cantidadConfirmada]),
+        ...extraMaterials.map((row, index) => [`Cantidad material extra ${index + 1}`, row.cantidad]),
+      ]),
+    );
+    if (numericValidationError) {
+      window.alert(numericValidationError);
+      return;
+    }
+    if (techRows.some((row) => Number(row.horas) < 0 || hasBlockedMaintenanceTextChars(row.tecnico) || hasBlockedMaintenanceTextChars(row.actividades))) {
+      window.alert('Revisa tecnicos, horas y actividades: no se permiten horas negativas ni caracteres no permitidos.');
+      return;
+    }
+    if (materialsRows.some((row) => Number(row.cantidadConfirmada) < 0) || extraMaterials.some((row) => Number(row.cantidad) < 0 || hasBlockedMaintenanceTextChars(row.codigo) || hasBlockedMaintenanceTextChars(row.descripcion))) {
+      window.alert('Revisa materiales: no se permiten cantidades negativas ni caracteres no permitidos.');
+      return;
+    }
 
-    const materialesExtra = extraMaterials
-      .map((row) => ({
+    const tecnicosValidos = isServiceReport
+      ? []
+      : techRows
+        .map((row) => ({
+          tecnicoId: row.tecnicoId,
+          tecnico: row.tecnico.trim(),
+          horas: Number(row.horas) || 0,
+          actividades: row.actividades.trim(),
+          codigo: row.codigo || findRrhhForTechRow(row)?.codigo || '',
+          nombres_apellidos: row.nombres_apellidos || findRrhhForTechRow(row)?.nombres_apellidos || '',
+          especialidad: row.especialidad || findRrhhForTechRow(row)?.especialidad || '',
+          costo_hora: Number(row.costo_hora || findRrhhForTechRow(row)?.costo_hora || 0),
+        }))
+        .filter((row) => row.tecnico && row.horas > 0);
+
+    if (!isServiceReport && !tecnicosValidos.length) {
+      window.alert('Debes registrar al menos un técnico con horas trabajadas.');
+      return;
+    }
+
+    if (isServiceReport && !canCreateServiceReport) {
+      window.alert('Solo ENCARGADO, PLANNER o INGENIERO pueden registrar una notificación de tipo servicio.');
+      return;
+    }
+
+    if (isServiceReport && !selectedThirdParty) {
+      window.alert('Debes seleccionar el tercero que realizará el servicio.');
+      return;
+    }
+
+    if (isServiceReport && !String(serviceActivity || '').trim()) {
+      window.alert('Debes detallar las actividades que realizará el tercero.');
+      return;
+    }
+
+    if (false && isServiceReport && !(Number(serviceCost) > 0)) {
+      window.alert('Debes registrar el costo del servicio para poder revisarlo y cerrar la OT después.');
+      return;
+    }
+
+    const materialesConfirmados = isServiceReport && serviceAllInclusive
+      ? []
+      : materialsRows.map((row) => ({
         materialId: row.materialId,
-        codigo: row.codigo.trim(),
-        descripcion: row.descripcion.trim(),
-        cantidad: Number(row.cantidad) || 0,
-      }))
-      .filter((row) => row.descripcion && row.cantidad > 0);
+        codigo: row.codigo,
+        descripcion: row.descripcion,
+        cantidadPlanificada: row.cantidadPlanificada,
+        cantidadConfirmada: Number(row.cantidadConfirmada) || 0,
+        confirmada: !!row.confirmada,
+      }));
+
+    const materialesExtra = isServiceReport && serviceAllInclusive
+      ? []
+      : extraMaterials
+        .map((row) => ({
+          materialId: row.materialId,
+          codigo: row.codigo.trim(),
+          descripcion: row.descripcion.trim(),
+          cantidad: Number(row.cantidad) || 0,
+        }))
+        .filter((row) => row.descripcion && row.cantidad > 0);
 
     onSave({
+      reportType,
       tecnicos: tecnicosValidos,
       materialesConfirmados,
       materialesExtra,
       observaciones: observaciones.trim(),
+      serviceProviderId: selectedThirdParty?.id || '',
+      serviceProviderName: selectedThirdParty?.nombres_apellidos || '',
+      serviceCompany: selectedThirdParty?.empresa || '',
+      serviceActivity: isServiceReport ? String(serviceActivity || '').trim() : '',
+      serviceCost: isServiceReport ? Math.max(0, Number(serviceCost) || 0) : 0,
+      serviceAllInclusive: isServiceReport ? serviceAllInclusive : false,
       maintenanceSuggestion: observationPreset ? {
         presetKey: observationPreset,
         label: selectedObservationPreset?.label || '',
@@ -842,6 +1123,8 @@ function RegisterWorkModal({
         text: observaciones.trim() || buildObservationText(observationPreset, observationDetail),
         requiresNotice: !!selectedObservationPreset?.requiresNotice,
       } : null,
+      evidencePhotos,
+      evidence_photos: evidencePhotos,
       fechaInicio,
       horaInicio,
       fechaFin,
@@ -861,20 +1144,50 @@ function RegisterWorkModal({
     <>
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem' }}>
         <div className="card" style={{ width: 'min(1160px, 98vw)', maxHeight: '95vh', overflow: 'auto', padding: '1rem 1.1rem', marginBottom: 0 }}>
-          <h3 className="card-title" style={{ marginBottom: '.35rem' }}>Registrar Trabajo · OT #{alert.ot_numero || 'N.A.'}</h3>
-          <p style={{ color: '#6b7280', marginBottom: '.8rem' }}>Selecciona técnicos y materiales desde sus catálogos para mantener consistencia.</p>
+          <h3 className="card-title" style={{ marginBottom: '.35rem' }}>
+            {initialReport ? 'Editar registro de trabajo' : 'Registrar Trabajo'} · OT #{alert.ot_numero || 'N.A.'}
+          </h3>
+          <p style={{ color: '#6b7280', marginBottom: '.8rem' }}>
+            {canCreateServiceReport
+              ? 'Puedes registrar trabajo interno o un servicio de terceros, manteniendo todo vinculado a esta OT.'
+              : 'Selecciona técnicos y materiales desde sus catálogos para mantener consistencia.'}
+          </p>
+
+          {canCreateServiceReport && (
+            <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+              <h4 style={{ marginBottom: '.55rem' }}>Tipo de notificación</h4>
+              <div style={{ display: 'flex', gap: '.55rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={reportType === 'TRABAJO' ? 'btn btn-primary' : 'btn btn-secondary'}
+                  onClick={() => setReportType('TRABAJO')}
+                >
+                  Trabajo interno
+                </button>
+                <button
+                  type="button"
+                  className={reportType === 'SERVICIO' ? 'btn btn-primary' : 'btn btn-secondary'}
+                  onClick={() => setReportType('SERVICIO')}
+                >
+                  Servicio de terceros
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
             <h4 style={{ marginBottom: '.5rem' }}>Fecha y hora del trabajo</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(140px, 1fr))', gap: '.6rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '.6rem' }}>
               <div><label className="form-label">Fecha inicio</label><input className="form-input" type="date" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} /></div>
               <div><label className="form-label">Hora inicio</label><input className="form-input" type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} /></div>
               <div><label className="form-label">Fecha fin</label><input className="form-input" type="date" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} /></div>
               <div><label className="form-label">Hora fin</label><input className="form-input" type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} /></div>
             </div>
-            <p style={{ marginTop: '.5rem', color: '#374151', fontSize: '.92rem' }}>
-              Máximo sugerido de horas por técnico según rango ingresado: <strong>{maxHorasSugeridas || 0} h</strong>.
-            </p>
+            {!isServiceReport && (
+              <p style={{ marginTop: '.5rem', color: '#374151', fontSize: '.92rem' }}>
+                Máximo sugerido de horas por técnico según rango ingresado: <strong>{maxHorasSugeridas || 0} h</strong>.
+              </p>
+            )}
             {consistencyCheck.hasInconsistency ? (
               <div style={{ marginTop: '.65rem', background: '#fef2f2', border: '1px solid #fca5a5', color: '#991b1b', borderRadius: '.65rem', padding: '.75rem .85rem', fontSize: '.92rem' }}>
                 <strong>Inconsistencia detectada.</strong> {consistencyCheck.reason}
@@ -885,37 +1198,107 @@ function RegisterWorkModal({
             ) : null}
           </div>
 
-          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '.6rem' }}>
-              <h4>Horas y actividades por técnico</h4>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowTechPicker(true)}>+ Agregar técnico</button>
+          {isServiceReport ? (
+            <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+              <h4 style={{ marginBottom: '.55rem' }}>Servicio de terceros</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Tercero que realizará el servicio</label>
+                  <select className="form-select" value={serviceProviderId} onChange={(e) => setServiceProviderId(e.target.value)}>
+                    <option value="">Selecciona tercero...</option>
+                    {thirdPartyItems.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.codigo} · {item.nombres_apellidos}{item.empresa && item.empresa !== 'N.A.' ? ` · ${item.empresa}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Costo del servicio</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="form-input"
+                    value={serviceCost}
+                    onChange={(e) => setServiceCost(e.target.value)}
+                    placeholder="Ej: 1250.00"
+                  />
+                  <div style={{ marginTop: '.35rem', color: Number(serviceCost) > 0 ? '#166534' : '#b45309', fontSize: '.88rem', fontWeight: 600 }}>
+                    {Number(serviceCost) > 0
+                      ? 'Costo de servicio registrado. La OT ya puede revisarse sin este pendiente.'
+                      : 'Puedes guardar la notificacion sin costo, pero la OT no podra cerrarse hasta completarlo.'}
+                  </div>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '.5rem', fontWeight: 600, color: '#1f2937' }}>
+                    <input
+                      type="checkbox"
+                      checked={serviceAllInclusive}
+                      onChange={(e) => setServiceAllInclusive(e.target.checked)}
+                    />
+                    Todo costo
+                  </label>
+                  <div style={{ marginTop: '.35rem', color: '#6b7280', fontSize: '.9rem' }}>
+                    Si marcas esta casilla, el servicio ya incluye materiales y no se descontará stock en esta notificación.
+                  </div>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                  <label className="form-label">Actividades que realizará el tercero</label>
+                  <textarea
+                    className="form-textarea"
+                    rows={4}
+                    value={serviceActivity}
+                    onChange={(e) => setServiceActivity(e.target.value)}
+                    placeholder="Describe el alcance del servicio tercerizado"
+                  />
+                </div>
+              </div>
+              {!thirdPartyItems.length && (
+                <div style={{ marginTop: '.75rem', color: '#b45309', fontWeight: 600 }}>
+                  No hay terceros registrados en Gestión de RRHH. Regístralos ahí para poder seleccionar el servicio.
+                </div>
+              )}
             </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#e5e7eb' }}>
-                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Técnico</th>
-                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Horas</th>
-                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Actividades realizadas</th>
-                  <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Acción</th>
-                </tr>
-              </thead>
-              <tbody>
-                {techRows.map((row) => (
-                  <tr key={row.id}>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} /></td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" type="number" min="0" max={maxHorasSugeridas || undefined} step="0.25" value={row.horas} placeholder={maxHorasSugeridas ? `Máx ${maxHorasSugeridas}` : ''} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} /></td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} /></td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeTech(row.id)}>Quitar</button></td>
-                  </tr>
-                ))}
-                {!techRows.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>No hay técnicos agregados.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+          ) : (
+            <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '.6rem' }}>
+                <h4>Horas y actividades por técnico</h4>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowTechPicker(true)}>+ Agregar técnico</button>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '760px' }}>
+                  <thead>
+                    <tr style={{ background: '#e5e7eb' }}>
+                      <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Técnico</th>
+                      <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Horas</th>
+                      <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Actividades realizadas</th>
+                      <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Acción</th>
+                    </tr>
+                    <TableFilterRow columns={techTableColumns} rows={techRows} filters={techTableFilters.filters} onChange={techTableFilters.setFilter} />
+                  </thead>
+                  <tbody>
+                    {visibleTechRows.map((row) => (
+                      <tr key={row.id}>
+                        <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.tecnico} onChange={(e) => updateTech(row.id, 'tecnico', e.target.value)} /></td>
+                        <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" type="number" min="0" max={maxHorasSugeridas || undefined} step="0.25" value={row.horas} placeholder={maxHorasSugeridas ? `Máx ${maxHorasSugeridas}` : ''} onChange={(e) => updateTech(row.id, 'horas', e.target.value)} /></td>
+                        <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.actividades} onChange={(e) => updateTech(row.id, 'actividades', e.target.value)} /></td>
+                        <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeTech(row.id)}>Quitar</button></td>
+                      </tr>
+                    ))}
+                    {!visibleTechRows.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{techRows.length ? 'Sin resultados para los filtros aplicados.' : 'No hay técnicos agregados.'}</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
+          {(!isServiceReport || !serviceAllInclusive) && (
+          <>
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
             <h4 style={{ marginBottom: '.55rem' }}>Confirmar materiales asignados</h4>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '720px' }}>
               <thead>
                 <tr style={{ background: '#e5e7eb' }}>
                   <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
@@ -924,9 +1307,10 @@ function RegisterWorkModal({
                   <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Confirmada</th>
                   <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>¿Correcta?</th>
                 </tr>
+                <TableFilterRow columns={materialConfirmColumns} rows={materialsRows} filters={materialConfirmFilters.filters} onChange={materialConfirmFilters.setFilter} />
               </thead>
               <tbody>
-                {materialsRows.map((row) => (
+                {visibleMaterialsRows.map((row) => (
                   <tr key={row.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.codigo || 'N.A.'}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{row.descripcion || 'N.A.'}</td>
@@ -935,9 +1319,10 @@ function RegisterWorkModal({
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><input type="checkbox" checked={row.confirmada} onChange={(e) => updateMaterial(row.id, 'confirmada', e.target.checked)} /></td>
                   </tr>
                 ))}
-                {!materialsRows.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>No hay materiales asignados en la OT.</td></tr>}
+                {!visibleMaterialsRows.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{materialsRows.length ? 'Sin resultados para los filtros aplicados.' : 'No hay materiales asignados en la OT.'}</td></tr>}
               </tbody>
             </table>
+            </div>
           </div>
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
@@ -945,7 +1330,8 @@ function RegisterWorkModal({
               <h4>Agregar materiales adicionales</h4>
               <button type="button" className="btn btn-secondary" onClick={() => setShowMaterialPicker(true)}>+ Agregar material</button>
             </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '720px' }}>
               <thead>
                 <tr style={{ background: '#e5e7eb' }}>
                   <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Código</th>
@@ -953,9 +1339,10 @@ function RegisterWorkModal({
                   <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Cantidad</th>
                   <th style={{ border: '1px solid #d1d5db', padding: '.45rem' }}>Acción</th>
                 </tr>
+                <TableFilterRow columns={extraMaterialColumns} rows={extraMaterials} filters={extraMaterialFilters.filters} onChange={extraMaterialFilters.setFilter} />
               </thead>
               <tbody>
-                {extraMaterials.map((row) => (
+                {visibleExtraMaterials.map((row) => (
                   <tr key={row.id}>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.codigo} onChange={(e) => updateExtraMaterial(row.id, 'codigo', e.target.value)} /></td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}><input className="form-input" value={row.descripcion} onChange={(e) => updateExtraMaterial(row.id, 'descripcion', e.target.value)} /></td>
@@ -963,9 +1350,45 @@ function RegisterWorkModal({
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeExtraMaterial(row.id)}>Quitar</button></td>
                   </tr>
                 ))}
-                {!extraMaterials.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>Sin materiales adicionales.</td></tr>}
+                {!visibleExtraMaterials.length && <tr><td colSpan={4} style={{ textAlign: 'center', color: '#6b7280', border: '1px solid #e5e7eb', padding: '.7rem' }}>{extraMaterials.length ? 'Sin resultados para los filtros aplicados.' : 'Sin materiales adicionales.'}</td></tr>}
               </tbody>
             </table>
+            </div>
+          </div>
+          </>
+          )}
+
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <h4 style={{ marginBottom: '.55rem' }}>Evidencia fotografica obligatoria</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '.75rem' }}>
+              {WORK_REPORT_PHOTO_SLOTS.map((slot) => {
+                const photo = evidencePhotos[slot.key];
+                const src = getPhotoSource(photo);
+                return (
+                  <div key={slot.key} style={{ border: `1px solid ${src ? '#86efac' : '#fca5a5'}`, borderRadius: '.75rem', overflow: 'hidden', background: '#fff' }}>
+                    <div style={{ padding: '.65rem .75rem', background: src ? '#ecfdf5' : '#fef2f2', color: src ? '#166534' : '#991b1b', fontWeight: 800, display: 'flex', justifyContent: 'space-between', gap: '.5rem', alignItems: 'center' }}>
+                      <span>{slot.title} *</span>
+                      <label className="btn btn-secondary btn-sm" style={{ cursor: uploadingEvidenceSlot ? 'not-allowed' : 'pointer', opacity: uploadingEvidenceSlot ? .65 : 1 }}>
+                        {uploadingEvidenceSlot === slot.key ? 'Subiendo...' : (src ? 'Reemplazar' : 'Subir')}
+                        <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingEvidenceSlot} onChange={(event) => uploadEvidencePhoto(slot.key, event)} />
+                      </label>
+                    </div>
+                    {src ? (
+                      <>
+                        <img src={src} alt={slot.title} style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} />
+                        <div style={{ padding: '.5rem .65rem', color: '#475569', fontSize: '.86rem' }}>
+                          {photo.original_name || photo.caption || 'Evidencia cargada'}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ height: '180px', display: 'grid', placeItems: 'center', color: '#991b1b', fontWeight: 700, padding: '1rem', textAlign: 'center' }}>
+                        Falta cargar esta foto para guardar la notificacion.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
@@ -1002,26 +1425,26 @@ function RegisterWorkModal({
             <textarea className="form-textarea" rows={3} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Notas finales del trabajo ejecutado" />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem', flexWrap: 'wrap' }}>
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
             <button type="button" className="btn btn-primary" onClick={handleSubmit}>Guardar registro</button>
           </div>
         </div>
       </div>
 
-      {showTechPicker && (
+      {!isServiceReport && showTechPicker && (
         <PickerModal
           title="Seleccionar técnico (RRHH)"
           placeholder="Buscar por código, nombre o especialidad"
-          items={rrhhItems}
+          items={eligibleTechItems}
           filterFn={(item, q) => !q || `${item.codigo} ${item.nombres_apellidos} ${item.especialidad}`.toLowerCase().includes(q)}
-          itemLabel={(item) => `${item.codigo} · ${item.nombres_apellidos} · ${item.especialidad || 'N.A.'}${item.tipo_personal === 'Tercero' ? ` · ${item.empresa || 'Tercero'}` : ''}`}
+          itemLabel={(item) => `${item.codigo} · ${item.nombres_apellidos} · ${item.especialidad || 'N.A.'}`}
           onPick={addTechFromRrhh}
           onClose={() => setShowTechPicker(false)}
         />
       )}
 
-      {showMaterialPicker && (
+      {(!isServiceReport || !serviceAllInclusive) && showMaterialPicker && (
         <PickerModal
           title="Seleccionar material (Gestión de Materiales)"
           placeholder="Buscar por código, descripción, marca o proveedor"
@@ -1043,33 +1466,46 @@ export default function WorkNotifications({ user }) {
   const [workReports, setWorkReports] = useState([]);
   const [rrhhItems, setRrhhItems] = useState(RRHH_FALLBACK);
   const [materialsCatalog, setMaterialsCatalog] = useState(MATERIALES_FALLBACK);
+  const [pdfSettings, setPdfSettings] = useState(DEFAULT_OT_PDF_SETTINGS);
   const [selectedAlertId, setSelectedAlertId] = useState(null);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [editingReportId, setEditingReportId] = useState(null);
   const [showEditOtModal, setShowEditOtModal] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const [showReprogramModal, setShowReprogramModal] = useState(false);
+  const [closeModalIntent, setCloseModalIntent] = useState('close');
+  const [alertPresence, setAlertPresence] = useState([]);
+  const [selectedAlertLock, setSelectedAlertLock] = useState(null);
   const [expandedOtIds, setExpandedOtIds] = useState({});
+  const [mobileActionMenu, setMobileActionMenu] = useState(null);
+  const [mobileVisibleCount, setMobileVisibleCount] = useState(12);
   const [filterArea, setFilterArea] = useState('');
   const [filterWorker, setFilterWorker] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterEquipment, setFilterEquipment] = useState('');
+  const [showCoworkerOtView, setShowCoworkerOtView] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const presenceWsRef = useRef(null);
+  const editingPresenceRef = useRef(false);
 
   useEffect(() => {
     let active = true;
     const load = async () => {
       setLoading(true);
-      const [alertsData, reportsData, rrhhData, materialsData] = await Promise.all([
+      const [alertsData, reportsData, rrhhData, materialsData, pdfFormatData] = await Promise.all([
         loadSharedDocument(OT_ALERTS_KEY, []),
         loadSharedDocument(OT_WORK_REPORTS_KEY, []),
         loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
         loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
+        loadSharedDocument(PDF_FORMAT_KEY, DEFAULT_OT_PDF_SETTINGS),
       ]);
       if (!active) return;
       setAlerts(Array.isArray(alertsData) ? alertsData : []);
       setWorkReports(Array.isArray(reportsData) ? reportsData : []);
       setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
       setMaterialsCatalog(normalizeMaterialsCatalog(materialsData));
+      setPdfSettings(normalizeOtPdfSettings(pdfFormatData));
       setLoading(false);
     };
     load();
@@ -1123,7 +1559,11 @@ export default function WorkNotifications({ user }) {
     [workReports, editingReportId],
   );
   const normalizedRole = String(user?.role || '').toUpperCase();
+  const isReadOnly = isReadOnlyRole(user);
+  const isTechnician = normalizedRole === 'TECNICO';
+  const canCreateServiceReports = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
   const canEditLiberatedOt = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
+  const canReprogramOt = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
   const canRequestClose = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
   const canApproveClose = ['PLANNER', 'INGENIERO'].includes(normalizedRole);
 
@@ -1155,22 +1595,62 @@ export default function WorkNotifications({ user }) {
     [alerts],
   );
 
+  const technicianAssignedNotifications = useMemo(
+    () => liberatedNotifications.filter((item) => isAlertAssignedToUser(item, user)),
+    [liberatedNotifications, user],
+  );
+
+  const technicianCoworkerNotifications = useMemo(
+    () => liberatedNotifications.filter((item) => !isAlertAssignedToUser(item, user)),
+    [liberatedNotifications, user],
+  );
+
   const visibleNotifications = useMemo(() => {
     if (canApproveClose) return [...requestCloseNotifications, ...liberatedNotifications];
+    if (isReadOnly) return [...requestCloseNotifications, ...liberatedNotifications];
+    if (isTechnician) {
+      return showCoworkerOtView ? technicianCoworkerNotifications : technicianAssignedNotifications;
+    }
     return liberatedNotifications;
-  }, [canApproveClose, requestCloseNotifications, liberatedNotifications]);
+  }, [canApproveClose, requestCloseNotifications, liberatedNotifications, isReadOnly, isTechnician, showCoworkerOtView, technicianCoworkerNotifications, technicianAssignedNotifications]);
 
   const selectedAlert = useMemo(
     () => visibleNotifications.find((item) => String(item.id) === String(selectedAlertId)) || null,
     [visibleNotifications, selectedAlertId],
   );
+  const selectedAlertAssignedToMe = useMemo(
+    () => (selectedAlert ? isAlertAssignedToUser(selectedAlert, user) : false),
+    [selectedAlert, user],
+  );
   const selectedAlertConsistency = useMemo(
     () => (selectedAlert ? consistencyByAlert.get(String(selectedAlert.id)) || { hasInconsistency: false, count: 0, inconsistentReports: [] } : { hasInconsistency: false, count: 0, inconsistentReports: [] }),
     [selectedAlert, consistencyByAlert],
   );
+  const selectedAlertServiceSummary = useMemo(
+    () => summarizeServiceReports(selectedAlert ? reportByAlert.get(String(selectedAlert.id)) || [] : []),
+    [selectedAlert, reportByAlert],
+  );
+  const isEditingSelectedAlert = showRegisterModal || showEditOtModal || showCloseModal || showReprogramModal;
+  editingPresenceRef.current = isEditingSelectedAlert;
+  const selectedAlertLockOwnedByMe = !!selectedAlertLock?.owned_by_current_user;
+  const selectedAlertLockHeldByOthers = !!selectedAlertLock?.locked && !selectedAlertLock?.owned_by_current_user;
+  const otherUsersInSelectedAlert = useMemo(
+    () => alertPresence.filter((item) => String(item.id) !== String(user?.id ?? '')),
+    [alertPresence, user],
+  );
+  const otherEditorsInSelectedAlert = useMemo(
+    () => otherUsersInSelectedAlert.filter((item) => item.editing),
+    [otherUsersInSelectedAlert],
+  );
+  const selectedAlertLockedByOthers = !!selectedAlert && (selectedAlertLockHeldByOthers || otherEditorsInSelectedAlert.length > 0);
+  const otherEditorsLabel = useMemo(
+    () => otherEditorsInSelectedAlert.map((item) => item.name).join(', '),
+    [otherEditorsInSelectedAlert],
+  );
+  const activeLockHolderLabel = selectedAlertLock?.holder_name || otherEditorsLabel;
 
   const areaOptions = useMemo(
-    () => Array.from(new Set(visibleNotifications.map((it) => (it.area || it.area_equipo || 'N.A.')))),
+    () => Array.from(new Set(visibleNotifications.map((it) => getNotificationArea(it)))),
     [visibleNotifications],
   );
   const inconsistentAlertsCount = useMemo(
@@ -1181,10 +1661,146 @@ export default function WorkNotifications({ user }) {
     () => workReports.reduce((sum, report) => sum + calculateReportMaterialCost(report, materialsCatalog), 0),
     [workReports, materialsCatalog],
   );
+  const totalServiceCost = useMemo(
+    () => summarizeServiceReports(workReports).totalServiceCost,
+    [workReports],
+  );
+  const canAssignSelectedToMe = !isReadOnly && isTechnician && showCoworkerOtView && selectedAlert?.status_ot === 'Liberada' && !selectedAlertAssignedToMe;
+
+  useEffect(() => {
+    if (!selectedAlert?.id) {
+      setAlertPresence([]);
+      if (presenceWsRef.current) {
+        presenceWsRef.current.close();
+        presenceWsRef.current = null;
+      }
+      return undefined;
+    }
+
+    const token = localStorage.getItem('access_token') || '';
+    const wsBase = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${(process.env.REACT_APP_API_URL || 'localhost:8000').replace(/^https?:\/\//, '')}`;
+    const ws = new WebSocket(`${wsBase}/ws/work-notifications/${encodeURIComponent(selectedAlert.id)}?token=${token}`);
+    presenceWsRef.current = ws;
+
+    const sendPresenceState = (editing) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'presence_state', editing: !!editing }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'work_notification_presence') {
+          setAlertPresence(Array.isArray(data.participants) ? data.participants : []);
+        }
+      } catch (_) {}
+    };
+
+    ws.onopen = () => {
+      sendPresenceState(editingPresenceRef.current);
+    };
+
+    const heartbeat = setInterval(() => {
+      sendPresenceState(editingPresenceRef.current);
+    }, 20000);
+
+    return () => {
+      clearInterval(heartbeat);
+      if (ws.readyState === WebSocket.OPEN) {
+        sendPresenceState(false);
+      }
+      ws.close();
+      if (presenceWsRef.current === ws) {
+        presenceWsRef.current = null;
+      }
+    };
+  }, [selectedAlert?.id]);
+
+  useEffect(() => {
+    const ws = presenceWsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'presence_state', editing: !!isEditingSelectedAlert }));
+  }, [isEditingSelectedAlert, selectedAlert?.id]);
+
+  useEffect(() => {
+    if (!selectedAlert?.id) {
+      setSelectedAlertLock(null);
+      return undefined;
+    }
+
+    let active = true;
+    const syncLock = async () => {
+      try {
+        const lock = await getWorkNotificationLock(selectedAlert.id);
+        if (active) setSelectedAlertLock(lock);
+      } catch (_) {
+        if (active) setSelectedAlertLock(null);
+      }
+    };
+
+    syncLock();
+    const interval = setInterval(syncLock, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [selectedAlert?.id]);
+
+  useEffect(() => {
+    if (!selectedAlert?.id || !isEditingSelectedAlert || !selectedAlertLockOwnedByMe) return undefined;
+    const interval = setInterval(async () => {
+      try {
+        const lock = await refreshWorkNotificationLock(selectedAlert.id);
+        setSelectedAlertLock(lock);
+      } catch (err) {
+        console.error('Error refrescando bloqueo de notificacion OT:', err);
+        setSelectedAlertLock(null);
+        setError('Se perdió el bloqueo de edición de esta OT. Revisa si otro usuario tomó el control.');
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [selectedAlert?.id, isEditingSelectedAlert, selectedAlertLockOwnedByMe]);
+
+  useEffect(() => () => {
+    if (!selectedAlert?.id) return;
+    releaseWorkNotificationLock(selectedAlert.id).catch((err) => {
+      console.error('Error liberando bloqueo al desmontar Notificaciones de Trabajo:', err);
+    });
+  }, [selectedAlert?.id]);
+
+  useEffect(() => {
+    if (!visibleNotifications.length) {
+      if (selectedAlertId !== null) setSelectedAlertId(null);
+      return;
+    }
+    if (!selectedAlert) {
+      setSelectedAlertId(visibleNotifications[0]?.id || null);
+    }
+  }, [visibleNotifications, selectedAlert, selectedAlertId]);
+
+  useEffect(() => {
+    setMobileVisibleCount(12);
+  }, [filterArea, filterWorker, filterDate, filterEquipment, showCoworkerOtView]);
+
+  useEffect(() => {
+    if (!mobileActionMenu) return undefined;
+    const closeMenu = () => setMobileActionMenu(null);
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('touchstart', closeMenu);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('touchstart', closeMenu);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [mobileActionMenu]);
 
   const filteredNotifications = useMemo(() => visibleNotifications.filter((item) => {
     const reports = reportByAlert.get(String(item.id)) || [];
-    const areaValue = (item.area || item.area_equipo || 'N.A.').toLowerCase();
+    const areaValue = getNotificationArea(item).toLowerCase();
     const workerValue = `${item.responsable || ''} ${item.personal_mantenimiento || ''}`.toLowerCase();
     const equipmentValue = `${item.codigo || ''} ${item.descripcion || ''} ${item.equipo || ''}`.toLowerCase();
     const dateMatches = !filterDate
@@ -1197,12 +1813,83 @@ export default function WorkNotifications({ user }) {
       && dateMatches;
   }), [visibleNotifications, reportByAlert, filterArea, filterWorker, filterDate, filterEquipment]);
 
+  const notificationTableColumns = useMemo(() => ([
+    { id: 'sel', filterable: false },
+    { id: 'registro', getValue: (item) => (reportByAlert.get(String(item.id)) || []).length ? `${(reportByAlert.get(String(item.id)) || []).length} registros` : 'Pendiente' },
+    { id: 'estado_ot', getValue: (item) => `${item.status_ot || ''} ${item.cierre_ot?.devuelta_revision ? `Devuelta ${item.cierre_ot.motivo_devolucion_tipo || ''}` : ''} ${consistencyByAlert.get(String(item.id))?.hasInconsistency ? 'Inconsistencia' : ''}` },
+    { id: 'ot_numero', getValue: (item) => item.ot_numero || 'N.A.' },
+    { id: 'codigo', getValue: (item) => item.codigo || '' },
+    { id: 'descripcion', getValue: (item) => item.descripcion || '' },
+    { id: 'prioridad', getValue: (item) => item.prioridad || 'N.A.' },
+    { id: 'actividad', getValue: (item) => item.actividad || 'N.A.' },
+    { id: 'responsable', getValue: (item) => item.responsable || 'N.A.' },
+    { id: 'fecha_ejecutar', getValue: (item) => formatDateDisplay(item.fecha_ejecutar || '', 'N.A.') },
+    { id: 'fecha_inicio', getValue: (item) => formatDateDisplay(item.registro_ot?.fecha_inicio || '', 'N.A.') },
+    { id: 'hora_inicio', getValue: (item) => item.registro_ot?.hora_inicio || 'N.A.' },
+    { id: 'fecha_fin', getValue: (item) => formatDateDisplay(item.registro_ot?.fecha_fin || '', 'N.A.') },
+    { id: 'hora_fin', getValue: (item) => item.registro_ot?.hora_fin || 'N.A.' },
+    { id: 'personal', getValue: (item) => item.personal_mantenimiento || 'N.A.' },
+    { id: 'materiales', getValue: (item) => item.materiales || 'N.A.' },
+  ]), [consistencyByAlert, reportByAlert]);
+  const {
+    filters: notificationFilters,
+    setFilter: setNotificationFilter,
+  } = useTableColumnFilters(notificationTableColumns);
+  const notificationTableRows = useMemo(
+    () => filterRowsByColumns(filteredNotifications, notificationTableColumns, notificationFilters),
+    [filteredNotifications, notificationTableColumns, notificationFilters],
+  );
+  const visibleMobileNotifications = useMemo(
+    () => notificationTableRows.slice(0, mobileVisibleCount),
+    [notificationTableRows, mobileVisibleCount],
+  );
+
+  const acquireSelectedAlertLock = async (actionLabel = 'editar esta OT') => {
+    if (!selectedAlert?.id) return false;
+    try {
+      const lock = await acquireWorkNotificationLock(selectedAlert.id);
+      setSelectedAlertLock(lock);
+      return true;
+    } catch (err) {
+      const message = err?.response?.data?.detail || `No se pudo obtener el bloqueo para ${actionLabel}.`;
+      setError(message);
+      window.alert(message);
+      return false;
+    }
+  };
+
+  const releaseSelectedAlertLock = async (alertId = selectedAlert?.id) => {
+    if (!alertId) return;
+    try {
+      const lock = await releaseWorkNotificationLock(alertId);
+      setSelectedAlertLock(lock);
+    } catch (err) {
+      console.error('Error liberando bloqueo de notificacion OT:', err);
+    }
+  };
+
+  const blockIfSelectedAlertLocked = (actionLabel = 'modificar esta OT') => {
+    if (!selectedAlertLockedByOthers) return false;
+    window.alert(`${activeLockHolderLabel || 'Otro usuario'} está editando esta notificación en este momento. Espera a que termine antes de ${actionLabel}.`);
+    return true;
+  };
+
   const saveWorkReport = async (payload) => {
+    if (isReadOnly) return;
     if (!selectedAlert) return;
+    if (blockIfSelectedAlertLocked('guardar cambios')) return;
+    if (isTechnician && !selectedAlertAssignedToMe) {
+      window.alert('Solo puedes registrar trabajo en OTs asignadas a ti. Si la OT pertenece a un companero, primero debes asignartela.');
+      return;
+    }
     if (selectedAlert.status_ot === 'Solicitud de cierre') {
       window.alert('La OT está en Solicitud de cierre. Ya no se pueden modificar las notificaciones de trabajo.');
       setShowRegisterModal(false);
       setEditingReportId(null);
+      return;
+    }
+    if (payload.reportType === 'SERVICIO' && !canCreateServiceReports) {
+      window.alert('Solo ENCARGADO, PLANNER o INGENIERO pueden registrar una notificación de tipo servicio.');
       return;
     }
     const isEditing = !!editingReportId;
@@ -1264,10 +1951,61 @@ export default function WorkNotifications({ user }) {
 
     setShowRegisterModal(false);
     setEditingReportId(null);
+    await releaseSelectedAlertLock(selectedAlert.id);
     window.alert('Trabajo registrado correctamente.');
   };
 
+  const handleAssignToMe = async () => {
+    if (isReadOnly) return;
+    if (!selectedAlert || !canAssignSelectedToMe) return;
+
+    const rrhhMatch = findMatchingRrhhForUser(rrhhItems, user);
+    const nextAssignee = rrhhMatch || {
+      id: `self_${user?.id || user?.username || Date.now()}`,
+      codigo: user?.username || user?.email || `USR-${user?.id || 'SELF'}`,
+      nombres_apellidos: user?.full_name || user?.username || 'Tecnico',
+      especialidad: user?.specialty || 'Tecnico',
+      cargo: 'Tecnico',
+      tipo_personal: 'Propio',
+      empresa: '',
+    };
+
+    const nextAlerts = alerts.map((item) => {
+      if (String(item.id) !== String(selectedAlert.id)) return item;
+
+      const existingRows = Array.isArray(item.personal_detalle) ? item.personal_detalle : [];
+      if (existingRows.some((row) => doesStaffRowMatchUser(row, user))) {
+        return item;
+      }
+
+      const nextRows = [...existingRows, nextAssignee];
+      return {
+        ...item,
+        personal_detalle: nextRows,
+        personal_mantenimiento: buildAssignedPersonnelSummary(nextRows),
+      };
+    });
+
+    await persistAlerts(nextAlerts);
+    setShowCoworkerOtView(false);
+    setSelectedAlertId(selectedAlert.id);
+    window.alert('La OT ya quedo asignada a ti. Ahora la veras dentro de tus OTs y podras registrar tu trabajo.');
+    appendAuditEntry({
+      action: 'OT_ASIGNADA_A_TECNICO',
+      module: 'Notificaciones de Trabajo',
+      entityType: 'OT',
+      entityId: selectedAlert.id,
+      title: `OT ${selectedAlert.ot_numero || selectedAlert.codigo || selectedAlert.id} asignada`,
+      description: `${user?.full_name || user?.username || 'Tecnico'} se asigno la OT para registrar trabajo.`,
+      severity: 'info',
+      actor: user,
+      after: { status_ot: selectedAlert.status_ot, asignado_a: user?.full_name || user?.username || '' },
+    }).catch((err) => console.error('Error auditando asignacion OT:', err));
+  };
+
 const handleDeleteReport = async (reportId) => {
+    if (isReadOnly) return;
+    if (blockIfSelectedAlertLocked('eliminar este registro')) return;
     const deletedReport = workReports.find((item) => item.id === reportId);
     if (!deletedReport) return;
     if (normalizedRole === 'TECNICO' && !isWorkReportOwnedByUser(deletedReport, user)) {
@@ -1311,10 +2049,17 @@ const handleDeleteReport = async (reportId) => {
   };
 
   const handleOpenRegister = async () => {
+    if (isReadOnly) return;
     if (!selectedAlert || selectedAlert.status_ot !== 'Liberada') {
       window.alert('Solo puedes registrar trabajo en una OT que esté Liberada.');
       return;
     }
+    if (blockIfSelectedAlertLocked('registrar trabajo')) return;
+    if (isTechnician && !selectedAlertAssignedToMe) {
+      window.alert('Esta OT esta asignada a otro companero. Puedes verla, pero solo podras registrar trabajo cuando te la asignes.');
+      return;
+    }
+    if (!(await acquireSelectedAlertLock('registrar trabajo'))) return;
     const [rrhhData, materialsData] = await Promise.all([
       loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
       loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
@@ -1326,6 +2071,7 @@ const handleDeleteReport = async (reportId) => {
   };
 
   const handleEditReport = async (alertId, reportId) => {
+    if (isReadOnly) return;
     const targetAlert = alerts.find((item) => String(item.id) === String(alertId));
     const targetReport = workReports.find((item) => String(item.id) === String(reportId));
     if (normalizedRole === 'TECNICO' && !isWorkReportOwnedByUser(targetReport, user)) {
@@ -1343,12 +2089,15 @@ const handleDeleteReport = async (reportId) => {
     ]);
     setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
     setMaterialsCatalog(normalizeMaterialsCatalog(materialsData));
+    if (!(await acquireSelectedAlertLock('editar esta notificación'))) return;
     setEditingReportId(reportId);
     setShowRegisterModal(true);
   };
 
   const handleSaveOtChanges = async (payload) => {
+    if (isReadOnly) return;
     if (!selectedAlert) return;
+    if (blockIfSelectedAlertLocked('guardar la OT')) return;
     if (!['Liberada', 'Solicitud de cierre'].includes(selectedAlert.status_ot)) {
       window.alert('Solo puedes editar la OT mientras esté en estado Liberada o Solicitud de cierre.');
       return;
@@ -1371,13 +2120,14 @@ const handleDeleteReport = async (reportId) => {
           fecha_fin: payload.fecha_fin_prop,
           hora_inicio: payload.hora_inicio_prop,
           hora_fin: payload.hora_fin_prop,
-          turno: payload.turno,
+          turno: item.registro_ot?.turno || '',
           observaciones: payload.observaciones,
         },
       };
     });
     await persistAlerts(nextAlerts);
     setShowEditOtModal(false);
+    await releaseSelectedAlertLock(selectedAlert.id);
 
     const updatedAlert = nextAlerts.find((item) => String(item.id) === String(selectedAlert.id));
     const updatedSummary = getAlertConsistencySummary(updatedAlert, reportByAlert.get(String(selectedAlert.id)) || []);
@@ -1388,12 +2138,74 @@ const handleDeleteReport = async (reportId) => {
     }
   };
 
-  const handleRequestClose = async () => {
+  const handleOpenEditOt = async () => {
+    if (isReadOnly) return;
     if (!selectedAlert) return;
+    if (blockIfSelectedAlertLocked('editar esta OT')) return;
+    if (!(await acquireSelectedAlertLock('editar esta OT'))) return;
+    setShowEditOtModal(true);
+  };
+
+  const handleOpenReprogramModal = async () => {
+    if (isReadOnly) return;
+    if (!selectedAlert) return;
+    if (!canReprogramOt) return;
+    if (blockIfSelectedAlertLocked('reprogramar esta OT')) return;
+    if (selectedAlert.status_ot !== 'Liberada') {
+      window.alert('Desde Notificaciones de Trabajo solo puedes reprogramar OTs liberadas. Si esta en Solicitud de cierre, primero devuelvela a Liberada.');
+      return;
+    }
+    if (!(await acquireSelectedAlertLock('reprogramar esta OT'))) return;
+    setShowReprogramModal(true);
+  };
+
+  const confirmReprogramOt = async (payload) => {
+    if (isReadOnly || !selectedAlert || !canReprogramOt) return;
+    if (blockIfSelectedAlertLocked('confirmar la reprogramacion')) return;
+    const actorName = user?.full_name || user?.username || normalizedRole || 'Sistema';
+    const nextAlerts = alerts.map((item) => (
+      String(item.id) !== String(selectedAlert.id)
+        ? item
+        : applyOtReprogramming(item, payload, actorName)
+    ));
+
+    await persistAlerts(nextAlerts);
+    setSelectedAlertId(selectedAlert.id);
+    setShowReprogramModal(false);
+    await releaseSelectedAlertLock(selectedAlert.id);
+
+    appendAuditEntry({
+      action: 'OT_REPROGRAMADA',
+      module: 'Notificaciones de Trabajo',
+      entityType: 'OT',
+      entityId: selectedAlert.id,
+      title: `OT ${selectedAlert.ot_numero || selectedAlert.codigo || selectedAlert.id} reprogramada`,
+      description: `${formatDateDisplay(payload.fecha_anterior || '', 'N.A.')} -> ${formatDateDisplay(payload.fecha_nueva || '', 'N.A.')} | ${payload.motivo}`,
+      severity: 'warning',
+      actor: user,
+      before: { fecha_ejecutar: payload.fecha_anterior },
+      after: { fecha_ejecutar: payload.fecha_nueva, motivo: payload.motivo },
+    }).catch((err) => console.error('Error auditando reprogramacion OT desde notificaciones:', err));
+  };
+
+  const handleRequestClose = async () => {
+    if (isReadOnly) return;
+    if (!selectedAlert) return;
+    if (blockIfSelectedAlertLocked('solicitar cierre')) return;
     const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
+    const serviceSummary = summarizeServiceReports(reportsForAlert);
     if (!reportsForAlert.length) {
       window.alert('Debes tener al menos un registro de trabajo antes de solicitar cierre.');
       return;
+    }
+    const reportsMissingEvidence = findReportsMissingRequiredEvidence(reportsForAlert);
+    if (reportsMissingEvidence.length) {
+      window.alert(`Hay ${reportsMissingEvidence.length} notificacion(es) de trabajo sin foto ANTES y DESPUES. Completa esas evidencias antes de solicitar cierre.`);
+      return;
+    }
+    if (serviceSummary.hasMissingServiceCost) {
+      const confirmServiceRequest = window.confirm(`Hay ${serviceSummary.missingCostReports.length} notificación(es) de servicio sin costo registrado. Puedes enviar la OT a solicitud de cierre, pero no podrá cerrarse hasta completar ese costo. ¿Deseas continuar?`);
+      if (!confirmServiceRequest) return;
     }
     if (selectedAlertConsistency.hasInconsistency) {
       const confirmRequest = window.confirm(`La OT tiene ${selectedAlertConsistency.count} inconsistencia(s) de fechas en sus registros. Puedes enviarla a solicitud de cierre, pero no podrá cerrarse hasta corregir la liberación y revisar que quede conforme. ¿Deseas continuar?`);
@@ -1414,14 +2226,53 @@ const handleDeleteReport = async (reportId) => {
     });
     await persistAlerts(nextAlerts);
     setSelectedAlertId(null);
+    await releaseSelectedAlertLock(selectedAlert.id);
+    appendAuditEntry({
+      action: 'OT_SOLICITA_CIERRE',
+      module: 'Notificaciones de Trabajo',
+      entityType: 'OT',
+      entityId: selectedAlert.id,
+      title: `OT ${selectedAlert.ot_numero || selectedAlert.codigo || selectedAlert.id} enviada a solicitud de cierre`,
+      description: serviceSummary.hasMissingServiceCost
+        ? 'La OT se envio a solicitud de cierre con servicios aun sin costo final.'
+        : 'La OT quedo lista para revision de cierre.',
+      severity: serviceSummary.hasMissingServiceCost || selectedAlertConsistency.hasInconsistency ? 'warning' : 'info',
+      actor: user,
+      before: { status_ot: selectedAlert.status_ot },
+      after: { status_ot: 'Solicitud de cierre' },
+    }).catch((err) => console.error('Error auditando solicitud de cierre:', err));
+  };
+
+  const runMobileOtAction = (item, action) => {
+    setSelectedAlertId(item.id);
+    setMobileActionMenu(null);
+    window.setTimeout(action, 0);
+  };
+
+  const openMobileOtMenu = (event, item) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedAlertId(item.id);
+    if (isReadOnly) return;
+    setMobileActionMenu({
+      id: item.id,
+      x: event.clientX || (event.touches?.[0]?.clientX ?? window.innerWidth / 2),
+      y: event.clientY || (event.touches?.[0]?.clientY ?? window.innerHeight / 2),
+    });
   };
 
   const handleApproveClose = async () => {
+    if (isReadOnly) return;
     if (!selectedAlert) return;
     const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
     const consistencySummary = getAlertConsistencySummary(selectedAlert, reportsForAlert);
+    const serviceSummary = summarizeServiceReports(reportsForAlert);
     if (consistencySummary.hasInconsistency) {
       window.alert(`No puedes cerrar esta OT porque mantiene ${consistencySummary.count} inconsistencia(s) entre los registros de trabajo y el rango liberado. Edita la OT liberada, revisa las fechas y vuelve a intentar.`);
+      return;
+    }
+    if (serviceSummary.hasMissingServiceCost) {
+      window.alert(`No puedes cerrar esta OT porque hay ${serviceSummary.missingCostReports.length} notificación(es) de servicio sin costo registrado. Revisa la notificación, completa el costo del servicio y vuelve a intentar.`);
       return;
     }
     const [history, existingNotices] = await Promise.all([
@@ -1442,6 +2293,8 @@ const handleDeleteReport = async (reportId) => {
       ...selectedAlert,
       status_ot: 'Cerrada',
       fecha_cierre: new Date().toISOString().slice(0, 10),
+      fecha_ejecucion_real: selectedAlert.registro_ot?.fecha_fin || selectedAlert.fecha_ejecucion || new Date().toISOString().slice(0, 10),
+      hora_ejecucion_real: selectedAlert.registro_ot?.hora_fin || '',
       cierre_ot: {
         ...(selectedAlert.cierre_ot || {}),
         cierre_aprobado_por: user?.full_name || user?.username || normalizedRole,
@@ -1456,13 +2309,163 @@ const handleDeleteReport = async (reportId) => {
     ]);
     const nextAlerts = alerts.filter((item) => String(item.id) !== String(selectedAlert.id));
     await persistAlerts(nextAlerts);
-    openCloseReportPdf(closedRow, reportsForAlert, materialsCatalog);
+    openCloseReportPdf(closedRow, reportsForAlert, materialsCatalog, pdfSettings);
     setSelectedAlertId(null);
   };
+  void handleApproveClose;
 
   const handleReturnToLiberated = async () => {
+    await openCloseModal('return');
+  };
+
+  const openCloseModal = async (intent = 'close') => {
+    if (isReadOnly) return;
+    if (!selectedAlert) return;
+    if (blockIfSelectedAlertLocked(intent === 'return' ? 'devolver la OT' : 'cerrar la OT')) return;
+    if (selectedAlert.status_ot !== 'Solicitud de cierre') {
+      window.alert('Solo puedes cerrar una OT que este en estado Solicitud de cierre.');
+      return;
+    }
+    const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
+    const consistencySummary = getAlertConsistencySummary(selectedAlert, reportsForAlert);
+    if (consistencySummary.hasInconsistency) {
+      window.alert(`No puedes cerrar esta OT porque mantiene ${consistencySummary.count} inconsistencia(s) entre los registros de trabajo y el rango liberado. Edita la OT liberada, revisa las fechas y vuelve a intentar.`);
+      return;
+    }
+    const reportsMissingEvidence = findReportsMissingRequiredEvidence(reportsForAlert);
+    if (reportsMissingEvidence.length) {
+      window.alert(`No puedes cerrar esta OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`);
+      return;
+    }
+    if (!(await acquireSelectedAlertLock(intent === 'return' ? 'devolver la OT' : 'cerrar la OT'))) return;
+    setCloseModalIntent(intent);
+    setShowCloseModal(true);
+  };
+
+  const confirmCloseOt = async (cierreData) => {
+    if (isReadOnly) return;
+    if (!selectedAlert) return;
+    if (blockIfSelectedAlertLocked('confirmar el cierre')) return;
+    const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const [history, existingNotices, storedReports] = await Promise.all([
+      loadSharedDocument(OT_HISTORY_KEY, []),
+      loadSharedDocument(NOTICES_KEY, []),
+      loadSharedDocument(OT_WORK_REPORTS_KEY, []),
+    ]);
+
+    const effectiveReports = (Array.isArray(cierreData?.reportes_actualizados) && cierreData.reportes_actualizados.length
+      ? cierreData.reportes_actualizados
+      : reportsForAlert
+    ).map((item) => {
+      const normalizedServiceCost = Number(item?.serviceCost ?? item?.costo_servicio ?? 0);
+      return {
+        ...item,
+        serviceCost: Number.isFinite(normalizedServiceCost) ? normalizedServiceCost : 0,
+        costo_servicio: Number.isFinite(normalizedServiceCost) ? normalizedServiceCost : 0,
+      };
+    });
+
+    const storedWorkReports = Array.isArray(storedReports) ? storedReports : [];
+    const updatedReportsById = new Map(effectiveReports.map((item) => [String(item.id), item]));
+    const preservedReports = storedWorkReports.map((item) => updatedReportsById.get(String(item.id)) || item);
+    const preservedIds = new Set(preservedReports.map((item) => String(item.id)));
+    const mergedWorkReports = [
+      ...preservedReports,
+      ...effectiveReports.filter((item) => !preservedIds.has(String(item.id))),
+    ];
+
+    const serviceSummary = summarizeServiceReports(effectiveReports);
+    const reportsMissingEvidence = findReportsMissingRequiredEvidence(effectiveReports);
+    if (reportsMissingEvidence.length) {
+      setError(`No se puede cerrar la OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`);
+      return;
+    }
+    if (serviceSummary.hasMissingServiceCost) {
+      setError(`No se puede cerrar la OT porque tiene ${serviceSummary.missingCostReports.length} notificacion(es) de servicio sin costo registrado.`);
+      return;
+    }
+
+    const generatedNotices = Array.isArray(cierreData?.avisos_generados_detalle) && cierreData.avisos_generados_detalle.length
+      ? cierreData.avisos_generados_detalle
+      : buildMaintenanceNoticesFromReports(
+        selectedAlert,
+        effectiveReports,
+        existingNotices,
+        user?.full_name || user?.username || normalizedRole,
+      );
+
+    const closedRow = {
+      ...selectedAlert,
+      status_ot: 'Cerrada',
+      fecha_ejecucion: selectedAlert.fecha_ejecucion || todayStr,
+      cierre_ot: cierreData,
+      fecha_cierre: todayStr,
+      fecha_ejecucion_real: cierreData?.fecha_fin || todayStr,
+      hora_ejecucion_real: cierreData?.hora_fin || '',
+      reportes_trabajo: effectiveReports,
+      avisos_generados: generatedNotices.map((item) => item.aviso_codigo),
+      avisos_generados_detalle: generatedNotices,
+    };
+
+    if (selectedAlert.tipo_mantto === 'Preventivo por Km' && selectedAlert.plan_km_id) {
+      try {
+        const plansKm = await loadSharedDocument(KM_PLANS_KEY, []);
+        const nextPlansKm = (Array.isArray(plansKm) ? plansKm : []).map((plan) => {
+          if (String(plan.id) !== String(selectedAlert.plan_km_id)) return plan;
+          return advanceKmPlanCycle(plan, {
+            closeDate: cierreData?.fecha_fin || todayStr,
+            currentCounter: plan.km_actual,
+          });
+        });
+        await saveSharedDocument(KM_PLANS_KEY, nextPlansKm);
+      } catch (err) {
+        console.error('Error actualizando ciclo por kilometraje:', err);
+        setError('Se cerro la OT, pero no se pudo actualizar el siguiente ciclo por kilometraje.');
+      }
+    }
+
+    try {
+      await Promise.all([
+        saveSharedDocument(OT_WORK_REPORTS_KEY, mergedWorkReports),
+        saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]),
+        saveSharedDocument(NOTICES_KEY, [...generatedNotices, ...(Array.isArray(existingNotices) ? existingNotices : [])]),
+      ]);
+      setWorkReports(mergedWorkReports);
+      setError('');
+    } catch (err) {
+      console.error('Error guardando historial OT:', err);
+      setError('No se pudo guardar el historial de OT, los avisos de mantenimiento o el costo del servicio en el servidor.');
+      return;
+    }
+
+    const nextAlerts = alerts.filter((item) => String(item.id) !== String(selectedAlert.id));
+    await persistAlerts(nextAlerts);
+    setCloseModalIntent('close');
+    setShowCloseModal(false);
+    openCloseReportPdf(closedRow, effectiveReports, materialsCatalog, pdfSettings);
+    setSelectedAlertId(null);
+    await releaseSelectedAlertLock(selectedAlert.id);
+    appendAuditEntry({
+      action: 'OT_CERRADA',
+      module: 'Notificaciones de Trabajo',
+      entityType: 'OT',
+      entityId: selectedAlert.id,
+      title: `OT ${selectedAlert.ot_numero || selectedAlert.codigo || selectedAlert.id} cerrada desde revision`,
+      description: `${selectedAlert.codigo || 'Equipo'} - ${selectedAlert.descripcion || 'Sin descripcion'} | Modo de falla: ${cierreData?.modo_falla || 'Ninguna'}.`,
+      severity: 'success',
+      actor: user,
+      before: { status_ot: selectedAlert.status_ot },
+      after: { status_ot: 'Cerrada', modo_falla: cierreData?.modo_falla || '' },
+      meta: { avisos_generados: generatedNotices.length },
+    }).catch((err) => console.error('Error auditando cierre OT desde notificaciones:', err));
+  };
+
+  const returnToLiberatedFromCloseModal = async (reviewData) => {
+    if (isReadOnly) return;
     if (!selectedAlert || selectedAlert.status_ot !== 'Solicitud de cierre') return;
-    const confirmed = window.confirm('La OT volverá a estado Liberada para que los técnicos corrijan las notificaciones de trabajo. ¿Deseas continuar?');
+    if (blockIfSelectedAlertLocked('devolver la OT a Liberada')) return;
+    const confirmed = window.confirm('La OT volvera a estado Liberada para que los tecnicos corrijan las notificaciones de trabajo. Deseas continuar?');
     if (!confirmed) return;
 
     const nextAlerts = alerts.map((item) => {
@@ -1470,18 +2473,38 @@ const handleDeleteReport = async (reportId) => {
       return {
         ...item,
         status_ot: 'Liberada',
-        cierre_ot: {
-          ...(item.cierre_ot || {}),
-          solicitud_cierre: false,
-          devuelta_revision: true,
-          devuelta_revision_fecha: new Date().toISOString(),
-          devuelta_revision_por: user?.full_name || user?.username || normalizedRole,
-        },
-      };
+          cierre_ot: {
+            ...(item.cierre_ot || {}),
+            solicitud_cierre: false,
+            devuelta_revision: true,
+            devuelta_revision_fecha: new Date().toISOString(),
+            devuelta_revision_por: user?.full_name || user?.username || normalizedRole,
+            devuelta_revision_observaciones: reviewData?.motivo_devolucion_detalle || reviewData?.observaciones || '',
+            motivo_devolucion_tipo: reviewData?.motivo_devolucion_tipo || '',
+            motivo_devolucion_detalle: reviewData?.motivo_devolucion_detalle || '',
+            responsable_correccion: reviewData?.responsable_correccion || '',
+            fecha_objetivo_reenvio: reviewData?.fecha_objetivo_reenvio || '',
+          },
+        };
     });
 
     await persistAlerts(nextAlerts);
-    window.alert('La OT volvió a estado Liberada. Ahora puede corregirse en notificaciones y volver a solicitar cierre.');
+    setCloseModalIntent('close');
+    setShowCloseModal(false);
+    await releaseSelectedAlertLock(selectedAlert.id);
+    window.alert('La OT volvio a estado Liberada. Ahora puede corregirse en notificaciones y volver a solicitar cierre.');
+    appendAuditEntry({
+      action: 'OT_DEVUELTA_A_LIBERADA',
+      module: 'Notificaciones de Trabajo',
+      entityType: 'OT',
+      entityId: selectedAlert.id,
+      title: `OT ${selectedAlert.ot_numero || selectedAlert.codigo || selectedAlert.id} devuelta a Liberada`,
+      description: `${reviewData?.motivo_devolucion_tipo || 'Motivo no especificado'} | Responsable: ${reviewData?.responsable_correccion || 'Por definir'}.`,
+      severity: 'critical',
+      actor: user,
+      before: { status_ot: 'Solicitud de cierre' },
+      after: { status_ot: 'Liberada', motivo_devolucion_tipo: reviewData?.motivo_devolucion_tipo || '' },
+    }).catch((err) => console.error('Error auditando devolucion a liberada:', err));
   };
 
   const toggleOtExpanded = (alertId) => {
@@ -1508,10 +2531,24 @@ const handleDeleteReport = async (reportId) => {
           {error}
         </div>
       )}
+      {isReadOnly && (
+        <ReadOnlyAccessNotice
+          title="Notificaciones en modo consulta"
+          message="Con tu perfil puedes revisar OT liberadas, solicitudes de cierre y registros de trabajo, pero no registrar, editar ni cerrar órdenes desde esta ventana."
+        />
+      )}
 
       {canApproveClose && requestCloseNotifications.length > 0 && (
         <div className="alert alert-warning">
           Hay {requestCloseNotifications.length} solicitud(es) de cierre pendientes de revisión para PLANNER/INGENIERO.
+        </div>
+      )}
+
+      {isTechnician && (
+        <div className="alert alert-info">
+          {showCoworkerOtView
+            ? 'Estas revisando OTs asignadas a tus companeros. Aqui solo tienes lectura. Si una OT la vas a atender tu, primero asignatela.'
+            : 'Estas viendo solo las OTs asignadas a ti. Desde esta vista si puedes registrar tu trabajo en las ordenes que te correspondan.'}
         </div>
       )}
 
@@ -1521,14 +2558,36 @@ const handleDeleteReport = async (reportId) => {
         </div>
       )}
 
+      {selectedAlert && selectedAlertServiceSummary.hasMissingServiceCost && (
+        <div className="alert alert-warning">
+          La OT seleccionada tiene {selectedAlertServiceSummary.missingCostReports.length} notificación(es) de servicio sin costo registrado. Puede solicitar cierre, pero no podrá cerrarse hasta completar ese costo.
+        </div>
+      )}
+
+      {selectedAlert?.cierre_ot?.devuelta_revision && selectedAlert.status_ot === 'Liberada' && (
+        <div className="alert alert-error" style={{ border: '1px solid #fca5a5' }}>
+          <strong>OT devuelta a correccion.</strong>{' '}
+          {selectedAlert.cierre_ot.motivo_devolucion_tipo || 'Motivo pendiente'}.
+          {' '}Responsable: <strong>{selectedAlert.cierre_ot.responsable_correccion || 'Por definir'}</strong>.
+          {' '}Reenvio objetivo: <strong>{formatDateDisplay(selectedAlert.cierre_ot.fecha_objetivo_reenvio || '', 'Pendiente')}</strong>.
+        </div>
+      )}
+      {selectedAlertLockedByOthers && (
+        <div className="alert alert-info" style={{ border: '1px solid #93c5fd', background: '#eff6ff', color: '#1d4ed8' }}>
+          <strong>Edicion protegida.</strong>{' '}
+          {activeLockHolderLabel || 'Otro usuario'} {selectedAlertLockHeldByOthers || otherEditorsInSelectedAlert.length === 1 ? 'está editando' : 'están editando'} esta notificación ahora mismo.
+          {' '}Mientras tanto puedes revisarla, pero no modificarla para evitar sobreescrituras.
+        </div>
+      )}
+
       <div className="stats-grid" style={{ marginBottom: '.8rem' }}>
         <div className="stat-card">
-          <div className="stat-label">OT Liberadas</div>
-          <div className="stat-value" style={{ color: '#2563eb' }}>{liberatedNotifications.length}</div>
+          <div className="stat-label">{isTechnician ? 'Mis OT asignadas' : 'OT Liberadas'}</div>
+          <div className="stat-value" style={{ color: '#2563eb' }}>{isTechnician ? technicianAssignedNotifications.length : liberatedNotifications.length}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Solicitudes de Cierre</div>
-          <div className="stat-value" style={{ color: '#dc2626' }}>{requestCloseNotifications.length}</div>
+          <div className="stat-label">{isTechnician ? 'OT de companeros' : 'Solicitudes de Cierre'}</div>
+          <div className="stat-value" style={{ color: isTechnician ? '#b45309' : '#dc2626' }}>{isTechnician ? technicianCoworkerNotifications.length : requestCloseNotifications.length}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Registros de Trabajo</div>
@@ -1539,13 +2598,17 @@ const handleDeleteReport = async (reportId) => {
           <div className="stat-value" style={{ color: '#7c3aed' }}>S/ {totalMaterialCost.toFixed(2)}</div>
         </div>
         <div className="stat-card">
+          <div className="stat-label">Costo Servicios</div>
+          <div className="stat-value" style={{ color: '#0f766e' }}>S/ {totalServiceCost.toFixed(2)}</div>
+        </div>
+        <div className="stat-card">
           <div className="stat-label">OT con Inconsistencia</div>
           <div className="stat-value" style={{ color: '#dc2626' }}>{inconsistentAlertsCount}</div>
         </div>
       </div>
 
       <div className="card" style={{ marginBottom: '.8rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(160px, 1fr))', gap: '.65rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '.65rem' }}>
           <div>
             <label className="form-label">Área</label>
             <select className="form-select" value={filterArea} onChange={(e) => setFilterArea(e.target.value)}>
@@ -1568,38 +2631,220 @@ const handleDeleteReport = async (reportId) => {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: '.5rem', marginBottom: '.75rem' }}>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={!selectedAlert || selectedAlert.status_ot !== 'Liberada'}
-          onClick={handleOpenRegister}
-        >
-          Registrar Trabajo
-        </button>
-        {canEditLiberatedOt && ['Liberada', 'Solicitud de cierre'].includes(selectedAlert?.status_ot || '') && (
-          <button type="button" className="btn btn-secondary" onClick={() => setShowEditOtModal(true)}>
+      <div className="mobile-context-hidden-actions" style={{ display: 'flex', gap: '.5rem', marginBottom: '.75rem', flexWrap: 'wrap' }}>
+        {isTechnician && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              setShowCoworkerOtView((prev) => !prev);
+              setSelectedAlertId(null);
+            }}
+          >
+            {showCoworkerOtView ? 'Volver a mis OT' : 'Ver OT de companeros'}
+          </button>
+        )}
+        {canAssignSelectedToMe && (
+          <button type="button" className="btn btn-primary" onClick={handleAssignToMe}>
+            Asignarme OT
+          </button>
+        )}
+        {!isReadOnly && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!selectedAlert || selectedAlert.status_ot !== 'Liberada' || (isTechnician && !selectedAlertAssignedToMe) || selectedAlertLockedByOthers}
+            onClick={handleOpenRegister}
+          >
+            Registrar Trabajo
+          </button>
+        )}
+        {!isReadOnly && canEditLiberatedOt && ['Liberada', 'Solicitud de cierre'].includes(selectedAlert?.status_ot || '') && (
+          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleOpenEditOt}>
             Editar OT
           </button>
         )}
-        {canRequestClose && selectedAlert?.status_ot === 'Liberada' && (
-          <button type="button" className="btn btn-danger" onClick={handleRequestClose}>
+        {!isReadOnly && canReprogramOt && selectedAlert?.status_ot === 'Liberada' && (
+          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleOpenReprogramModal}>
+            Reprogramar OT
+          </button>
+        )}
+        {!isReadOnly && canRequestClose && selectedAlert?.status_ot === 'Liberada' && (
+          <button type="button" className="btn btn-danger" disabled={selectedAlertLockedByOthers} onClick={handleRequestClose}>
             Solicitar cierre
           </button>
         )}
-        {canApproveClose && selectedAlert?.status_ot === 'Solicitud de cierre' && (
-          <button type="button" className="btn btn-secondary" onClick={handleReturnToLiberated}>
+        {!isReadOnly && canApproveClose && selectedAlert?.status_ot === 'Solicitud de cierre' && (
+          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleReturnToLiberated}>
             Devolver a Liberada
           </button>
         )}
-        {canApproveClose && selectedAlert?.status_ot === 'Solicitud de cierre' && (
-          <button type="button" className="btn btn-primary" onClick={handleApproveClose} disabled={selectedAlertConsistency.hasInconsistency}>
-            Cerrar OT y generar PDF
+        {!isReadOnly && canApproveClose && selectedAlert?.status_ot === 'Solicitud de cierre' && (
+          <button type="button" className="btn btn-primary" disabled={selectedAlertLockedByOthers} onClick={() => openCloseModal('close')}>
+            Cerrar OT
           </button>
         )}
       </div>
 
-      <div className="card" style={{ overflowX: 'auto' }}>
+      <div className="mobile-card-list" style={{ marginBottom: '.85rem' }}>
+        {visibleMobileNotifications.map((item) => {
+          const isSelected = String(item.id) === String(selectedAlertId);
+          const reportRows = reportByAlert.get(String(item.id)) || [];
+          const alertConsistency = consistencyByAlert.get(String(item.id)) || { hasInconsistency: false, count: 0 };
+          const hasReport = reportRows.length > 0;
+          const isExpanded = !!expandedOtIds[item.id];
+          return (
+            <div
+              key={`mobile_${item.id}`}
+              className={`mobile-ot-card ${isSelected ? 'is-selected' : ''}`}
+              onClick={() => setSelectedAlertId(item.id)}
+              onContextMenu={(event) => openMobileOtMenu(event, item)}
+              title="Toca para seleccionar. Mantén presionado para ver acciones."
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: '.2rem' }}>
+                    {item.ot_numero || 'OT pendiente'} · {item.codigo}
+                  </div>
+                  <div style={{ color: '#475569', lineHeight: 1.55 }}>
+                    {item.descripcion || 'Sin descripcion'}
+                  </div>
+                </div>
+                {isSelected && <span className="mobile-selected-chip">Seleccionada</span>}
+              </div>
+
+              <div style={{ display: 'flex', gap: '.45rem', flexWrap: 'wrap' }}>
+                <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, fontSize: '.78rem' }}>
+                  {item.status_ot}
+                </span>
+                {alertConsistency.hasInconsistency && (
+                  <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#fef2f2', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
+                    Inconsistencia: {alertConsistency.count}
+                  </span>
+                )}
+                {item.cierre_ot?.devuelta_revision && item.status_ot === 'Liberada' && (
+                  <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#fef2f2', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
+                    Devuelta
+                  </span>
+                )}
+              </div>
+
+              <div className="mobile-ot-card-grid">
+                <div><strong>Responsable</strong>{item.responsable || 'N.A.'}</div>
+                <div><strong>Fecha a ejecutar</strong>{formatDateDisplay(item.fecha_ejecutar || '', 'N.A.')}</div>
+                {item.fecha_reprogramacion && (
+                  <div><strong>Reprogramada</strong>{item.motivo_reprogramacion || 'Sin motivo registrado'}</div>
+                )}
+                <div><strong>Prioridad</strong>{item.prioridad || 'N.A.'}</div>
+                <div><strong>Actividad</strong>{item.actividad || 'N.A.'}</div>
+              </div>
+
+              {hasReport && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ color: '#64748b', fontSize: '.88rem' }}>
+                    {reportRows.length} registro(s) de trabajo asociados.
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleOtExpanded(item.id);
+                    }}
+                  >
+                    {isExpanded ? 'Ocultar registros' : 'Ver registros'}
+                  </button>
+                </div>
+              )}
+
+              {isExpanded && reportRows.map((report, idx) => (
+                <div key={`mobile_report_${report.id}`} style={{ borderTop: '1px solid #e5e7eb', paddingTop: '.7rem', color: '#475569', lineHeight: 1.6 }}>
+                  <strong style={{ color: '#0f172a' }}>Sub-registro #{idx + 1}</strong><br />
+                  {report.reportCode || `NT${idx + 1}-${item.ot_numero || item.id}`} · {formatDateTimeDisplay(report.fechaInicio || '', report.horaInicio || '', 'N.A.')} a {formatDateTimeDisplay(report.fechaFin || '', report.horaFin || '', 'N.A.')}
+                </div>
+              ))}
+            </div>
+          );
+        })}
+        {notificationTableRows.length > visibleMobileNotifications.length && (
+          <button
+            type="button"
+            className="btn btn-secondary mobile-load-more"
+            onClick={() => setMobileVisibleCount((current) => current + 12)}
+          >
+            Ver 12 OT más ({notificationTableRows.length - visibleMobileNotifications.length} restantes)
+          </button>
+        )}
+        {notificationTableRows.length > 12 && visibleMobileNotifications.length >= notificationTableRows.length && (
+          <button
+            type="button"
+            className="btn btn-secondary mobile-load-more"
+            onClick={() => setMobileVisibleCount(12)}
+          >
+            Ver menos
+          </button>
+        )}
+        {mobileActionMenu && (() => {
+          const item = notificationTableRows.find((row) => String(row.id) === String(mobileActionMenu.id));
+          if (!item) return null;
+          const assignedToMe = isAlertAssignedToUser(item, user);
+          const actionDisabled = selectedAlertLockedByOthers && String(selectedAlert?.id) === String(item.id);
+          return (
+            <div
+              className="mobile-card-action-menu"
+              style={{
+                left: Math.min(mobileActionMenu.x, window.innerWidth - 260),
+                top: Math.min(mobileActionMenu.y, window.innerHeight - 260),
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="mobile-card-action-head">
+                <span>Acciones OT</span>
+                <strong>{item.ot_numero || item.codigo || 'OT'}</strong>
+              </div>
+              <div className="mobile-card-action-list">
+                {isTechnician && showCoworkerOtView && item.status_ot === 'Liberada' && !assignedToMe && (
+                  <button type="button" onClick={() => runMobileOtAction(item, handleAssignToMe)}>
+                    Asignarme OT
+                  </button>
+                )}
+                {item.status_ot === 'Liberada' && (!isTechnician || assignedToMe) && (
+                  <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenRegister)}>
+                    Registrar trabajo
+                  </button>
+                )}
+                {canEditLiberatedOt && ['Liberada', 'Solicitud de cierre'].includes(item.status_ot || '') && (
+                  <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenEditOt)}>
+                    Editar OT
+                  </button>
+                )}
+                {canReprogramOt && item.status_ot === 'Liberada' && (
+                  <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenReprogramModal)}>
+                    Reprogramar OT
+                  </button>
+                )}
+                {canRequestClose && item.status_ot === 'Liberada' && (
+                  <button type="button" className="danger" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleRequestClose)}>
+                    Solicitar cierre
+                  </button>
+                )}
+                {canApproveClose && item.status_ot === 'Solicitud de cierre' && (
+                  <>
+                    <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleReturnToLiberated)}>
+                      Devolver a liberada
+                    </button>
+                    <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, () => openCloseModal('close'))}>
+                      Cerrar OT
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      <div className="card desktop-table-wrapper" style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1820px' }}>
           <thead>
             <tr style={{ background: '#1f3b5b', color: '#fff' }}>
@@ -1607,9 +2852,10 @@ const handleDeleteReport = async (reportId) => {
                 <th key={h} style={{ border: '1px solid #2f4f75', padding: '.55rem .5rem', textAlign: 'left' }}>{h}</th>
               ))}
             </tr>
+            <TableFilterRow columns={notificationTableColumns} rows={filteredNotifications} filters={notificationFilters} onChange={setNotificationFilter} dark />
           </thead>
           <tbody>
-            {filteredNotifications.map((item) => {
+            {notificationTableRows.map((item) => {
               const isSelected = String(item.id) === String(selectedAlertId);
               const reportRows = reportByAlert.get(String(item.id)) || [];
               const alertConsistency = consistencyByAlert.get(String(item.id)) || { hasInconsistency: false, count: 0, inconsistentReports: [] };
@@ -1637,6 +2883,22 @@ const handleDeleteReport = async (reportId) => {
                     </td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>
                       <div>{item.status_ot}</div>
+                      {item.cierre_ot?.devuelta_revision && item.status_ot === 'Liberada' && (
+                        <div
+                          style={{
+                            marginTop: '.2rem',
+                            display: 'inline-flex',
+                            padding: '.15rem .45rem',
+                            borderRadius: '999px',
+                            background: '#fef2f2',
+                            color: '#b91c1c',
+                            fontWeight: 700,
+                            fontSize: '.75rem',
+                          }}
+                        >
+                          Devuelta: {item.cierre_ot.motivo_devolucion_tipo || 'Corregir'}
+                        </div>
+                      )}
                       {alertConsistency.hasInconsistency && (
                         <div style={{ marginTop: '.2rem', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
                           Inconsistencia: {alertConsistency.count}
@@ -1649,7 +2911,14 @@ const handleDeleteReport = async (reportId) => {
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.prioridad || 'N.A.'}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.actividad || 'N.A.'}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.responsable || 'N.A.'}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{formatDateDisplay(item.fecha_ejecutar || '', 'N.A.')}</td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>
+                      <div>{formatDateDisplay(item.fecha_ejecutar || '', 'N.A.')}</div>
+                      {item.fecha_reprogramacion && (
+                        <div style={{ marginTop: '.2rem', color: '#b45309', fontWeight: 800, fontSize: '.78rem' }}>
+                          Reprogramada: {item.motivo_reprogramacion || 'Sin motivo registrado'}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{formatDateDisplay(item.registro_ot?.fecha_inicio || '', 'N.A.')}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{item.registro_ot?.hora_inicio || 'N.A.'}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>{formatDateDisplay(item.registro_ot?.fecha_fin || '', 'N.A.')}</td>
@@ -1660,7 +2929,7 @@ const handleDeleteReport = async (reportId) => {
                   {isExpanded && reportRows.map((report, idx) => {
                     const reportConsistency = evaluateWorkReportConsistency(item, report);
                     const reportLocked = item.status_ot === 'Solicitud de cierre';
-                    const canModifyReport = normalizedRole !== 'TECNICO' || isWorkReportOwnedByUser(report, user);
+                    const canModifyReport = !isReadOnly && (normalizedRole !== 'TECNICO' || isWorkReportOwnedByUser(report, user));
                     return (
                     <tr key={report.id} style={{ background: '#f8fafc' }}>
                       <td />
@@ -1680,6 +2949,9 @@ const handleDeleteReport = async (reportId) => {
                                 Aviso sugerido: {report.maintenanceSuggestion.noticeCategory || report.maintenanceSuggestion.label}
                               </div>
                             )}
+                            <div style={{ marginTop: '.3rem', color: hasRequiredWorkReportEvidence(report) ? '#166534' : '#991b1b', fontSize: '.85rem', fontWeight: 700 }}>
+                              Evidencia fotografica: {hasRequiredWorkReportEvidence(report) ? 'ANTES y DESPUES completas' : 'pendiente antes/despues'}
+                            </div>
                             {reportConsistency.hasInconsistency && (
                               <div style={{ marginTop: '.35rem', color: '#991b1b', fontSize: '.85rem' }}>
                                 Inconsistencia de fechas. {reportConsistency.reason}
@@ -1689,8 +2961,8 @@ const handleDeleteReport = async (reportId) => {
                           <div style={{ display: 'flex', gap: '.4rem' }}>
                             {!reportLocked && canModifyReport && (
                               <>
-                                <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleEditReport(item.id, report.id)}>Editar</button>
-                                <button type="button" className="btn btn-danger btn-sm" onClick={() => handleDeleteReport(report.id)}>Eliminar</button>
+                                <button type="button" className="btn btn-secondary btn-sm" disabled={selectedAlertLockedByOthers} onClick={() => handleEditReport(item.id, report.id)}>Editar</button>
+                                <button type="button" className="btn btn-danger btn-sm" disabled={selectedAlertLockedByOthers} onClick={() => handleDeleteReport(report.id)}>Eliminar</button>
                               </>
                             )}
                             {!reportLocked && !canModifyReport && (
@@ -1711,7 +2983,7 @@ const handleDeleteReport = async (reportId) => {
                 </React.Fragment>
               );
             })}
-            {!filteredNotifications.length && (
+            {!notificationTableRows.length && (
               <tr>
                 <td colSpan={16} style={{ textAlign: 'center', padding: '1rem', color: '#6b7280', border: '1px solid #e5e7eb' }}>
                   No hay notificaciones que coincidan con los filtros.
@@ -1728,9 +3000,11 @@ const handleDeleteReport = async (reportId) => {
           rrhhItems={rrhhItems}
           materialsCatalog={materialsCatalog}
           initialReport={editingReport}
-          onClose={() => {
+          canCreateServiceReport={canCreateServiceReports}
+          onClose={async () => {
             setShowRegisterModal(false);
             setEditingReportId(null);
+            await releaseSelectedAlertLock(selectedAlert.id);
           }}
           onSave={saveWorkReport}
         />
@@ -1742,10 +3016,40 @@ const handleDeleteReport = async (reportId) => {
           rrhhItems={rrhhItems}
           materialsCatalog={materialsCatalog}
           reports={reportByAlert.get(String(selectedAlert.id)) || []}
-          onClose={() => setShowEditOtModal(false)}
+          onClose={async () => {
+            setShowEditOtModal(false);
+            await releaseSelectedAlertLock(selectedAlert.id);
+          }}
           onSave={handleSaveOtChanges}
+        />
+      )}
+
+      {showReprogramModal && selectedAlert && (
+        <ModalReprogramarOt
+          alert={selectedAlert}
+          onClose={async () => {
+            setShowReprogramModal(false);
+            await releaseSelectedAlertLock(selectedAlert.id);
+          }}
+          onSubmit={confirmReprogramOt}
+        />
+      )}
+
+      {showCloseModal && selectedAlert && (
+        <ModalCerrarOT
+          alert={selectedAlert}
+          reports={reportByAlert.get(String(selectedAlert.id)) || []}
+          initialAction={closeModalIntent}
+          onClose={async () => {
+            setCloseModalIntent('close');
+            setShowCloseModal(false);
+            await releaseSelectedAlertLock(selectedAlert.id);
+          }}
+          onReturnToLiberated={returnToLiberatedFromCloseModal}
+          onSubmit={confirmCloseOt}
         />
       )}
     </div>
   );
 }
+

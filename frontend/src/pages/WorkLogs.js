@@ -2,11 +2,19 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import { formatDateDisplay, formatDateTimeDisplay } from '../utils/dateFormat';
+import {
+  buildPersonAttendanceMetrics,
+  findPersonMetricsForUser,
+  normalizeAttendancePerson,
+  normalizeAttendanceRow,
+} from '../utils/attendanceMetrics';
 import { getWorkReportOwnerLabel, isWorkReportOwnedByUser } from '../utils/workReportOwnership';
 
 const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
 const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
 const OT_WORK_REPORTS_KEY = SHARED_DOCUMENT_KEYS.otWorkReports;
+const RRHH_KEY = SHARED_DOCUMENT_KEYS.rrhh;
+const ATTENDANCE_KEY = SHARED_DOCUMENT_KEYS.rrhhAttendance;
 
 const getWorkDate = (report) => String(
   report?.fechaInicio
@@ -30,6 +38,8 @@ export default function WorkLogs({ user }) {
   const [alerts, setAlerts] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
   const [workReports, setWorkReports] = useState([]);
+  const [rrhhRows, setRrhhRows] = useState([]);
+  const [attendanceRows, setAttendanceRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);
   const [showCoworkers, setShowCoworkers] = useState(false);
@@ -42,15 +52,19 @@ export default function WorkLogs({ user }) {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [alertsData, historyData, reportsData] = await Promise.all([
+        const [alertsData, historyData, reportsData, rrhhData, attendanceData] = await Promise.all([
           loadSharedDocument(OT_ALERTS_KEY, []),
           loadSharedDocument(OT_HISTORY_KEY, []),
           loadSharedDocument(OT_WORK_REPORTS_KEY, []),
+          loadSharedDocument(RRHH_KEY, []),
+          loadSharedDocument(ATTENDANCE_KEY, []),
         ]);
         if (!active) return;
         setAlerts(Array.isArray(alertsData) ? alertsData : []);
         setHistoryRows(Array.isArray(historyData) ? historyData : []);
         setWorkReports(Array.isArray(reportsData) ? reportsData : []);
+        setRrhhRows((Array.isArray(rrhhData) ? rrhhData : []).map(normalizeAttendancePerson));
+        setAttendanceRows((Array.isArray(attendanceData) ? attendanceData : []).map(normalizeAttendanceRow));
       } catch (error) {
         console.error('Error cargando registros de trabajo:', error);
       } finally {
@@ -125,6 +139,27 @@ export default function WorkLogs({ user }) {
     };
   }, [visibleRows]);
 
+  const attendanceMetricsMap = useMemo(
+    () => buildPersonAttendanceMetrics({ people: rrhhRows, attendance: attendanceRows, workReports }),
+    [rrhhRows, attendanceRows, workReports],
+  );
+
+  const personalPerformance = useMemo(() => {
+    const metrics = findPersonMetricsForUser(attendanceMetricsMap, user);
+    if (!metrics) return null;
+
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const currentMonthKey = todayKey.slice(0, 7);
+    const daily = metrics.daily.find((item) => item.date === todayKey) || metrics.daily[0] || null;
+    const monthly = metrics.monthly.find((item) => item.monthKey === currentMonthKey) || metrics.monthly[0] || null;
+
+    return {
+      person: metrics.person,
+      daily,
+      monthly,
+    };
+  }, [attendanceMetricsMap, user]);
+
   const groupedRows = useMemo(() => {
     const grouped = {};
     visibleRows.forEach((item) => {
@@ -169,6 +204,103 @@ export default function WorkLogs({ user }) {
       <p style={{ color: '#6b7280', marginBottom: '1.5rem' }}>
         Aqui puedes revisar las notificaciones de trabajo que registraste y, si lo necesitas, consultar en modo solo lectura lo cargado por tus companeros.
       </p>
+
+      {personalPerformance ? (
+        <div
+          className="card"
+          style={{
+            marginBottom: '1.5rem',
+            background: personalPerformance.daily?.hasInconsistency
+              ? 'linear-gradient(135deg, #fff7f7 0%, #fff 100%)'
+              : 'linear-gradient(135deg, #eff6ff 0%, #fff 100%)',
+            border: personalPerformance.daily?.hasInconsistency ? '1px solid #fecaca' : '1px solid #bfdbfe',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div>
+              <h2 className="card-title" style={{ marginBottom: '.35rem' }}>Mi rendimiento real</h2>
+              <p style={{ color: '#475569', margin: 0, lineHeight: 1.7 }}>
+                Tus horas reales se calculan desde cada notificacion de trabajo. La meta del 85% toma como base las horas asistidas del dia; si superas tu horario RRHH, se marca como horas extra para revision.
+              </p>
+            </div>
+            <div style={{ color: '#334155', fontSize: '.9rem' }}>
+              {personalPerformance.person.codigo} · {personalPerformance.person.nombres_apellidos}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.85rem', marginTop: '1rem' }}>
+            <div style={{ padding: '.9rem 1rem', borderRadius: '.9rem', background: '#fff', border: '1px solid #dbeafe' }}>
+              <div style={{ color: '#64748b', fontSize: '.82rem', marginBottom: '.3rem' }}>
+                {personalPerformance.daily?.date ? `Diario (${formatDateDisplay(personalPerformance.daily.date)})` : 'Diario'}
+              </div>
+              {personalPerformance.daily ? (
+                <>
+                  <div style={{ fontSize: '1.45rem', fontWeight: 800, color: '#2563eb', marginBottom: '.35rem' }}>
+                    {personalPerformance.daily.actualHours.toFixed(2)} h
+                  </div>
+                  <div style={{ color: '#475569', fontSize: '.9rem', lineHeight: 1.6 }}>
+                    Meta 85%: <strong>{personalPerformance.daily.target85Hours.toFixed(2)} h</strong><br />
+                    Utilizacion: <strong>{personalPerformance.daily.utilizationPct.toFixed(2)}%</strong><br />
+                    Estado: <strong>{personalPerformance.daily.utilizationStatus}</strong>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: '#6b7280', lineHeight: 1.6 }}>
+                  Aun no tienes horas reales o asistencia vinculada para el dia actual.
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: '.9rem 1rem', borderRadius: '.9rem', background: '#fff', border: '1px solid #dbeafe' }}>
+              <div style={{ color: '#64748b', fontSize: '.82rem', marginBottom: '.3rem' }}>
+                {personalPerformance.monthly?.monthKey ? `Mensual (${personalPerformance.monthly.monthKey})` : 'Mensual'}
+              </div>
+              {personalPerformance.monthly ? (
+                <>
+                  <div style={{ fontSize: '1.45rem', fontWeight: 800, color: personalPerformance.monthly.status === 'Cumple 85%' ? '#059669' : personalPerformance.monthly.status === 'Horas extra' ? '#b91c1c' : '#d97706', marginBottom: '.35rem' }}>
+                    {personalPerformance.monthly.utilizationPct.toFixed(2)}%
+                  </div>
+                  <div style={{ color: '#475569', fontSize: '.9rem', lineHeight: 1.6 }}>
+                    Horas reales: <strong>{personalPerformance.monthly.actualHours.toFixed(2)} h</strong><br />
+                    Meta 85%: <strong>{personalPerformance.monthly.target85Hours.toFixed(2)} h</strong><br />
+                    Estado: <strong>{personalPerformance.monthly.status}</strong>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: '#6b7280', lineHeight: 1.6 }}>
+                  Aun no hay suficiente informacion mensual para este usuario.
+                </div>
+              )}
+            </div>
+
+            <div style={{ padding: '.9rem 1rem', borderRadius: '.9rem', background: '#fff', border: personalPerformance.daily?.hasInconsistency ? '1px solid #fecaca' : '1px solid #dbeafe' }}>
+              <div style={{ color: '#64748b', fontSize: '.82rem', marginBottom: '.3rem' }}>Control de asistencia</div>
+              <div style={{ fontSize: '1.45rem', fontWeight: 800, color: personalPerformance.daily?.hasInconsistency ? '#b91c1c' : '#0f766e', marginBottom: '.35rem' }}>
+                {personalPerformance.daily ? `${personalPerformance.daily.attendanceHours.toFixed(2)} h` : 'N.A.'}
+              </div>
+              <div style={{ color: '#475569', fontSize: '.9rem', lineHeight: 1.6 }}>
+                Horas asistidas del dia<br />
+                Horario base: <strong>{personalPerformance.daily?.capacityHours?.toFixed(2) || '0.00'} h</strong><br />
+                Horas extra: <strong>{personalPerformance.daily?.overtimeHours?.toFixed(2) || '0.00'} h</strong><br />
+                Inconsistencias del mes: <strong>{personalPerformance.monthly?.inconsistentDays || 0}</strong>
+              </div>
+            </div>
+          </div>
+
+          {personalPerformance.daily?.hasInconsistency && (
+            <div style={{ marginTop: '1rem', padding: '.9rem 1rem', borderRadius: '.85rem', border: '1px solid #fecaca', background: '#fff1f2', color: '#b91c1c', lineHeight: 1.65, fontWeight: 700 }}>
+              Se detecto inconsistencia en tus horas: las notificaciones reales ya superan tu disponibilidad diaria o la asistencia marcada. El planner o el ingeniero deben revisar la asistencia de ese dia.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="card" style={{ marginBottom: '1.5rem', border: '1px solid #e5e7eb', background: '#fff' }}>
+          <h2 className="card-title" style={{ marginBottom: '.35rem' }}>Mi rendimiento real</h2>
+          <p style={{ color: '#6b7280', marginBottom: 0, lineHeight: 1.7 }}>
+            Aun no se pudo vincular este usuario con un registro de RRHH. Cuando planner o ingeniero registren tu codigo o nombre correctamente, aqui podras ver tu cumplimiento diario, mensual y las horas extra reales.
+          </p>
+        </div>
+      )}
 
       <div className="stats-grid" style={{ marginBottom: '2rem' }}>
         <div className="stat-card">

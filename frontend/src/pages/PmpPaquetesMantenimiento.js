@@ -1,5 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
+import ConfigurableSelectField from '../components/ConfigurableSelectField';
+import TableFilterRow from '../components/TableFilterRow';
+import useConfigurableLists from '../hooks/useConfigurableLists';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { isReadOnlyRole } from '../utils/roleAccess';
+import { filterRowsByColumns } from '../utils/tableFilters';
+import {
+  firstValidationError,
+  getBlockedTextMessage,
+  hasBlockedTextChars,
+  toNonNegativeNumber,
+  validateNonNegativeFields,
+  validateRequiredFields,
+  validateTextFields,
+} from '../utils/formValidation';
 
 const PACKAGES_KEY = SHARED_DOCUMENT_KEYS.maintenancePackages;
 
@@ -22,6 +39,13 @@ const EMPTY_FORM = {
 };
 
 export default function PmpPaquetesMantenimiento() {
+  const { user } = useAuth();
+  const {
+    getOptions,
+    addOptionQuickly,
+    canManage: canManageConfigurableLists,
+  } = useConfigurableLists();
+  const isReadOnly = isReadOnlyRole(user);
   const [items, setItems] = useState(INITIAL_PACKAGES);
   const [selectedId, setSelectedId] = useState(INITIAL_PACKAGES[0]?.id ?? null);
   const [editingId, setEditingId] = useState(null);
@@ -44,6 +68,7 @@ export default function PmpPaquetesMantenimiento() {
   }, []);
 
   const persist = async (next) => {
+    if (isReadOnly) return;
     setItems(next);
     await saveSharedDocument(PACKAGES_KEY, next);
   };
@@ -52,10 +77,37 @@ export default function PmpPaquetesMantenimiento() {
     if (filterVc === 'TODOS') return items;
     return items.filter((item) => item.vc === filterVc);
   }, [items, filterVc]);
+  const packageTableColumns = useMemo(() => ([
+    { id: 'codigo', getValue: (item) => item.codigo },
+    { id: 'vc', getValue: (item) => item.vc },
+    { id: 'nombre', getValue: (item) => item.nombre },
+    { id: 'tiempo_min', getValue: (item) => item.tiempo_min },
+    { id: 'actividades', getValue: (item) => item.actividades?.length || 0 },
+  ]), []);
+  const { filters: packageFilters, setFilter: setPackageFilter } = useTableColumnFilters(packageTableColumns);
+  const visibleRows = useMemo(
+    () => filterRowsByColumns(filtered, packageTableColumns, packageFilters),
+    [filtered, packageTableColumns, packageFilters],
+  );
+  const activityTableColumns = useMemo(() => ([
+    { id: 'item', getValue: (row) => row.index + 1 },
+    { id: 'descripcion', getValue: (row) => row.activity },
+    { id: 'accion', filterable: false },
+  ]), []);
+  const { filters: activityFilters, setFilter: setActivityFilter } = useTableColumnFilters(activityTableColumns);
+  const visibleActivities = useMemo(
+    () => filterRowsByColumns(activities.map((activity, index) => ({ activity, index })), activityTableColumns, activityFilters),
+    [activities, activityTableColumns, activityFilters],
+  );
+  const vcOptions = useMemo(
+    () => getOptions('variaciones_control', ['V.C - DIA', 'V.C - HRA', 'V.C - KM']),
+    [getOptions],
+  );
 
   const selected = items.find((item) => item.id === selectedId) || null;
 
   const handleNew = () => {
+    if (isReadOnly) return;
     setEditingId(null);
     setForm(EMPTY_FORM);
     setActivities([]);
@@ -63,6 +115,7 @@ export default function PmpPaquetesMantenimiento() {
   };
 
   const handleEdit = () => {
+    if (isReadOnly) return;
     if (!selected) return;
     setEditingId(selected.id);
     setForm({
@@ -76,6 +129,7 @@ export default function PmpPaquetesMantenimiento() {
   };
 
   const handleDelete = async () => {
+    if (isReadOnly) return;
     if (!selected) return;
     if (!window.confirm(`¿Eliminar paquete ${selected.nombre}?`)) return;
     const next = items.filter((item) => item.id !== selected.id);
@@ -85,18 +139,44 @@ export default function PmpPaquetesMantenimiento() {
   };
 
   const addActivity = () => {
+    if (isReadOnly) return;
     const text = activityInput.trim();
     if (!text) return;
+    if (hasBlockedTextChars(text)) {
+      window.alert(getBlockedTextMessage('Actividad'));
+      return;
+    }
     setActivities((prev) => [...prev, text]);
     setActivityInput('');
   };
 
   const removeActivity = (index) => {
+    if (isReadOnly) return;
     setActivities((prev) => prev.filter((_, idx) => idx !== index));
   };
 
   const handleSave = async () => {
-    if (!form.codigo || !form.nombre || !activities.length) {
+    if (isReadOnly) return;
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Codigo', form.codigo],
+        ['Nombre', form.nombre],
+      ]),
+      validateTextFields([
+        ['Codigo', form.codigo],
+        ['V.C', form.vc],
+        ['Nombre', form.nombre],
+        ...activities.map((activity, index) => [`Actividad ${index + 1}`, activity]),
+      ]),
+      validateNonNegativeFields([
+        ['Tiempo', form.tiempo_min],
+      ]),
+    );
+    if (validationError) {
+      window.alert(validationError);
+      return;
+    }
+    if (!activities.length) {
       window.alert('Completa código, nombre y agrega al menos una actividad.');
       return;
     }
@@ -105,7 +185,7 @@ export default function PmpPaquetesMantenimiento() {
       codigo: form.codigo.trim().toUpperCase(),
       vc: form.vc,
       nombre: form.nombre.trim(),
-      tiempo_min: Number(form.tiempo_min) || 0,
+      tiempo_min: toNonNegativeNumber(form.tiempo_min),
       actividades: activities,
     };
 
@@ -133,6 +213,9 @@ export default function PmpPaquetesMantenimiento() {
 
   return (
     <div>
+      {isReadOnly && (
+        <ReadOnlyAccessNotice message="Puedes revisar los paquetes PM y sus actividades, pero este perfil no puede crear, editar ni eliminar paquetes." />
+      )}
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.35rem' }}>Control de paquetes de mantenimiento</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Crea, modifica o elimina paquetes PM (conjunto de actividades).</p>
 
@@ -153,9 +236,10 @@ export default function PmpPaquetesMantenimiento() {
               <tr style={{ background: '#f3f4f6' }}>
                 {['Código', 'V.C', 'Nombre del paquete PM', 'Tiempo (min.)', 'Actividades'].map((h) => <th key={h} style={{ border: '1px solid #e5e7eb', padding: '.5rem', textAlign: 'left' }}>{h}</th>)}
               </tr>
+              <TableFilterRow columns={packageTableColumns} rows={filtered} filters={packageFilters} onChange={setPackageFilter} />
             </thead>
             <tbody>
-              {filtered.map((item) => (
+              {visibleRows.map((item) => (
                 <tr key={item.id} onClick={() => setSelectedId(item.id)} style={{ cursor: 'pointer', background: selectedId === item.id ? '#eff6ff' : '#fff' }}>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.codigo}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.vc}</td>
@@ -164,6 +248,13 @@ export default function PmpPaquetesMantenimiento() {
                   <td style={{ border: '1px solid #e5e7eb', padding: '.45rem' }}>{item.actividades?.length || 0}</td>
                 </tr>
               ))}
+              {!visibleRows.length && (
+                <tr>
+                  <td colSpan={5} style={{ border: '1px solid #e5e7eb', padding: '.8rem', textAlign: 'center', color: '#6b7280' }}>
+                    No hay paquetes que coincidan con los filtros aplicados.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -172,7 +263,21 @@ export default function PmpPaquetesMantenimiento() {
           <h3 className="card-title">Resultados</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: '.7rem' }}>
             <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código *</label><input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
-            <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">V.C</label><select className="form-select" value={form.vc} onChange={(e) => setForm({ ...form, vc: e.target.value })}><option>V.C - DÍA</option><option>V.C - HRA</option><option>V.C - KM</option></select></div>
+            <ConfigurableSelectField
+              label="V.C"
+              manageLabel="V.C"
+              value={form.vc}
+              options={vcOptions}
+              onChange={(e) => setForm({ ...form, vc: e.target.value })}
+              onQuickAdd={async () => {
+                const result = await addOptionQuickly('variaciones_control', 'V.C');
+                if (result?.added) {
+                  setForm((prev) => ({ ...prev, vc: result.value }));
+                }
+              }}
+              canManageOptions={canManageConfigurableLists}
+              placeholder="Selecciona V.C"
+            />
             <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Nombre *</label><input className="form-input" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} /></div>
             <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Tiempo (min.)</label><input type="number" className="form-input" value={form.tiempo_min} onChange={(e) => setForm({ ...form, tiempo_min: e.target.value })} /></div>
           </div>
@@ -181,7 +286,7 @@ export default function PmpPaquetesMantenimiento() {
             <label className="form-label">Actividad</label>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.6rem' }}>
               <input className="form-input" value={activityInput} onChange={(e) => setActivityInput(e.target.value)} placeholder="Escribe una actividad" />
-              <button type="button" className="btn btn-primary" onClick={addActivity}>Agregar</button>
+              {!isReadOnly && <button type="button" className="btn btn-primary" onClick={addActivity}>Agregar</button>}
             </div>
           </div>
 
@@ -193,26 +298,31 @@ export default function PmpPaquetesMantenimiento() {
                   <th style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'left' }}>Descripción de las actividades</th>
                   <th style={{ border: '1px solid #e5e7eb', padding: '.4rem', width: '90px' }}>Acción</th>
                 </tr>
+                <TableFilterRow columns={activityTableColumns} rows={activities.map((activity, index) => ({ activity, index }))} filters={activityFilters} onChange={setActivityFilter} />
               </thead>
               <tbody>
-                {activities.map((activity, idx) => (
-                  <tr key={`${activity}-${idx}`}>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>{idx + 1}</td>
+                {visibleActivities.map(({ activity, index }) => (
+                  <tr key={`${activity}-${index}`}>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>{index + 1}</td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.4rem' }}>{activity}</td>
-                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}><button type="button" className="btn btn-danger btn-sm" onClick={() => removeActivity(idx)}>Quitar</button></td>
+                    <td style={{ border: '1px solid #e5e7eb', padding: '.4rem', textAlign: 'center' }}>
+                      {!isReadOnly && <button type="button" className="btn btn-danger btn-sm" onClick={() => removeActivity(index)}>Quitar</button>}
+                    </td>
                   </tr>
                 ))}
-                {!activities.length && <tr><td colSpan={3} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'center', color: '#6b7280' }}>Sin actividades agregadas.</td></tr>}
+                {!visibleActivities.length && <tr><td colSpan={3} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'center', color: '#6b7280' }}>Sin actividades que coincidan con los filtros.</td></tr>}
               </tbody>
             </table>
           </div>
 
-          <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap', marginTop: '1rem' }}>
-            <button type="button" className="btn btn-primary" onClick={handleNew}>Nuevo</button>
-            <button type="button" className="btn btn-secondary" onClick={handleEdit} disabled={!selected}>Editar</button>
-            <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!selected}>Eliminar</button>
-            <button type="button" className="btn btn-success" onClick={handleSave}>{editingId ? 'Actualizar' : 'Registrar'}</button>
-          </div>
+          {!isReadOnly && (
+            <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+              <button type="button" className="btn btn-primary" onClick={handleNew}>Nuevo</button>
+              <button type="button" className="btn btn-secondary" onClick={handleEdit} disabled={!selected}>Editar</button>
+              <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!selected}>Eliminar</button>
+              <button type="button" className="btn btn-success" onClick={handleSave}>{editingId ? 'Actualizar' : 'Registrar'}</button>
+            </div>
+          )}
         </div>
       </div>
     </div>

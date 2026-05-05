@@ -1,4 +1,8 @@
 import { formatDateDisplay, formatDateTimeDisplay } from './dateFormat';
+import {
+  getNoticeProblemPhotos,
+  getWorkReportEvidencePhotos,
+} from './workReportEvidence';
 
 export const WORK_OBSERVATION_PRESETS = [
   {
@@ -38,8 +42,66 @@ export const WORK_OBSERVATION_PRESETS = [
   },
 ];
 
+export const NOTICE_DETECTION_OPTIONS = [
+  'Visual',
+  'Olfativa',
+  'Al tacto',
+  'Ruido o vibracion',
+  'Parada de proceso',
+  'Atoro de equipo',
+];
+
 function safeText(value) {
   return String(value || '').trim();
+}
+
+function normalizeOwnerText(value) {
+  return safeText(value).toLowerCase();
+}
+
+export function calculateNoticeAssessment({
+  canContinueWorking = true,
+  detectionMethod = '',
+  hasProductionImpact = false,
+  hasSafetyRisk = false,
+  requiresStop = false,
+} = {}) {
+  let score = 0;
+
+  if (!canContinueWorking) score += 3;
+  if (hasProductionImpact) score += 2;
+  if (hasSafetyRisk) score += 3;
+  if (requiresStop) score += 3;
+
+  const normalizedDetection = safeText(detectionMethod).toLowerCase();
+  if (normalizedDetection.includes('parada')) score += 3;
+  else if (normalizedDetection.includes('atoro')) score += 3;
+  else if (normalizedDetection.includes('ruido') || normalizedDetection.includes('vibracion')) score += 2;
+  else if (normalizedDetection) score += 1;
+
+  let criticality = 'Baja';
+  if (score >= 10) criticality = 'Critica';
+  else if (score >= 7) criticality = 'Alta';
+  else if (score >= 4) criticality = 'Media';
+
+  let suggestedType = 'Correctivo';
+  if (requiresStop || !canContinueWorking) suggestedType = 'Correctivo urgente';
+  else if (hasProductionImpact) suggestedType = 'Correctivo';
+  else if (normalizedDetection.includes('visual')) suggestedType = 'Inspeccion';
+
+  return {
+    score,
+    criticality,
+    priority: criticality === 'Critica' ? 'Critica' : criticality === 'Alta' ? 'Alta' : criticality === 'Media' ? 'Media' : 'Baja',
+    suggestedType,
+    summary: [
+      !canContinueWorking ? 'No puede seguir trabajando con la averia.' : 'Aun puede seguir trabajando con la averia.',
+      hasProductionImpact ? 'Existe impacto en produccion.' : 'No se reporta impacto directo en produccion.',
+      hasSafetyRisk ? 'Existe riesgo de seguridad.' : 'No se reporta riesgo de seguridad inmediato.',
+      requiresStop ? 'Requiere parada o intervencion pronta.' : 'No requiere parada inmediata.',
+      normalizedDetection ? `Deteccion: ${detectionMethod}.` : '',
+    ].filter(Boolean).join(' '),
+  };
 }
 
 export function getObservationPreset(key) {
@@ -79,6 +141,8 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
 
     const sequence = nextSequence;
     nextSequence += 1;
+    const evidencePhotos = getWorkReportEvidencePhotos(report);
+    const problemPhotos = [evidencePhotos.after, evidencePhotos.before].filter(Boolean);
 
     acc.push({
       id: `notice_${Date.now()}_${index + 1}_${sequence}`,
@@ -97,12 +161,30 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
       detalle: safeText(suggestion.detail),
       sugerencia_texto: safeText(suggestion.text || report?.observaciones),
       fecha_aviso: report?.fechaFin || report?.fechaInicio || new Date().toISOString().slice(0, 10),
+      hora_evidencia: safeText(report?.horaFin || report?.horaInicio),
       rango_notificacion: `${formatDateTimeDisplay(report?.fechaInicio, report?.horaInicio, 'N.A.')} - ${formatDateTimeDisplay(report?.fechaFin, report?.horaFin, 'N.A.')}`,
       created_at: new Date().toISOString(),
       created_by: currentUserLabel,
+      created_by_user_id: '',
+      created_by_username: '',
+      created_by_name: currentUserLabel,
       accepted_ot_id: '',
       accepted_ot_number: '',
+      accepted_by_name: '',
+      accepted_by_role: '',
+      rejected_by_name: '',
+      rejected_by_role: '',
       rejection_reason: '',
+      can_continue_working: true,
+      detection_method: '',
+      has_production_impact: false,
+      has_safety_risk: false,
+      requires_stop: false,
+      criticidad_aviso: suggestion.noticeCategory === 'Servicio de terceros' ? 'Alta' : 'Media',
+      prioridad_sugerida: suggestion.noticeCategory === 'Servicio de terceros' ? 'Alta' : 'Media',
+      tipo_mantto_sugerido: suggestion.noticeCategory === 'Servicio de terceros' ? 'Correctivo urgente' : 'Correctivo',
+      photos: problemPhotos,
+      problem_photos: problemPhotos,
     });
 
     return acc;
@@ -110,13 +192,15 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
 }
 
 export function buildPendingOtFromNotice(notice) {
+  const priority = safeText(notice.prioridad_sugerida) || safeText(notice.criticidad_aviso) || 'Media';
+  const type = safeText(notice.tipo_mantto_sugerido) || 'Correctivo';
   return {
     id: `notice_ot_${Date.now()}_${notice.id}`,
     fecha_ejecutar: notice.fecha_aviso || new Date().toISOString().slice(0, 10),
     codigo: notice.codigo || '',
     descripcion: notice.descripcion || '',
     area_trabajo: notice.area_trabajo || 'N.A.',
-    prioridad: 'Media',
+    prioridad: priority,
     actividad: notice.detalle
       ? `${notice.categoria}: ${notice.detalle}`
       : `${notice.categoria}: ${notice.sugerencia_texto}`,
@@ -124,7 +208,7 @@ export function buildPendingOtFromNotice(notice) {
     status_ot: 'Pendiente',
     ot_numero: '',
     fecha_ejecucion: '',
-    tipo_mantto: 'Correctivo',
+    tipo_mantto: type,
     personal_mantenimiento: '',
     materiales: '',
     personal_detalle: [],
@@ -134,12 +218,46 @@ export function buildPendingOtFromNotice(notice) {
     origen_programacion: 'AVISO',
     aviso_id: notice.id,
     aviso_codigo: notice.aviso_codigo,
+    fecha_emision_aviso: notice.fecha_aviso || notice.created_at || '',
+    hora_emision_aviso: notice.hora_evidencia || '',
+    aviso_creado_at: notice.created_at || '',
+    fecha_aceptacion_aviso: notice.accepted_at || '',
+    aviso_aceptado_por: notice.accepted_by_name || '',
     servicio: notice.detalle || notice.sugerencia_texto || '',
     vc: 'V.C - DIA',
     tiempo_min: 0,
     paquete_pm_id: '',
     paquete_pm_nombre: '',
+    criticidad_aviso: notice.criticidad_aviso || '',
+    prioridad_sugerida: priority,
+    tipo_mantto_sugerido: type,
+    requiere_parada: Boolean(notice.requires_stop),
+    riesgo_seguridad: Boolean(notice.has_safety_risk),
+    impacto_produccion: Boolean(notice.has_production_impact),
+    aviso_origen: {
+      ...notice,
+      photos: getNoticeProblemPhotos(notice),
+      problem_photos: getNoticeProblemPhotos(notice),
+    },
   };
+}
+
+export function isMaintenanceNoticeOwnedByUser(notice, user) {
+  if (!notice || !user) return false;
+
+  const noticeUserId = safeText(notice.created_by_user_id);
+  const userId = safeText(user.id);
+  if (noticeUserId && userId && noticeUserId === userId) return true;
+
+  const noticeUsername = normalizeOwnerText(notice.created_by_username);
+  const username = normalizeOwnerText(user.username);
+  if (noticeUsername && username && noticeUsername === username) return true;
+
+  const noticeName = normalizeOwnerText(notice.created_by_name);
+  const fullName = normalizeOwnerText(user.full_name);
+  if (noticeName && fullName && noticeName === fullName) return true;
+
+  return false;
 }
 
 export function summarizeNoticeForDisplay(notice) {
