@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import os
+import secrets
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from models import Base
@@ -27,14 +28,51 @@ def _normalize_database_url(raw_url: str) -> str:
 
 DB_URL = _normalize_database_url(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///db.sqlite3"))
 IS_SQLITE = DB_URL.startswith("sqlite")
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+IS_PRODUCTION = APP_ENV in {"prod", "production"}
+ALLOW_SQLITE_IN_PRODUCTION = os.getenv("ALLOW_SQLITE_IN_PRODUCTION") == "1"
 
-engine = create_async_engine(DB_URL, echo=False, pool_pre_ping=not IS_SQLITE)
+if IS_PRODUCTION and IS_SQLITE and not ALLOW_SQLITE_IN_PRODUCTION:
+    raise RuntimeError(
+        "SQLite no esta permitido en produccion. Configura DATABASE_URL hacia PostgreSQL "
+        "o define ALLOW_SQLITE_IN_PRODUCTION=1 solo si sabes exactamente lo que haces."
+    )
+
+engine_kwargs = {
+    "echo": False,
+    "pool_pre_ping": not IS_SQLITE,
+}
+if not IS_SQLITE:
+    engine_kwargs.update({
+        "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
+        "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
+        "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "1800")),
+    })
+
+engine = create_async_engine(DB_URL, **engine_kwargs)
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+
+if IS_SQLITE:
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON;")
+        cursor.execute("PRAGMA busy_timeout=5000;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
+        cursor.execute("PRAGMA temp_store=MEMORY;")
+        cursor.close()
 
 
 async def init_db() -> None:
     async with engine.begin() as conn:
         if IS_SQLITE:
+            if os.getenv("SQLITE_SIMULATION_NO_JOURNAL") == "1":
+                await conn.exec_driver_sql("PRAGMA journal_mode=OFF;")
+                await conn.exec_driver_sql("PRAGMA synchronous=OFF;")
+            else:
+                await conn.exec_driver_sql("PRAGMA journal_mode=WAL;")
+                await conn.exec_driver_sql("PRAGMA busy_timeout=5000;")
             await conn.exec_driver_sql("PRAGMA foreign_keys=OFF;")
             await _migrate_users_table_sqlite(conn)
             await conn.run_sync(Base.metadata.create_all)
@@ -44,6 +82,7 @@ async def init_db() -> None:
             # For a new managed Postgres instance we can bootstrap directly
             # from the current SQLAlchemy models.
             await conn.run_sync(Base.metadata.create_all)
+            await _migrate_settings_value_postgres(conn)
 
     await _seed_admin()
 
@@ -60,6 +99,11 @@ async def _add_legacy_sqlite_columns(conn):
     await add_col("work_logs", "user_name", "VARCHAR(128) DEFAULT ''")
     await add_col("users", "secret_question", "VARCHAR(256)")
     await add_col("users", "secret_answer_hash", "VARCHAR(256)")
+
+
+async def _migrate_settings_value_postgres(conn):
+    """Allow shared application documents to grow beyond small VARCHAR limits."""
+    await conn.exec_driver_sql("ALTER TABLE settings ALTER COLUMN value TYPE TEXT;")
 
 
 async def _migrate_users_table_sqlite(conn):
@@ -149,14 +193,25 @@ async def _seed_admin() -> None:
     async with SessionLocal() as session:
         count = (await session.execute(select(func.count(User.id)))).scalar()
         if count == 0:
+            initial_username = os.getenv("INITIAL_ADMIN_USERNAME", "admin").strip() or "admin"
+            initial_password = os.getenv("INITIAL_ADMIN_PASSWORD", "").strip()
+            production_env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).lower() in {"prod", "production"}
+            allow_insecure_default = os.getenv("ALLOW_INSECURE_DEFAULT_ADMIN") == "1" or (IS_SQLITE and not production_env)
+            if not initial_password and not allow_insecure_default:
+                print("⚠️  Base vacia sin INITIAL_ADMIN_PASSWORD; no se creo admin por seguridad.")
+                return
+
+            password = initial_password or f"Local{secrets.token_urlsafe(9)}1!"
             admin = User(
-                username="admin",
+                username=initial_username,
                 full_name="Administrador",
-                password_hash=hash_password("Admin1234!"),
+                password_hash=hash_password(password),
                 role=Role.INGENIERO.value,
                 account_status=AccountStatus.ACTIVE.value,
             )
             session.add(admin)
             await session.commit()
-            print("✅ Usuario admin creado  ->  admin / Admin1234!")
-            print("⚠️  Cambia la contraseña inmediatamente.")
+            print(f"✅ Usuario admin creado  ->  {initial_username}")
+            if not initial_password:
+                print(f"⚠️  Contraseña local temporal para {initial_username}: {password}")
+                print("⚠️  Cambiala inmediatamente y no la reutilices en produccion.")

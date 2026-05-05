@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { parseMaintenancePackagePdf } from '../services/api';
 
 const BASE_EQUIPMENT_COLUMNS = [
   { key: 'codigo', label: 'Codigo' },
@@ -73,6 +74,8 @@ const USER_ROLE_MAP = {
   tecnico_electrico: 'TECNICO',
   mecanico: 'TECNICO',
   electrico: 'TECNICO',
+  supervisor: 'SUPERVISOR',
+  operador: 'OPERADOR',
 };
 
 const PERSON_ROLE_LABELS = {
@@ -80,6 +83,8 @@ const PERSON_ROLE_LABELS = {
   PLANNER: 'Planner',
   ENCARGADO: 'Encargado',
   TECNICO: 'Tecnico',
+  SUPERVISOR: 'Supervisor',
+  OPERADOR: 'Operador',
 };
 
 function safeString(value) {
@@ -429,6 +434,10 @@ export function mapMaintenancePlanRows(rows, equipmentItems = []) {
       frecuencia: inferFrequency(getRowValue(row, ['frecuencia', 'periodicidad'])),
       responsable: safeString(getRowValue(row, ['responsable', 'puesto_trabajo_resp'])) || 'Mecanico',
       fecha_inicio: parseSpreadsheetDate(getRowValue(row, ['fecha_inicio', 'fecha_programada', 'inicio'])) || new Date().toISOString().slice(0, 10),
+      dias_anticipacion_alerta: Math.max(
+        0,
+        toNumber(getRowValue(row, ['dias_anticipacion_alerta', 'alerta_previa_dias', 'aviso_dias', 'dias_alerta']), 0),
+      ),
       actividades: activities.join('\n'),
       paquete_id: safeString(getRowValue(row, ['paquete_id', 'paquete_codigo'])) || '',
     });
@@ -594,7 +603,7 @@ export function mapPackageRows(rows) {
   return { items, warnings };
 }
 
-export async function extractPdfText(file) {
+async function extractPdfTextClient(file) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const buffer = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({
@@ -627,11 +636,58 @@ export async function extractPdfText(file) {
   return pages.join('\n').trim();
 }
 
+export async function extractPdfText(file) {
+  let clientError = null;
+
+  try {
+    const clientText = await extractPdfTextClient(file);
+    if (safeString(clientText)) {
+      return clientText;
+    }
+  } catch (error) {
+    clientError = error;
+  }
+
+  try {
+    const response = await parseMaintenancePackagePdf(file);
+    const serverText = safeString(response?.text);
+    if (serverText) {
+      return serverText;
+    }
+  } catch (serverError) {
+    const baseMessage = clientError?.message || 'No se pudo leer el PDF desde el navegador ni desde el servidor.';
+    throw new Error(`${baseMessage}${serverError?.message ? ` ${serverError.message}` : ''}`.trim());
+  }
+
+  if (clientError) {
+    throw clientError;
+  }
+
+  throw new Error('No se pudo extraer texto del PDF.');
+}
+
 export function extractActivitiesFromPdfText(text) {
   const rawText = safeString(text)
     .replace(/\r/g, '\n')
     .replace(/\u2022/g, '\n')
     .replace(/[ \t]+/g, ' ');
+
+  const activityVerbPattern = 'revis(?:ion|ión)|inspe(?:ccion|cción)|verific(?:acion|ación)|limpi(?:eza|ar)|ajust(?:e|ar)|cambi(?:o|ar)|lubric(?:acion|ación|ar)|medir|comprob(?:acion|ación|ar)|calibr(?:acion|ación|ar)|apret(?:e|ar)|engras(?:e|ar)|reemplaz(?:o|ar)';
+
+  const numberedVerbActivities = Array.from(
+    rawText.matchAll(new RegExp(`(?:^|\\s)\\d+\\s+((?:${activityVerbPattern}).+?)(?=(?:\\s+\\d+\\s+(?:${activityVerbPattern}))|$)`, 'gi')),
+  )
+    .map((match) => safeString(match[1]).trim())
+    .filter((item) => item.length >= 8 && item.length <= 180);
+
+  const numberedActivities = Array.from(
+    rawText
+      .replace(/ITEM\s+TAREAS\s+A\s+REALIZAR/gi, ' ')
+      .matchAll(/(?:^|\s)(\d+)\s+(.+?)(?=(?:\s+\d+\s+)|$)/g),
+  )
+    .map((match) => safeString(match[2]).trim())
+    .filter((item) => item.length >= 8 && item.length <= 180)
+    .filter((item) => /inspe|revis|verific|limpi|ajust|cambi|lubric|medir|comprob|calibr|apret|engras|reemplaz/i.test(item));
 
   const lineCandidates = rawText
     .split('\n')
@@ -649,7 +705,7 @@ export function extractActivitiesFromPdfText(text) {
 
   const unique = [];
   const seen = new Set();
-  [...prioritized, ...lineCandidates, ...sentences].forEach((item) => {
+  [...numberedVerbActivities, ...numberedActivities, ...prioritized, ...lineCandidates, ...sentences].forEach((item) => {
     const key = normalizeKey(item);
     if (!key || seen.has(key)) return;
     if (/^(objetivo|alcance|frecuencia|responsable|codigo|descripcion|mantenimiento|checklist)$/i.test(item)) return;

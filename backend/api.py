@@ -5,15 +5,19 @@ FastAPI · SQLAlchemy async · JWT · RBAC · Registro con aprobación
 """
 import hashlib
 import asyncio
+import io
+import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import (
@@ -32,11 +36,17 @@ from models import (
     RefreshToken, Role, Setting, Task, TaskMember,
     TaskNote, TaskPart, TaskPhoto, TaskReschedule, TaskStatus, User, WorkLog,
 )
+from shared_document_validation import SharedDocumentValidationError, validate_shared_document_data
 
 import os
 import uuid
 import aiofiles
 from pathlib import Path
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover - installed in production via requirements
+    PdfReader = None
 
 try:
     import cloudinary
@@ -52,10 +62,13 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", "").strip() or None
+TRUSTED_HOSTS = [host.strip() for host in os.getenv("TRUSTED_HOSTS", "*").split(",") if host.strip()]
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
 UPLOAD_DIR.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip("/")
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower()
+WORK_NOTIFICATION_LOCK_TTL_SECONDS = max(int(os.getenv("WORK_NOTIFICATION_LOCK_TTL_SECONDS", "90")), 30)
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
@@ -92,7 +105,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS or ["*"])
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
+@app.get("/health")
+async def healthcheck():
+    return {
+        "status": "ok",
+        "app_env": APP_ENV,
+        "storage": "cloudinary" if CLOUDINARY_ENABLED else "local",
+    }
 # ╔═══════════════════════════════════════════════════════╗
 # ║            REAL-TIME PRESENCE (WebSocket)            ║
 # ╚═══════════════════════════════════════════════════════╝
@@ -132,20 +155,72 @@ class PresenceManager:
 presence = PresenceManager()
 
 
+class WorkNotificationPresenceManager:
+    """Tracks who is viewing or editing the same work notification/OT."""
+    def __init__(self):
+        # alert_id -> {user_id: {"name": str, "ws": WebSocket, "editing": bool}}
+        self._rooms: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+
+    async def join(self, alert_id: str, user_id: int, user_name: str, ws: WebSocket):
+        self._rooms[alert_id][user_id] = {"name": user_name, "ws": ws, "editing": False}
+        await self._broadcast(alert_id)
+
+    async def update_state(self, alert_id: str, user_id: int, editing: bool = False):
+        room = self._rooms.get(alert_id)
+        if not room or user_id not in room:
+            return
+        room[user_id]["editing"] = bool(editing)
+        await self._broadcast(alert_id)
+
+    async def leave(self, alert_id: str, user_id: int):
+        room = self._rooms.get(alert_id)
+        if not room:
+            return
+        room.pop(user_id, None)
+        if not room:
+            del self._rooms[alert_id]
+            return
+        await self._broadcast(alert_id)
+
+    async def _broadcast(self, alert_id: str):
+        room = self._rooms.get(alert_id, {})
+        participants = [
+            {"id": uid, "name": entry["name"], "editing": bool(entry.get("editing"))}
+            for uid, entry in room.items()
+        ]
+        msg = json.dumps({"type": "work_notification_presence", "participants": participants})
+        dead = []
+        for uid, entry in room.items():
+            try:
+                await entry["ws"].send_text(msg)
+            except Exception:
+                dead.append(uid)
+        for uid in dead:
+            room.pop(uid, None)
+        if not room and alert_id in self._rooms:
+            del self._rooms[alert_id]
+
+
+work_notification_presence = WorkNotificationPresenceManager()
+
+
 @app.websocket("/ws/tasks/{task_id}")
 async def task_presence(task_id: int, websocket: WebSocket, token: str = "", db: AsyncSession = Depends(get_db)):
-    await websocket.accept()
-    user_id, user_name = 0, "Desconocido"
     try:
         payload = decode_access_token(token)
-        if payload:
-            user_id = int(payload.get("sub", 0))
-            # Get full_name from DB
-            u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-            user_name = u.full_name if u else payload.get("username", "Desconocido")
+        user_id = int(payload.get("sub", 0))
+        user = (await db.execute(
+            select(User).where(User.id == user_id, User.account_status == AccountStatus.ACTIVE.value)
+        )).scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+        await require_task_access(task_id, user, db)
     except Exception:
-        pass
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
+    await websocket.accept()
+    user_name = user.full_name or user.username or "Usuario"
     await presence.join(task_id, user_id, user_name, websocket)
     try:
         while True:
@@ -154,6 +229,48 @@ async def task_presence(task_id: int, websocket: WebSocket, token: str = "", db:
         pass
     finally:
         await presence.leave(task_id, user_id)
+
+
+@app.websocket("/ws/work-notifications/{alert_id}")
+async def work_notification_presence_socket(
+    alert_id: str,
+    websocket: WebSocket,
+    token: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload.get("sub", 0))
+        user = (await db.execute(
+            select(User).where(User.id == user_id, User.account_status == AccountStatus.ACTIVE.value)
+        )).scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    user_name = user.full_name or user.username or "Usuario"
+    room_id = str(alert_id)
+    await work_notification_presence.join(room_id, user_id, user_name, websocket)
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if data.get("type") == "presence_state":
+                await work_notification_presence.update_state(
+                    room_id,
+                    user_id,
+                    editing=bool(data.get("editing")),
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await work_notification_presence.leave(room_id, user_id)
 
 
 
@@ -169,7 +286,40 @@ def _validate_password(v: str) -> str:
         raise ValueError("Debe tener al menos una mayúscula")
     if not any(c.isdigit() for c in v):
         raise ValueError("Debe tener al menos un número")
+    if v.startswith("Cambiar") and v.endswith("!") and v[7:-1].isdigit():
+        raise ValueError("No puede ser una contrasena temporal")
     return v
+
+
+SELF_REGISTERABLE_ROLES = {Role.TECNICO.value, Role.SUPERVISOR.value, Role.OPERADOR.value}
+
+
+def _role_level(role: str | None) -> int:
+    return ROLE_HIERARCHY.get(role or "", 0)
+
+
+def _is_manager(user: User) -> bool:
+    return _role_level(user.role) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+
+
+def _registration_role(requested_role: str | None) -> str:
+    return requested_role if requested_role in SELF_REGISTERABLE_ROLES else Role.TECNICO.value
+
+
+def _validate_role_value(value: str) -> str:
+    valid = [r.value for r in Role]
+    if value not in valid:
+        raise HTTPException(status_code=400, detail=f"Rol inválido: {valid}")
+    return value
+
+
+def _assert_can_manage_user(actor: User, target: User, action: str = "modificar") -> None:
+    if _role_level(actor.role) <= _role_level(target.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"No puedes {action} usuarios con rol igual o superior al tuyo",
+        )
+
 
 # ── Auth ──────────────────────────────────────────────────
 class LoginRequest(BaseModel):
@@ -331,30 +481,46 @@ class DayResponse(BaseModel):
 # -- Shared JSON documents ----------------------------------------------------
 class SharedDocumentPayload(BaseModel):
     data: Any
+    version: Optional[str] = None
 
 
 class SharedDocumentResponse(BaseModel):
     key: str
     data: Any
+    version: str
+
+
+class WorkNotificationLockResponse(BaseModel):
+    alert_id: str
+    locked: bool
+    holder_user_id: Optional[int] = None
+    holder_name: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    owned_by_current_user: bool = False
 
 
 DOCUMENT_RULES = {
-    "pmp_rrhh_tecnicos_v1": {"read": Role.TECNICO.value, "write": Role.INGENIERO.value, "default": []},
-    "pmp_materiales_v1": {"read": Role.TECNICO.value, "write": Role.INGENIERO.value, "default": []},
-    "pmp_equipos_columns_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_equipos_items_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_equipos_exchange_history_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_amef_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_fechas_plans_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_km_plans_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_paquetes_mantenimiento_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_avisos_mantenimiento_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_ot_alertas_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_ot_deleted_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_ot_sequence_settings_v1": {"read": Role.TECNICO.value, "write": Role.INGENIERO.value, "default": []},
-    "pmp_ot_historial_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
-    "pmp_ot_work_reports_v1": {"read": Role.TECNICO.value, "write": Role.TECNICO.value, "default": []},
-    "pmp_bajas_history_v1": {"read": Role.TECNICO.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_rrhh_tecnicos_v1": {"read": Role.OPERADOR.value, "write": Role.INGENIERO.value, "default": []},
+    "pmp_rrhh_asistencia_v1": {"read": Role.OPERADOR.value, "write": Role.PLANNER.value, "default": []},
+    "pmp_dropdown_lists_v1": {"read": Role.OPERADOR.value, "write": Role.PLANNER.value, "default": []},
+    "pmp_materiales_v1": {"read": Role.OPERADOR.value, "write": Role.INGENIERO.value, "default": []},
+    "pmp_equipos_columns_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_equipos_items_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_equipos_exchange_history_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_amef_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_fechas_plans_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_km_plans_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_km_counters_history_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_paquetes_mantenimiento_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_avisos_mantenimiento_v1": {"read": Role.OPERADOR.value, "write": Role.OPERADOR.value, "default": []},
+    "pmp_executive_audit_v1": {"read": Role.OPERADOR.value, "write": Role.TECNICO.value, "default": []},
+    "pmp_ot_alertas_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_deleted_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_sequence_settings_v1": {"read": Role.OPERADOR.value, "write": Role.INGENIERO.value, "default": []},
+    "pmp_ot_historial_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
+    "pmp_ot_work_reports_v1": {"read": Role.OPERADOR.value, "write": Role.TECNICO.value, "default": []},
+    "pmp_ot_pdf_format_v1": {"read": Role.OPERADOR.value, "write": Role.PLANNER.value, "default": {}},
+    "pmp_bajas_history_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
 }
 
 
@@ -363,22 +529,135 @@ def _assert_document_access(key: str, current_user: User, action: str):
     if not rule:
         raise HTTPException(status_code=404, detail="Documento no encontrado")
     min_role = rule[action]
-    if ROLE_HIERARCHY.get(current_user.role, 0) < ROLE_HIERARCHY[min_role]:
+    if _role_level(current_user.role) < ROLE_HIERARCHY[min_role]:
         raise HTTPException(status_code=403, detail="Sin permisos para este documento")
     return rule
 
 
+def _serialize_document_data(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _document_version(serialized_value: str) -> str:
+    return hashlib.sha256((serialized_value or "").encode("utf-8")).hexdigest()
+
+
+def _document_payload(rule: dict, setting: Setting | None) -> tuple[Any, str, Optional[str]]:
+    if not setting:
+        data = rule["default"]
+        serialized = _serialize_document_data(data)
+        return data, _document_version(serialized), None
+
+    stored_value = setting.value
+    if not stored_value:
+        data = rule["default"]
+        return data, _document_version(stored_value or ""), stored_value
+
+    try:
+        data = json.loads(stored_value)
+    except json.JSONDecodeError:
+        data = rule["default"]
+    return data, _document_version(stored_value), stored_value
+
+
+def _work_notification_lock_key(alert_id: str | int) -> str:
+    return f"work_notification_lock:{alert_id}"
+
+
+def _parse_work_notification_lock(setting: Setting | None) -> Optional[dict[str, Any]]:
+    if not setting or not setting.value:
+        return None
+    try:
+        payload = json.loads(setting.value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    expires_raw = payload.get("expires_at")
+    if not expires_raw:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= datetime.now(timezone.utc):
+        return None
+    holder_user_id = payload.get("holder_user_id")
+    try:
+        holder_user_id = int(holder_user_id) if holder_user_id is not None else None
+    except (TypeError, ValueError):
+        holder_user_id = None
+    holder_name = str(payload.get("holder_name") or "").strip() or None
+    return {
+        "holder_user_id": holder_user_id,
+        "holder_name": holder_name,
+        "expires_at": expires_at,
+    }
+
+
+def _serialize_work_notification_lock(current_user: User) -> tuple[str, datetime]:
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=WORK_NOTIFICATION_LOCK_TTL_SECONDS)
+    payload = {
+        "holder_user_id": current_user.id,
+        "holder_name": current_user.full_name or current_user.username or "Usuario",
+        "expires_at": expires_at.isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), expires_at
+
+
+def _work_notification_lock_response(alert_id: str | int, lock_data: Optional[dict[str, Any]], current_user: User) -> WorkNotificationLockResponse:
+    holder_user_id = lock_data.get("holder_user_id") if lock_data else None
+    return WorkNotificationLockResponse(
+        alert_id=str(alert_id),
+        locked=bool(lock_data),
+        holder_user_id=holder_user_id,
+        holder_name=lock_data.get("holder_name") if lock_data else None,
+        expires_at=lock_data.get("expires_at") if lock_data else None,
+        owned_by_current_user=bool(lock_data and holder_user_id == current_user.id),
+    )
+
+
+async def _load_work_notification_lock(db: AsyncSession, alert_id: str | int, cleanup_expired: bool = False) -> tuple[Optional[Setting], Optional[dict[str, Any]]]:
+    key = _work_notification_lock_key(alert_id)
+    setting = (await db.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
+    lock_data = _parse_work_notification_lock(setting)
+    if cleanup_expired and setting and not lock_data:
+        await db.execute(delete(Setting).where(Setting.key == key))
+        await db.commit()
+        setting = None
+    return setting, lock_data
+
+
 # ── Task access helper ───────────────────────────────────────────────────────
-async def require_task_access(task_id: int, current_user: User, db: AsyncSession):
-    """Verifica que el usuario esté asignado a la tarea, o sea ENCARGADO+."""
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
-    if is_manager:
-        return
+async def _get_task_or_404(task_id: int, db: AsyncSession) -> Task:
+    task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    return task
+
+
+async def require_task_basic_access(task_id: int, current_user: User, db: AsyncSession) -> Task:
+    """Permite ver la cabecera de tareas publicadas; DRAFT/ocultas son solo para ENCARGADO+."""
+    task = await _get_task_or_404(task_id, db)
+    if task.is_hidden and not _is_manager(current_user):
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if task.status == TaskStatus.DRAFT.value and not _is_manager(current_user):
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    return task
+
+
+async def require_task_access(task_id: int, current_user: User, db: AsyncSession) -> Task:
+    """Verifica que el usuario este asignado a la tarea, o sea ENCARGADO+."""
+    task = await require_task_basic_access(task_id, current_user, db)
+    if _is_manager(current_user):
+        return task
     member = (await db.execute(
         select(TaskMember).where(TaskMember.task_id == task_id, TaskMember.telegram_id == current_user.id)
     )).scalar_one_or_none()
     if not member:
         raise HTTPException(status_code=403, detail="Solo los técnicos asignados a esta tarea pueden realizar esta acción")
+    return task
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -399,7 +678,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         username            = body.username.strip(),
         full_name           = body.full_name.strip(),
         password_hash       = hash_password(body.password),
-        role                = body.role,
+        role                = _registration_role(body.role),
         account_status      = AccountStatus.PENDING.value,
         secret_question     = body.secret_question or None,
         secret_answer_hash  = hash_password(body.secret_answer) if body.secret_answer else None,
@@ -575,15 +854,14 @@ async def approve_or_reject_user(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if body.action == "approve":
+        approved_role = _registration_role(user.role)
+        if body.role_override:
+            approved_role = _validate_role_value(body.role_override)
         user.account_status = AccountStatus.ACTIVE.value
         user.approved_by    = current_user.id
         user.approved_at    = datetime.now(timezone.utc)
         user.rejection_note = ""
-        if body.role_override:
-            valid = [r.value for r in Role]
-            if body.role_override not in valid:
-                raise HTTPException(status_code=400, detail=f"Rol inválido: {valid}")
-            user.role = body.role_override
+        user.role = approved_role
         await db.commit()
         return {"message": f"Usuario {user.username} aprobado como {user.role}"}
 
@@ -607,13 +885,15 @@ async def update_user(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    _assert_can_manage_user(current_user, user)
     if updates.full_name      is not None: user.full_name      = updates.full_name
     if updates.role           is not None:
-        valid = [r.value for r in Role]
-        if updates.role not in valid:
-            raise HTTPException(status_code=400, detail=f"Rol inválido: {valid}")
-        user.role = updates.role
-    if updates.account_status is not None: user.account_status = updates.account_status
+        user.role = _validate_role_value(updates.role)
+    if updates.account_status is not None:
+        valid_statuses = [s.value for s in AccountStatus]
+        if updates.account_status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Estado inválido: {valid_statuses}")
+        user.account_status = updates.account_status
     await db.commit()
     await db.refresh(user)
     return UserResponse.model_validate(user)
@@ -690,9 +970,9 @@ async def get_tasks(
     conditions = []
     if day_date:        conditions.append(Task.day_date == day_date)
     if status:          conditions.append(Task.status   == status)
-    if not include_hidden: conditions.append(Task.is_hidden == False)
+    if not include_hidden or not _is_manager(current_user): conditions.append(Task.is_hidden == False)
     # TECNICO cannot see DRAFT tasks
-    if ROLE_HIERARCHY.get(current_user.role, 0) < ROLE_HIERARCHY[Role.ENCARGADO.value]:
+    if not _is_manager(current_user):
         conditions.append(Task.status != TaskStatus.DRAFT.value)
     query = select(Task)
     if conditions: query = query.where(and_(*conditions))
@@ -717,8 +997,7 @@ async def get_tasks(
 
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: int, current_user: User = Depends(require_any_role), db: AsyncSession = Depends(get_db)):
-    task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
-    if not task: raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    task = await require_task_basic_access(task_id, current_user, db)
     return await _build_task_response(task, db)
 
 @app.put("/api/tasks/{task_id}")
@@ -765,9 +1044,9 @@ async def update_task(task_id: int, task_update: TaskUpdate, current_user: User 
 async def reopen_task(task_id: int, current_user: User = Depends(require_encargado_up), db: AsyncSession = Depends(get_db)):
     task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
     if not task: raise HTTPException(status_code=404, detail="Tarea no encontrada")
-    if task.status != TaskStatus.DONE:
+    if task.status != TaskStatus.DONE.value:
         raise HTTPException(status_code=400, detail="Solo se pueden reabrir tareas completadas")
-    task.status = TaskStatus.IN_PROGRESS
+    task.status = TaskStatus.IN_PROGRESS.value
     await db.commit()
     return {"message": "Tarea reabierta"}
 
@@ -791,10 +1070,14 @@ async def delete_task(task_id: int, current_user: User = Depends(require_encarga
 
 @app.post("/api/tasks/{task_id}/members/{user_id}")
 async def add_task_member(task_id: int, user_id: int, current_user: User = Depends(require_any_role), db: AsyncSession = Depends(get_db)):
-    if user_id != current_user.id and ROLE_HIERARCHY.get(current_user.role, 0) < ROLE_HIERARCHY[Role.ENCARGADO.value]:
+    if user_id != current_user.id and not _is_manager(current_user):
         raise HTTPException(status_code=403, detail="Solo ENCARGADO o superior puede asignar otros usuarios")
-    task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
-    if not task: raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    task = await require_task_basic_access(task_id, current_user, db)
+    target_user = current_user if user_id == current_user.id else (
+        await db.execute(select(User).where(User.id == user_id, User.account_status == AccountStatus.ACTIVE.value))
+    ).scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
     if (await db.execute(select(TaskMember).where(and_(TaskMember.task_id == task_id, TaskMember.telegram_id == user_id)))).scalar_one_or_none():
         raise HTTPException(status_code=400, detail="El usuario ya es miembro")
     db.add(TaskMember(task_id=task_id, telegram_id=user_id))
@@ -804,8 +1087,9 @@ async def add_task_member(task_id: int, user_id: int, current_user: User = Depen
 
 @app.delete("/api/tasks/{task_id}/members/{user_id}")
 async def remove_task_member(task_id: int, user_id: int, current_user: User = Depends(require_any_role), db: AsyncSession = Depends(get_db)):
-    if user_id != current_user.id and ROLE_HIERARCHY.get(current_user.role, 0) < ROLE_HIERARCHY[Role.ENCARGADO.value]:
+    if user_id != current_user.id and not _is_manager(current_user):
         raise HTTPException(status_code=403, detail="Solo ENCARGADO o superior puede remover otros usuarios")
+    await require_task_basic_access(task_id, current_user, db)
 
     result = await db.execute(delete(TaskMember).where(and_(TaskMember.task_id == task_id, TaskMember.telegram_id == user_id)))
     if result.rowcount == 0:
@@ -837,7 +1121,7 @@ async def create_worklog(wl: WorkLogCreate, current_user: User = Depends(require
     task = (await db.execute(select(Task).where(Task.id == wl.task_id))).scalar_one_or_none()
     if not task: raise HTTPException(status_code=404, detail="Tarea no encontrada")
     await require_task_access(wl.task_id, current_user, db)
-    if task.status == TaskStatus.DONE:
+    if task.status == TaskStatus.DONE.value:
         raise HTTPException(status_code=400, detail="La tarea está completada. Debe reabrirse para modificar registros.")
     try:
         start = datetime.fromisoformat(wl.start_dt)
@@ -878,11 +1162,11 @@ async def create_worklog(wl: WorkLogCreate, current_user: User = Depends(require
 async def update_worklog(worklog_id: int, body: WorkLogUpdate, current_user: User = Depends(require_any_role), db: AsyncSession = Depends(get_db)):
     wl = (await db.execute(select(WorkLog).where(WorkLog.id == worklog_id))).scalar_one_or_none()
     if not wl: raise HTTPException(status_code=404, detail="Registro no encontrado")
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if wl.telegram_id != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso")
     task = (await db.execute(select(Task).where(Task.id == wl.task_id))).scalar_one_or_none()
-    if task and task.status == TaskStatus.DONE:
+    if task and task.status == TaskStatus.DONE.value:
         raise HTTPException(status_code=400, detail="La tarea está completada. Debe reabrirse para modificar registros.")
     try:
         start = datetime.fromisoformat(body.start_dt)
@@ -892,10 +1176,10 @@ async def update_worklog(worklog_id: int, body: WorkLogUpdate, current_user: Use
     if end <= start:
         raise HTTPException(status_code=400, detail="La hora de fin debe ser posterior a la de inicio")
 
-    # Verificar solapamiento excluyendo el registro actual
+    # Verificar solapamiento del dueño del registro, excluyendo el registro actual
     overlap = (await db.execute(
         select(WorkLog).where(
-            WorkLog.telegram_id == current_user.id,
+            WorkLog.telegram_id == wl.telegram_id,
             WorkLog.id != worklog_id,
             WorkLog.start_dt < end,
             WorkLog.end_dt > start,
@@ -921,7 +1205,7 @@ async def get_worklogs(
     conditions = []
     if task_id:   conditions.append(WorkLog.task_id    == task_id)
     if day_date:  conditions.append(WorkLog.day_date   == day_date)
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if user_id:
         conditions.append(WorkLog.telegram_id == (user_id if is_manager else current_user.id))
     elif not is_manager:
@@ -934,7 +1218,7 @@ async def get_worklogs(
 async def delete_worklog(worklog_id: int, current_user: User = Depends(require_any_role), db: AsyncSession = Depends(get_db)):
     wl = (await db.execute(select(WorkLog).where(WorkLog.id == worklog_id))).scalar_one_or_none()
     if not wl: raise HTTPException(status_code=404, detail="Registro no encontrado")
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if wl.telegram_id != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso")
     await db.execute(delete(WorkLog).where(WorkLog.id == worklog_id)); await db.commit()
@@ -997,6 +1281,7 @@ async def get_task_notes(
     current_user: User = Depends(require_any_role),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     result = await db.execute(
         select(TaskNote)
         .where(TaskNote.task_id == task_id)
@@ -1012,12 +1297,13 @@ async def delete_task_note(
     current_user: User = Depends(require_any_role),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     note = (await db.execute(
         select(TaskNote).where(TaskNote.id == note_id, TaskNote.task_id == task_id)
     )).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Nota no encontrada")
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if note.user_id != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso para eliminar esta nota")
     await db.execute(delete(TaskNote).where(TaskNote.id == note_id))
@@ -1093,6 +1379,7 @@ async def get_task_parts(
     current_user: User = Depends(require_any_role),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     result = await db.execute(
         select(TaskPart)
         .where(TaskPart.task_id == task_id)
@@ -1108,12 +1395,13 @@ async def delete_task_part(
     current_user: User = Depends(require_any_role),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     part = (await db.execute(
         select(TaskPart).where(TaskPart.id == part_id, TaskPart.task_id == task_id)
     )).scalar_one_or_none()
     if not part:
         raise HTTPException(status_code=404, detail="Repuesto no encontrado")
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if part.added_by != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso para eliminar este repuesto")
     await db.execute(delete(TaskPart).where(TaskPart.id == part_id))
@@ -1126,6 +1414,7 @@ async def delete_task_part(
 # ╚═══════════════════════════════════════════════════════╝
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+GENERIC_UPLOAD_EXTENSIONS = {*ALLOWED_EXTENSIONS, ".pdf"}
 PHOTO_CATEGORIES   = {"ANTES", "DESPUÉS"}  # Solo 1 por categoría, se reemplaza si ya existe
 
 
@@ -1142,6 +1431,17 @@ class TaskPhotoResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UploadedPhotoResponse(BaseModel):
+    filename      : str
+    url           : str
+    caption       : str = ""
+    category      : str = ""
+    uploaded_by   : int
+    user_name     : str = ""
+    created_at    : datetime
+    original_name  : str = ""
 
 
 class RescheduleBody(BaseModel):
@@ -1172,23 +1472,34 @@ def _cloudinary_public_id(filename: str) -> str:
     return filename.split(":", 1)[1] if _is_cloudinary_photo_ref(filename) else filename
 
 
-async def _store_photo_asset(task_id: int, content: bytes, ext: str) -> str:
+def _safe_photo_prefix(value: str, fallback: str = "photo") -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip().lower())
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return (cleaned or fallback)[:48]
+
+
+async def _store_photo_asset_with_prefix(prefix: str, content: bytes, ext: str) -> str:
+    safe_prefix = _safe_photo_prefix(prefix)
     if CLOUDINARY_ENABLED:
         upload_result = await asyncio.to_thread(
             cloudinary.uploader.upload,
             content,
             folder=CLOUDINARY_FOLDER or None,
-            public_id=f"task_{task_id}_{uuid.uuid4().hex[:10]}",
-            resource_type="image",
+            public_id=f"{safe_prefix}_{uuid.uuid4().hex[:10]}",
+            resource_type="raw" if ext == ".pdf" else "image",
             overwrite=True,
         )
         return f"cloudinary:{upload_result['public_id']}"
 
-    unique_name = f"task{task_id}_{uuid.uuid4().hex[:8]}{ext}"
+    unique_name = f"{safe_prefix}_{uuid.uuid4().hex[:8]}{ext}"
     file_path = UPLOAD_DIR / unique_name
     async with aiofiles.open(file_path, "wb") as f_out:
         await f_out.write(content)
     return unique_name
+
+
+async def _store_photo_asset(task_id: int, content: bytes, ext: str) -> str:
+    return await _store_photo_asset_with_prefix(f"task{task_id}", content, ext)
 
 
 async def _delete_photo_asset(filename: str) -> None:
@@ -1214,11 +1525,54 @@ def _photo_url(filename: str, request_base: str = "") -> str:
     if _is_cloudinary_photo_ref(filename):
         if not cloudinary_url:
             return ""
-        url, _ = cloudinary_url(_cloudinary_public_id(filename), secure=True, resource_type="image")
+        resource_type = "raw" if str(filename).lower().endswith(".pdf") else "image"
+        url, _ = cloudinary_url(_cloudinary_public_id(filename), secure=True, resource_type=resource_type)
         return url
 
     base = (request_base or API_BASE_URL).rstrip("/")
     return f"{base}/uploads/{filename}"
+
+
+@app.post("/api/uploads/photos", response_model=UploadedPhotoResponse)
+async def upload_photo_asset(
+    file    : UploadFile = File(...),
+    scope   : str        = Form("maintenance"),
+    category: str        = Form(""),
+    caption : str        = Form(""),
+    current_user: User   = Depends(require_any_role),
+):
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in GENERIC_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Tipo de archivo no permitido. Usa: {GENERIC_UPLOAD_EXTENSIONS}")
+
+    content = await file.read()
+    if len(content) <= 0:
+        raise HTTPException(status_code=400, detail="El archivo esta vacio")
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="El archivo supera el limite de 10 MB")
+
+    stored_filename = await _store_photo_asset_with_prefix(scope, content, ext)
+    return UploadedPhotoResponse(
+        filename=stored_filename,
+        url=_photo_url(stored_filename),
+        caption=caption.strip(),
+        category=category.strip().upper(),
+        uploaded_by=current_user.id,
+        user_name=current_user.full_name or current_user.username,
+        created_at=datetime.now(timezone.utc),
+        original_name=file.filename or "",
+    )
+
+
+@app.delete("/api/uploads/photos")
+async def delete_photo_asset(
+    filename: str,
+    current_user: User = Depends(require_any_role),
+):
+    # Generic uploads are referenced from shared documents. Any authenticated user
+    # can remove the orphaned asset while the document layer controls visibility.
+    await _delete_photo_asset(filename)
+    return {"message": "Foto eliminada"}
 
 
 @app.post("/api/tasks/{task_id}/photos", response_model=TaskPhotoResponse)
@@ -1281,6 +1635,7 @@ async def get_task_photos(
     current_user: User = Depends(require_any_role),
     db: AsyncSession   = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     result = await db.execute(
         select(TaskPhoto)
         .where(TaskPhoto.task_id == task_id)
@@ -1302,13 +1657,14 @@ async def delete_task_photo(
     current_user: User = Depends(require_any_role),
     db: AsyncSession   = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     photo = (await db.execute(
         select(TaskPhoto).where(TaskPhoto.id == photo_id, TaskPhoto.task_id == task_id)
     )).scalar_one_or_none()
     if not photo:
         raise HTTPException(status_code=404, detail="Foto no encontrada")
 
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if photo.uploaded_by != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso para eliminar esta foto")
 
@@ -1400,9 +1756,7 @@ async def generate_task_report(
     db: AsyncSession = Depends(get_db),
 ):
     # ── Fetch all data ─────────────────────────────────────────────────────────
-    task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    task = await require_task_access(task_id, current_user, db)
 
     worklogs = (await db.execute(
         select(WorkLog).where(WorkLog.task_id == task_id).order_by(WorkLog.start_dt)
@@ -1738,7 +2092,7 @@ async def reschedule_task(
     task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
-    if task.status == TaskStatus.DONE:
+    if task.status == TaskStatus.DONE.value:
         raise HTTPException(status_code=400, detail="No se puede reprogramar una tarea completada. Reábrela primero.")
     if task.day_date == body.new_date:
         raise HTTPException(status_code=400, detail="La nueva fecha es igual a la fecha actual")
@@ -1756,8 +2110,8 @@ async def reschedule_task(
     # Reiniciar: borrar todos los registros de horas de la tarea
     await db.execute(delete(WorkLog).where(WorkLog.task_id == task_id))
     # Volver a OPEN si estaba IN_PROGRESS
-    if task.status == TaskStatus.IN_PROGRESS:
-        task.status = TaskStatus.OPEN
+    if task.status == TaskStatus.IN_PROGRESS.value:
+        task.status = TaskStatus.OPEN.value
     await db.commit()
     await db.refresh(record)
     return record
@@ -1769,6 +2123,7 @@ async def get_reschedules(
     current_user: User = Depends(require_any_role),
     db: AsyncSession = Depends(get_db),
 ):
+    await require_task_access(task_id, current_user, db)
     result = await db.execute(
         select(TaskReschedule)
         .where(TaskReschedule.task_id == task_id)
@@ -1789,12 +2144,16 @@ async def reset_user_password(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     if user.id == current_user.id:
         raise HTTPException(status_code=400, detail="No puedes resetear tu propia contraseña")
+    _assert_can_manage_user(current_user, user, "resetear la contraseña de")
 
-    # Generate readable temp password: word + 4 digits + !
-    import random
     words = ["Mant", "Tarea", "Turno", "Equip", "Planta"]
-    temp_pw = random.choice(words) + str(random.randint(1000, 9999)) + "!"
+    temp_pw = words[secrets.randbelow(len(words))] + str(1000 + secrets.randbelow(9000)) + "!"
     user.password_hash = hash_password(temp_pw)
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked == False)
+        .values(revoked=True)
+    )
     await db.commit()
     return {"temp_password": temp_pw, "username": user.username, "full_name": user.full_name}
 
@@ -1812,6 +2171,35 @@ PREGUNTAS = [
     "¿Cuál es el modelo de tu primer auto?",
     "¿Cuál es el segundo nombre de tu madre?",
 ]
+
+RECOVERY_LOOKUP_MAX = int(os.getenv("RECOVERY_LOOKUP_MAX", "20"))
+RECOVERY_ATTEMPT_MAX = int(os.getenv("RECOVERY_ATTEMPT_MAX", "5"))
+RECOVERY_WINDOW_SECONDS = int(os.getenv("RECOVERY_WINDOW_SECONDS", "900"))
+_recovery_lookup_hits: dict[str, list[datetime]] = defaultdict(list)
+_recovery_answer_hits: dict[str, list[datetime]] = defaultdict(list)
+
+
+def _recovery_key(request: Request, username: str) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    client_host = forwarded_for or (request.client.host if request.client else "unknown")
+    return f"{client_host}:{username.strip().lower()}"
+
+
+def _register_rate_limited_hit(bucket: dict[str, list[datetime]], key: str, max_hits: int) -> None:
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=RECOVERY_WINDOW_SECONDS)
+    hits = [hit for hit in bucket.get(key, []) if hit > cutoff]
+    if len(hits) >= max_hits:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.",
+        )
+    hits.append(now)
+    bucket[key] = hits
+
+
+def _clear_rate_limited_hits(bucket: dict[str, list[datetime]], key: str) -> None:
+    bucket.pop(key, None)
 
 
 class SetSecretQuestionRequest(BaseModel):
@@ -1838,13 +2226,7 @@ class RecoverPasswordRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def strong(cls, v):
-        if len(v) < 8:
-            raise ValueError("Mínimo 8 caracteres")
-        if not any(c.isupper() for c in v):
-            raise ValueError("Debe tener al menos una mayúscula")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Debe tener al menos un número")
-        return v
+        return _validate_password(v)
 
 
 @app.get("/api/auth/secret-questions")
@@ -1869,27 +2251,40 @@ async def set_secret_question(
 
 
 @app.get("/api/auth/secret-question/{username}")
-async def get_secret_question(username: str, db: AsyncSession = Depends(get_db)):
+async def get_secret_question(username: str, request: Request, db: AsyncSession = Depends(get_db)):
     """Devuelve la pregunta secreta de un usuario por username (público)."""
-    user = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
-    if not user or not user.secret_question:
-        raise HTTPException(status_code=404, detail="Este usuario no tiene pregunta secreta configurada. Contacta a tu INGENIERO para resetear tu contraseña.")
+    lookup_key = _recovery_key(request, username)
+    _register_rate_limited_hit(_recovery_lookup_hits, lookup_key, RECOVERY_LOOKUP_MAX)
+    user = (await db.execute(select(User).where(User.username == username.strip()))).scalar_one_or_none()
+    if not user or not user.secret_question or user.account_status != AccountStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=404,
+            detail="No se puede usar la recuperacion automatica para este usuario. Contacta a tu administrador.",
+        )
     return {"question": user.secret_question}
 
 
 @app.post("/api/auth/recover-password")
-async def recover_password(body: RecoverPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def recover_password(body: RecoverPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Recupera contraseña verificando la respuesta secreta (público)."""
-    user = (await db.execute(select(User).where(User.username == body.username))).scalar_one_or_none()
+    attempt_key = _recovery_key(request, body.username)
+    _register_rate_limited_hit(_recovery_answer_hits, attempt_key, RECOVERY_ATTEMPT_MAX)
+    user = (await db.execute(select(User).where(User.username == body.username.strip()))).scalar_one_or_none()
     if not user or not user.secret_question or not user.secret_answer_hash:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado o sin pregunta secreta configurada")
+        raise HTTPException(status_code=404, detail="No se puede recuperar esta cuenta automaticamente")
     if user.account_status != AccountStatus.ACTIVE.value:
         raise HTTPException(status_code=403, detail="Cuenta inactiva. Contacta a tu administrador.")
     # Verify answer (case-insensitive)
     if not verify_password(body.answer.strip().lower(), user.secret_answer_hash):
         raise HTTPException(status_code=400, detail="Respuesta incorrecta")
     user.password_hash = hash_password(body.new_password)
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user.id, RefreshToken.revoked == False)
+        .values(revoked=True)
+    )
     await db.commit()
+    _clear_rate_limited_hits(_recovery_answer_hits, attempt_key)
     return {"message": "Contraseña actualizada correctamente"}
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1910,7 +2305,7 @@ async def get_today_stats(current_user: User = Depends(require_any_role), db: As
 
 @app.get("/api/stats/user/{user_id}")
 async def get_user_stats(user_id: int, days: int = 7, current_user: User = Depends(require_any_role), db: AsyncSession = Depends(get_db)):
-    is_manager = ROLE_HIERARCHY.get(current_user.role, 0) >= ROLE_HIERARCHY[Role.ENCARGADO.value]
+    is_manager = _is_manager(current_user)
     if user_id != current_user.id and not is_manager:
         raise HTTPException(status_code=403, detail="Sin permiso")
     start = (date.today() - timedelta(days=days)).isoformat()
@@ -1937,32 +2332,202 @@ async def get_shared_document(
 ):
     rule = _assert_document_access(key, current_user, "read")
     setting = (await db.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
-    if not setting or not setting.value:
-        return SharedDocumentResponse(key=key, data=rule["default"])
-
-    try:
-        data = json.loads(setting.value)
-    except json.JSONDecodeError:
-        data = rule["default"]
-    return SharedDocumentResponse(key=key, data=data)
+    data, version, _ = _document_payload(rule, setting)
+    return SharedDocumentResponse(key=key, data=data, version=version)
 
 
 @app.put("/api/documents/{key}", response_model=SharedDocumentResponse)
 async def put_shared_document(
     key: str,
     body: SharedDocumentPayload,
+    if_match: Optional[str] = Header(default=None, alias="If-Match"),
     current_user: User = Depends(require_any_role),
     db: AsyncSession = Depends(get_db),
 ):
-    _assert_document_access(key, current_user, "write")
+    rule = _assert_document_access(key, current_user, "write")
     setting = (await db.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
-    serialized = json.dumps(body.data, ensure_ascii=False)
+    _, current_version, stored_value = _document_payload(rule, setting)
+    expected_version = (body.version or if_match or "").strip().strip('"')
+    if not expected_version:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="Debes enviar la version actual del documento antes de guardar.",
+        )
+    if expected_version != current_version:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El documento fue modificado por otro usuario. Recarga antes de guardar.",
+        )
+
+    try:
+        validate_shared_document_data(key, body.data)
+    except SharedDocumentValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    serialized = _serialize_document_data(body.data)
+    if setting:
+        result = await db.execute(
+            update(Setting)
+            .where(Setting.key == key, Setting.value == stored_value)
+            .values(value=serialized)
+        )
+        if result.rowcount == 0:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El documento fue modificado por otro usuario. Recarga antes de guardar.",
+            )
+    else:
+        try:
+            db.add(Setting(key=key, value=serialized))
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El documento fue modificado por otro usuario. Recarga antes de guardar.",
+            ) from exc
+        return SharedDocumentResponse(key=key, data=body.data, version=_document_version(serialized))
+
+    await db.commit()
+    return SharedDocumentResponse(key=key, data=body.data, version=_document_version(serialized))
+
+
+@app.get("/api/work-notifications/{alert_id}/lock", response_model=WorkNotificationLockResponse)
+async def get_work_notification_lock(
+    alert_id: str,
+    current_user: User = Depends(require_any_role),
+    db: AsyncSession = Depends(get_db),
+):
+    _, lock_data = await _load_work_notification_lock(db, alert_id, cleanup_expired=True)
+    return _work_notification_lock_response(alert_id, lock_data, current_user)
+
+
+@app.post("/api/work-notifications/{alert_id}/lock/acquire", response_model=WorkNotificationLockResponse)
+async def acquire_work_notification_lock(
+    alert_id: str,
+    current_user: User = Depends(require_any_role),
+    db: AsyncSession = Depends(get_db),
+):
+    key = _work_notification_lock_key(alert_id)
+    setting, lock_data = await _load_work_notification_lock(db, alert_id, cleanup_expired=True)
+    if lock_data and lock_data.get("holder_user_id") != current_user.id:
+        holder_name = lock_data.get("holder_name") or "Otro usuario"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{holder_name} está editando esta notificación en este momento.",
+        )
+
+    serialized, expires_at = _serialize_work_notification_lock(current_user)
     if setting:
         setting.value = serialized
     else:
         db.add(Setting(key=key, value=serialized))
     await db.commit()
-    return SharedDocumentResponse(key=key, data=body.data)
+    return WorkNotificationLockResponse(
+        alert_id=str(alert_id),
+        locked=True,
+        holder_user_id=current_user.id,
+        holder_name=current_user.full_name or current_user.username or "Usuario",
+        expires_at=expires_at,
+        owned_by_current_user=True,
+    )
+
+
+@app.post("/api/work-notifications/{alert_id}/lock/refresh", response_model=WorkNotificationLockResponse)
+async def refresh_work_notification_lock(
+    alert_id: str,
+    current_user: User = Depends(require_any_role),
+    db: AsyncSession = Depends(get_db),
+):
+    setting, lock_data = await _load_work_notification_lock(db, alert_id, cleanup_expired=True)
+    if lock_data and lock_data.get("holder_user_id") != current_user.id:
+        holder_name = lock_data.get("holder_name") or "Otro usuario"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{holder_name} mantiene el bloqueo de esta notificación.",
+        )
+    if not setting:
+        raise HTTPException(status_code=404, detail="La notificación no tiene un bloqueo activo para refrescar.")
+
+    serialized, expires_at = _serialize_work_notification_lock(current_user)
+    setting.value = serialized
+    await db.commit()
+    return WorkNotificationLockResponse(
+        alert_id=str(alert_id),
+        locked=True,
+        holder_user_id=current_user.id,
+        holder_name=current_user.full_name or current_user.username or "Usuario",
+        expires_at=expires_at,
+        owned_by_current_user=True,
+    )
+
+
+@app.delete("/api/work-notifications/{alert_id}/lock", response_model=WorkNotificationLockResponse)
+async def release_work_notification_lock(
+    alert_id: str,
+    current_user: User = Depends(require_any_role),
+    db: AsyncSession = Depends(get_db),
+):
+    key = _work_notification_lock_key(alert_id)
+    setting, lock_data = await _load_work_notification_lock(db, alert_id, cleanup_expired=True)
+    if not setting or not lock_data:
+        return WorkNotificationLockResponse(alert_id=str(alert_id), locked=False)
+    if lock_data.get("holder_user_id") != current_user.id:
+        holder_name = lock_data.get("holder_name") or "Otro usuario"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Solo {holder_name} puede liberar este bloqueo.",
+        )
+    await db.execute(delete(Setting).where(Setting.key == key))
+    await db.commit()
+    return WorkNotificationLockResponse(alert_id=str(alert_id), locked=False)
+
+
+@app.post("/api/utils/maintenance-packages/parse-pdf")
+async def parse_maintenance_package_pdf(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_any_role),
+):
+    if PdfReader is None:
+        raise HTTPException(status_code=503, detail="El lector PDF del servidor no esta disponible.")
+
+    filename = (file.filename or "").strip()
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Solo se aceptan archivos PDF.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="El archivo PDF esta vacio.")
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="El archivo PDF excede el tamaño maximo permitido.")
+
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        pages = []
+        for page in reader.pages:
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
+            page_text = page_text.replace("\r", "\n").strip()
+            if page_text:
+                pages.append(page_text)
+        extracted_text = "\n".join(pages).strip()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"No se pudo leer el PDF: {exc}") from exc
+
+    if not extracted_text:
+        raise HTTPException(
+            status_code=422,
+            detail="No se encontro texto legible en el PDF. Si es un escaneo, debera corregirse manualmente.",
+        )
+
+    return {
+        "file_name": filename,
+        "text": extracted_text,
+        "pages": len(pages),
+    }
 
 
 @app.get("/")

@@ -1,6 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
+import TableFilterRow from '../components/TableFilterRow';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import { DEFAULT_MATERIALS, normalizeMaterialsCatalog } from '../utils/materialsCatalog';
+import { isReadOnlyRole } from '../utils/roleAccess';
+import { filterRowsByColumns } from '../utils/tableFilters';
+import {
+  firstValidationError,
+  toNonNegativeNumber,
+  validateNonNegativeFields,
+  validateRequiredFields,
+  validateTextFields,
+} from '../utils/formValidation';
 
 const INITIAL_DATA = DEFAULT_MATERIALS;
 
@@ -16,6 +29,8 @@ const EMPTY_FORM = {
 };
 
 export default function MaterialsManagement() {
+  const { user } = useAuth();
+  const isReadOnly = isReadOnlyRole(user);
   const [items, setItems] = useState(INITIAL_DATA);
   const [otAlerts, setOtAlerts] = useState([]);
   const [selectedId, setSelectedId] = useState(INITIAL_DATA[0]?.id ?? null);
@@ -45,6 +60,7 @@ export default function MaterialsManagement() {
   }, []);
 
   const persist = async (next) => {
+    if (isReadOnly) return;
     const normalized = normalizeMaterialsCatalog(next);
     setItems(normalized);
     try {
@@ -91,14 +107,40 @@ export default function MaterialsManagement() {
     [items, reservedByOt],
   );
 
+  const materialTableColumns = useMemo(() => ([
+    { id: 'codigo', getValue: (it) => it.codigo },
+    { id: 'descripcion', getValue: (it) => it.descripcion },
+    { id: 'marca', getValue: (it) => it.marca },
+    { id: 'proveedor', getValue: (it) => it.proveedor },
+    { id: 'stock', getValue: (it) => Number(it.stock) || 0 },
+    { id: 'reservado', getValue: (it) => reservedByOt.get(String(it.id)) || 0 },
+    { id: 'disponible', getValue: (it) => Math.max((Number(it.stock) || 0) - (reservedByOt.get(String(it.id)) || 0), 0) },
+    { id: 'unidad', getValue: (it) => it.unidad },
+    { id: 'costo_unit', getValue: (it) => Number(it.costo_unit).toFixed(2) },
+    { id: 'costo_total', getValue: (it) => ((Number(it.stock) || 0) * (Number(it.costo_unit) || 0)).toFixed(2) },
+    { id: 'stock_min', getValue: (it) => Number(it.stock_min) || 0 },
+  ]), [reservedByOt]);
+
+  const {
+    filters: materialFilters,
+    setFilter: setMaterialFilter,
+  } = useTableColumnFilters(materialTableColumns);
+
+  const visibleRows = useMemo(
+    () => filterRowsByColumns(filtered, materialTableColumns, materialFilters),
+    [filtered, materialTableColumns, materialFilters],
+  );
+
   const selectedItem = items.find((item) => item.id === selectedId) || null;
 
   const handleNew = () => {
+    if (isReadOnly) return;
     setEditingId(null);
     setForm(EMPTY_FORM);
   };
 
   const handleEdit = () => {
+    if (isReadOnly) return;
     if (!selectedItem) return;
     setEditingId(selectedItem.id);
     setForm({ ...selectedItem });
@@ -111,7 +153,29 @@ export default function MaterialsManagement() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.codigo.trim() || !form.descripcion.trim()) return;
+    if (isReadOnly) return;
+    const validationError = firstValidationError(
+      validateRequiredFields([
+        ['Codigo', form.codigo],
+        ['Descripcion', form.descripcion],
+      ]),
+      validateTextFields([
+        ['Codigo', form.codigo],
+        ['Descripcion', form.descripcion],
+        ['Marca', form.marca],
+        ['Proveedor', form.proveedor],
+        ['Unidad', form.unidad],
+      ]),
+      validateNonNegativeFields([
+        ['Stock', form.stock],
+        ['Costo unitario', form.costo_unit],
+        ['Stock minimo', form.stock_min],
+      ]),
+    );
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
 
     const payload = {
       ...form,
@@ -119,10 +183,10 @@ export default function MaterialsManagement() {
       descripcion: form.descripcion.trim(),
       marca: form.marca.trim() || 'N.A.',
       proveedor: form.proveedor.trim() || 'N.A.',
-      stock: Number(form.stock) || 0,
+      stock: toNonNegativeNumber(form.stock),
       unidad: form.unidad.trim() || 'UND',
-      costo_unit: Number(form.costo_unit) || 0,
-      stock_min: Number(form.stock_min) || 0,
+      costo_unit: toNonNegativeNumber(form.costo_unit),
+      stock_min: toNonNegativeNumber(form.stock_min),
     };
 
     if (editingId) {
@@ -138,6 +202,7 @@ export default function MaterialsManagement() {
   };
 
   const handleDelete = async () => {
+    if (isReadOnly) return;
     if (!selectedItem) return;
     if (!window.confirm(`Eliminar material ${selectedItem.descripcion}?`)) return;
     const next = items.filter((item) => item.id !== selectedItem.id);
@@ -159,6 +224,10 @@ export default function MaterialsManagement() {
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.3rem' }}>Gestion de Materiales</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Alta, edicion y eliminacion de materiales/repuestos.</p>
 
+      {isReadOnly && (
+        <ReadOnlyAccessNotice message="Puedes revisar stock, reservas y costos de materiales, pero este perfil no puede registrar ni modificar el catálogo." />
+      )}
+
       {error && (
         <div className="alert alert-error">
           {error}
@@ -174,10 +243,14 @@ export default function MaterialsManagement() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <button type="button" className="btn btn-primary" onClick={handleNew}>Nuevo</button>
-          <button type="button" className="btn btn-secondary" onClick={handleEdit} disabled={!selectedItem}>Editar</button>
-          <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!selectedItem}>Eliminar</button>
-          <button type="button" className="btn" style={{ background: '#e5e7eb', color: '#374151' }} onClick={handleCancel}>Limpiar</button>
+          {!isReadOnly && (
+            <>
+              <button type="button" className="btn btn-primary" onClick={handleNew}>Nuevo</button>
+              <button type="button" className="btn btn-secondary" onClick={handleEdit} disabled={!selectedItem}>Editar</button>
+              <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={!selectedItem}>Eliminar</button>
+              <button type="button" className="btn" style={{ background: '#e5e7eb', color: '#374151' }} onClick={handleCancel}>Limpiar</button>
+            </>
+          )}
         </div>
         <div style={{ marginTop: '.85rem', color: '#374151', fontWeight: 600 }}>
           Costo total inventario: <span style={{ color: '#111827' }}>S/ {totalInventario.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
@@ -211,9 +284,10 @@ export default function MaterialsManagement() {
                 <th key={h} style={{ border: '1px solid #e5e7eb', padding: '.6rem', textAlign: 'left', color: '#374151' }}>{h}</th>
               ))}
             </tr>
+            <TableFilterRow columns={materialTableColumns} rows={items} filters={materialFilters} onChange={setMaterialFilter} />
           </thead>
           <tbody>
-            {filtered.map((it) => {
+            {visibleRows.map((it) => {
               const stock = Number(it.stock) || 0;
               const reservado = reservedByOt.get(String(it.id)) || 0;
               const disponible = Math.max(stock - reservado, 0);
@@ -243,10 +317,18 @@ export default function MaterialsManagement() {
                 </tr>
               );
             })}
+            {!visibleRows.length && (
+              <tr>
+                <td colSpan={11} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
+                  No hay materiales que coincidan con los filtros aplicados.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
 
+      {!isReadOnly && (
       <div className="card" style={{ marginTop: '1rem' }}>
         <h3 className="card-title" style={{ marginBottom: '.8rem' }}>{editingId ? 'Editar material' : 'Registrar material'}</h3>
         <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
@@ -263,6 +345,7 @@ export default function MaterialsManagement() {
           </div>
         </form>
       </div>
+      )}
     </div>
   );
 }

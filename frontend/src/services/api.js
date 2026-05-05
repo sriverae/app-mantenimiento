@@ -120,9 +120,34 @@ export const getUserStats   = async (id, days=7) => (await api.get(`/api/stats/u
 
 // Shared documents (replaces browser-only localStorage for multi-user modules)
 export const getSharedDocument = async (key) =>
-  (await api.get(`/api/documents/${encodeURIComponent(key)}`)).data.data;
-export const putSharedDocument = async (key, data) =>
-  (await api.put(`/api/documents/${encodeURIComponent(key)}`, { data })).data.data;
+  (await api.get(`/api/documents/${encodeURIComponent(key)}`)).data;
+export const putSharedDocument = async (key, data, version) => {
+  const body = version ? { data, version } : { data };
+  const headers = version ? { 'If-Match': version } : undefined;
+  return (await api.put(`/api/documents/${encodeURIComponent(key)}`, body, { headers })).data;
+};
+export const getWorkNotificationLock = async (alertId) =>
+  (await api.get(`/api/work-notifications/${encodeURIComponent(alertId)}/lock`)).data;
+export const acquireWorkNotificationLock = async (alertId) =>
+  (await api.post(`/api/work-notifications/${encodeURIComponent(alertId)}/lock/acquire`)).data;
+export const refreshWorkNotificationLock = async (alertId) =>
+  (await api.post(`/api/work-notifications/${encodeURIComponent(alertId)}/lock/refresh`)).data;
+export const releaseWorkNotificationLock = async (alertId) =>
+  (await api.delete(`/api/work-notifications/${encodeURIComponent(alertId)}/lock`)).data;
+
+export const uploadPhotoAttachment = async (formData) =>
+  (await api.post('/api/uploads/photos', formData, { headers: { 'Content-Type': 'multipart/form-data' } })).data;
+export const deletePhotoAttachment = async (filename) =>
+  (await api.delete('/api/uploads/photos', { params: { filename } })).data;
+
+export const parseMaintenancePackagePdf = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const { data } = await api.post('/api/utils/maintenance-packages/parse-pdf', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+};
 
 export default api;
 export const publishTask = async (id) => (await api.post(`/api/tasks/${id}/publish`)).data;
@@ -174,5 +199,5 @@ export const resetUserPassword = async (userId) => (await api.post(`/api/users/$
 // Secret question / password recovery
 export const getSecretQuestions  = async ()             => (await api.get('/api/auth/secret-questions')).data;
 export const setSecretQuestion   = async (data)         => (await api.post('/api/auth/set-secret-question', data)).data;
-export const getUserSecretQuestion = async (username)   => (await api.get(`/api/auth/secret-question/${username}`)).data;
+export const getUserSecretQuestion = async (username)   => (await api.get(`/api/auth/secret-question/${encodeURIComponent(username)}`)).data;
 export const recoverPassword     = async (data)         => (await api.post('/api/auth/recover-password', data)).data;

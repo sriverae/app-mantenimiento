@@ -1,9 +1,16 @@
-﻿# Python
+# Python
+venv/
+__pycache__/
+*.pyc
 backend/venv/
 backend/__pycache__/
 backend/*.pyc
 backend/db.sqlite3
+backend/*simulation*.sqlite3*
+backend/test_sqlite_write*.sqlite3*
 backend/uploads/
+*.sqlite3.backup*
+tmp_*
 
 # Node
 frontend/node_modules/

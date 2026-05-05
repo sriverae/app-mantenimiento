@@ -14,6 +14,8 @@ class Role(str, Enum):
     PLANNER   = "PLANNER"
     ENCARGADO = "ENCARGADO"
     TECNICO   = "TECNICO"
+    SUPERVISOR = "SUPERVISOR"
+    OPERADOR   = "OPERADOR"
 
 
 class AccountStatus(str, Enum):
@@ -135,7 +137,7 @@ class Setting(Base):
     __tablename__ = "settings"
 
     key   : Mapped[str] = mapped_column(String(64),   primary_key=True)
-    value : Mapped[str] = mapped_column(String(2048), default="")
+    value : Mapped[str] = mapped_column(Text, default="")
 
 
 class TaskNote(Base):

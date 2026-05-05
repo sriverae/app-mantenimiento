@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { changePassword, getSecretQuestions, setSecretQuestion, getMe } from '../services/api';
 
-const TEMP_PASSWORDS = ['Cambiar1234!', 'Admin1234!'];
+const looksLikeTemporaryPassword = (pw) => /^Cambiar\d{6}!$/.test(pw);
 
 const checks = (pw) => [
   { label: 'Mínimo 8 caracteres',      ok: pw.length >= 8 },
   { label: 'Al menos 1 mayúscula',      ok: /[A-Z]/.test(pw) },
   { label: 'Al menos 1 número',         ok: /[0-9]/.test(pw) },
-  { label: 'No es contraseña temporal', ok: !TEMP_PASSWORDS.includes(pw) },
+  { label: 'No es contraseña temporal', ok: !looksLikeTemporaryPassword(pw) },
 ];
 
 export default function ChangePassword() {

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { getDatePlanOccurrencesInWindow } from '../utils/datePlanCycle';
 
 const PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlans;
 const KM_PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlansKm;
@@ -14,15 +15,6 @@ const MONTHS = [
 
 const WEEKDAYS = ['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'];
 
-const FREQ_TO_DAYS = {
-  Semanal: 7,
-  Mensual: 30,
-  Bimestral: 60,
-  Trimestral: 90,
-  Semestral: 180,
-  Anual: 365,
-};
-
 const STATUS_META = {
   Pendiente: { bg: '#fff7ed', color: '#c2410c' },
   Creada: { bg: '#eff6ff', color: '#2563eb' },
@@ -31,26 +23,6 @@ const STATUS_META = {
 };
 
 const PRIORITY_ORDER = { Alta: 0, Media: 1, Baja: 2 };
-
-const getDueDatesInWindow = (plan, windowStart, windowEnd) => {
-  const intervalDays = FREQ_TO_DAYS[plan.frecuencia] ?? 30;
-  const start = new Date(`${plan.fecha_inicio}T00:00:00`);
-  if (Number.isNaN(start.getTime())) return [];
-
-  const from = new Date(windowStart);
-  const to = new Date(windowEnd);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) return [];
-
-  const cursor = new Date(start);
-  while (cursor < from) cursor.setDate(cursor.getDate() + intervalDays);
-
-  const result = [];
-  while (cursor <= to) {
-    result.push(cursor.toISOString().slice(0, 10));
-    cursor.setDate(cursor.getDate() + intervalDays);
-  }
-  return result;
-};
 
 const isKmPlanInAlertWindow = (plan) => {
   const actual = Number(plan.km_actual) || 0;
@@ -144,19 +116,20 @@ export default function PmpCalendario() {
     const dateItems = (Array.isArray(plans) ? plans : [])
       .flatMap((plan) => {
         const eq = (Array.isArray(equipos) ? equipos : []).find((item) => (item.codigo || '') === (plan.codigo || ''));
-        return getDueDatesInWindow(plan, monthStart, monthEnd).map((fecha) => {
-          const id = `${fecha}_${plan.id}`;
-          if (closedIds.has(id)) return null;
-          const existingAlert = mapExisting.get(String(id));
+        return getDatePlanOccurrencesInWindow(plan, monthStart, monthEnd).map((occurrence) => {
+          const legacyId = `${occurrence.fecha}_${plan.id}`;
+          const existingAlert = mapExisting.get(String(occurrence.id)) || mapExisting.get(String(legacyId));
+          const id = existingAlert?.id || occurrence.id;
+          if (closedIds.has(id) || closedIds.has(legacyId)) return null;
           return {
             id,
-            fecha,
+            fecha: occurrence.fecha,
             codigo: plan.codigo || '',
             equipo: plan.equipo || eq?.descripcion || '',
             area_trabajo: eq?.area_trabajo || existingAlert?.area_trabajo || 'N.A.',
             prioridad: plan.prioridad || 'Media',
             responsable: plan.responsable || 'N.A.',
-            actividad: plan.actividades || '',
+            actividad: `${occurrence.marker} - ${occurrence.title}${occurrence.activities_text ? `\n${occurrence.activities_text}` : ''}`.trim(),
             tipo_mantto: existingAlert?.tipo_mantto || 'Preventivo',
             status_ot: existingAlert?.status_ot || 'Pendiente',
             ot_numero: existingAlert?.ot_numero || '',
@@ -294,9 +267,9 @@ export default function PmpCalendario() {
       </div>
 
       <div className="card" style={{ marginBottom: '1rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(120px, 1fr))', gap: '.65rem' }}>
+        <div className="pmp-calendar-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(120px, 1fr))', gap: '.65rem' }}>
           {WEEKDAYS.map((label) => (
-            <div key={label} style={{ padding: '.6rem .7rem', borderRadius: '.65rem', background: '#1f3b5b', color: '#fff', fontWeight: 700, textAlign: 'center' }}>
+            <div key={label} className="pmp-calendar-weekday" style={{ padding: '.6rem .7rem', borderRadius: '.65rem', background: '#1f3b5b', color: '#fff', fontWeight: 700, textAlign: 'center' }}>
               {label}
             </div>
           ))}
@@ -306,6 +279,7 @@ export default function PmpCalendario() {
               return (
                 <div
                   key={`blank-${index}`}
+                  className="pmp-calendar-empty"
                   style={{ minHeight: '115px', border: '1px dashed #e5e7eb', borderRadius: '.8rem', background: '#f8fafc' }}
                 />
               );
@@ -318,6 +292,7 @@ export default function PmpCalendario() {
             return (
               <button
                 key={cell.iso}
+                className="pmp-calendar-day"
                 type="button"
                 onClick={() => setSelectedDate(cell.iso)}
                 style={{

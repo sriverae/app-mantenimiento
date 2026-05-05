@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import TableFilterRow from '../components/TableFilterRow';
+import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { filterRowsByColumns } from '../utils/tableFilters';
 
 const BAJAS_HISTORY_KEY = SHARED_DOCUMENT_KEYS.bajasHistory;
 
@@ -18,6 +21,19 @@ export default function PmpBajasHistorial() {
   }, []);
 
   const sorted = useMemo(() => [...history].sort((a, b) => new Date(b.fecha) - new Date(a.fecha)), [history]);
+  const tableColumns = useMemo(() => ([
+    { id: 'fecha', getValue: (item) => new Date(item.fecha).toLocaleString() },
+    { id: 'tipo', getValue: (item) => item.tipo },
+    { id: 'equipo', getValue: (item) => item.equipo },
+    { id: 'descripcion', getValue: (item) => item.descripcion },
+    { id: 'subequipo', getValue: (item) => item.subequipo },
+    { id: 'niveles', getValue: (item) => item.nivelesAfectados },
+  ]), []);
+  const { filters, setFilter } = useTableColumnFilters(tableColumns);
+  const visibleRows = useMemo(
+    () => filterRowsByColumns(sorted, tableColumns, filters),
+    [sorted, tableColumns, filters],
+  );
 
   if (loading) {
     return (
@@ -43,9 +59,10 @@ export default function PmpBajasHistorial() {
                   <th key={h} style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.55rem .5rem', fontSize: '.8rem' }}>{h}</th>
                 ))}
               </tr>
+              <TableFilterRow columns={tableColumns} rows={sorted} filters={filters} onChange={setFilter} dark />
             </thead>
             <tbody>
-              {sorted.map((item) => (
+              {visibleRows.map((item) => (
                 <tr key={item.id}>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{new Date(item.fecha).toLocaleString()}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.tipo}</td>
@@ -55,6 +72,13 @@ export default function PmpBajasHistorial() {
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.nivelesAfectados}</td>
                 </tr>
               ))}
+              {!visibleRows.length && (
+                <tr>
+                  <td colSpan={6} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
+                    No hay bajas que coincidan con los filtros aplicados.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         )}
