@@ -59,6 +59,14 @@ function normalizeOwnerText(value) {
   return safeText(value).toLowerCase();
 }
 
+function normalizeNoticePhoto(photo) {
+  if (!photo) return null;
+  if (typeof photo === 'string') {
+    return { url: photo };
+  }
+  return photo;
+}
+
 export function calculateNoticeAssessment({
   canContinueWorking = true,
   detectionMethod = '',
@@ -142,7 +150,14 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
     const sequence = nextSequence;
     nextSequence += 1;
     const evidencePhotos = getWorkReportEvidencePhotos(report);
-    const problemPhotos = [evidencePhotos.after, evidencePhotos.before].filter(Boolean);
+    const problemPhotos = [evidencePhotos.after, evidencePhotos.before]
+      .map(normalizeNoticePhoto)
+      .filter(Boolean);
+    const noticeDetail = safeText(suggestion.detail)
+      || safeText(suggestion.text)
+      || safeText(report?.observaciones)
+      || safeText(suggestion.noticeCategory)
+      || 'Aviso generado desde cierre de OT';
 
     acc.push({
       id: `notice_${Date.now()}_${index + 1}_${sequence}`,
@@ -158,7 +173,7 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
       area_trabajo: alert?.area_trabajo || 'N.A.',
       responsable: alert?.responsable || 'N.A.',
       categoria: suggestion.noticeCategory || suggestion.category || 'Aviso tecnico',
-      detalle: safeText(suggestion.detail),
+      detalle: noticeDetail,
       sugerencia_texto: safeText(suggestion.text || report?.observaciones),
       fecha_aviso: report?.fechaFin || report?.fechaInicio || new Date().toISOString().slice(0, 10),
       hora_evidencia: safeText(report?.horaFin || report?.horaInicio),

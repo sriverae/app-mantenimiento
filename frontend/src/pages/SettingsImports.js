@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate, useParams } from 'react-router-dom';
-import { createUser, getUsers } from '../services/api';
+import { createUser, getUsers, uploadPhotoAttachment } from '../services/api';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import {
   buildPackageDraftFromPdf,
@@ -41,6 +41,20 @@ const EMPTY_IMPORT_STATE = {
   importing: false,
 };
 
+const EMPTY_HISTORY_PDF_STATE = {
+  files: [],
+  uploading: false,
+  error: '',
+};
+
+const EMPTY_EQUIPMENT_PHOTO_STATE = {
+  files: [],
+  uploading: false,
+  error: '',
+};
+
+const ALLOWED_EQUIPMENT_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
 const SECTION_TITLES = {
   'historial-ot': 'Importacion de Historial de OT',
   cronograma: 'Importacion de Cronograma de mantenimiento',
@@ -52,23 +66,34 @@ const SECTION_TITLES = {
 
 const SECTION_TEMPLATES = {
   'historial-ot': [
-    'ot_numero',
-    'codigo',
-    'descripcion',
-    'area_trabajo',
-    'responsable',
-    'tipo_mantenimiento',
     'fecha_inicio',
     'hora_inicio',
     'fecha_fin',
     'hora_fin',
+    'ot_numero',
+    'codigo',
+    'descripcion',
+    'area_trabajo',
     'fecha_cierre',
-    'personal_mantenimiento',
-    'materiales',
+    'vc',
+    'contador',
+    'tiempo_indisponible_generico',
+    'tiempo_indisponible_operacional',
     'tiempo_efectivo_hh',
-    'estado_equipo',
-    'satisfaccion',
+    'tipo_mantenimiento',
+    'puesto_trabajo_responsable',
+    'personal_mantenimiento',
+    'gastos_personal',
+    'nombre_terceros',
+    'gastos_terceros',
+    'actividad_mantenimiento',
+    'materiales',
+    'gastos_repuestos',
     'observaciones',
+    'evaluacion',
+    'estado_equipo',
+    'tipo_ot',
+    'reprogramacion',
   ],
   cronograma: [
     'codigo',
@@ -111,12 +136,24 @@ const TEMPLATE_SAMPLE_ROWS = {
       fecha_fin: '2026-04-01',
       hora_fin: '10:30',
       fecha_cierre: '2026-04-01',
+      vc: 'V.C - DIA',
+      contador: '0',
+      tiempo_indisponible_generico: '0',
+      tiempo_indisponible_operacional: '0',
+      puesto_trabajo_responsable: 'Mecanico',
       personal_mantenimiento: 'MEC-1 | ELE-1',
+      gastos_personal: '120.00',
+      nombre_terceros: 'N.A.',
+      gastos_terceros: '0.00',
+      actividad_mantenimiento: 'Inspeccion visual general; Limpieza de componentes',
       materiales: 'PRD0000001 x 1',
+      gastos_repuestos: '136.67',
       tiempo_efectivo_hh: '7.5',
-      estado_equipo: 'Operativo',
-      satisfaccion: 'Conforme',
       observaciones: 'OT historica importada desde Excel.',
+      evaluacion: 'Conforme',
+      estado_equipo: 'Operativo',
+      tipo_ot: 'Preventiva',
+      reprogramacion: 'No',
     },
   ],
   cronograma: [
@@ -186,13 +223,90 @@ const TEMPLATE_SAMPLE_ROWS = {
 };
 
 const PREVIEW_COLUMNS = {
-  'historial-ot': ['ot_numero', 'codigo', 'descripcion', 'fecha_cierre', 'tiempo_efectivo_hh'],
+  'historial-ot': ['ot_numero', 'codigo', 'descripcion', 'fecha_inicio', 'hora_inicio', 'fecha_fin', 'hora_fin', 'tiempo_efectivo_hh'],
   cronograma: ['codigo', 'equipo', 'frecuencia', 'fecha_inicio', 'dias_anticipacion_alerta', 'responsable'],
   equipos: ['codigo', 'descripcion', 'area_trabajo', 'criticidad', 'estado'],
   paquetes: ['codigo', 'nombre', 'vc', 'tiempo_min', 'actividades'],
   materiales: ['codigo', 'descripcion', 'stock', 'unidad', 'costo_unit'],
   personal: ['codigo', 'nombres_apellidos', 'especialidad', 'usuario', 'rol_usuario'],
 };
+
+const normalizeOtReference = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/\.[^.]+$/g, '')
+  .toUpperCase()
+  .replace(/[^A-Z0-9]/g, '');
+
+const numericOtReference = (value) => String(value || '').replace(/\D/g, '');
+
+const extractOtReferenceFromPdfName = (fileName) => {
+  const baseName = String(fileName || '').replace(/\.[^.]+$/i, '');
+  const explicitMatch = baseName.match(/OT[\s._-]*\d{2,4}[\s._-]*\d{3,}/i);
+  const numericMatch = baseName.match(/\d{2,4}[\s._-]*\d{3,}/);
+  const rawReference = explicitMatch?.[0] || numericMatch?.[0] || baseName;
+  return {
+    raw: rawReference.trim(),
+    key: normalizeOtReference(rawReference),
+    numericKey: numericOtReference(rawReference),
+  };
+};
+
+const describeHistoryPdfFile = (file) => {
+  const reference = extractOtReferenceFromPdfName(file?.name || '');
+  return {
+    file,
+    name: file?.name || '',
+    size: file?.size || 0,
+    contentType: file?.type || 'application/pdf',
+    otReference: reference.raw,
+    otKey: reference.key,
+    numericKey: reference.numericKey,
+  };
+};
+
+const historyItemOtKey = (item) => normalizeOtReference(item?.ot_numero || item?.numero_ot || item?.ot || '');
+
+const historyItemNumericOtKey = (item) => numericOtReference(item?.ot_numero || item?.numero_ot || item?.ot || '');
+
+const pdfMatchesHistoryItem = (pdf, item) => {
+  const itemKey = historyItemOtKey(item);
+  const itemNumericKey = historyItemNumericOtKey(item);
+  if (!itemKey) return false;
+  if (pdf.otKey === itemKey) return true;
+  if (pdf.otKey.length >= 8 && (pdf.otKey.includes(itemKey) || itemKey.includes(pdf.otKey))) return true;
+  return Boolean(itemNumericKey && pdf.numericKey && pdf.numericKey === itemNumericKey);
+};
+
+const findPdfMatchesForHistoryItem = (pdfFiles, item) => (
+  (Array.isArray(pdfFiles) ? pdfFiles : []).filter((pdf) => pdfMatchesHistoryItem(pdf, item))
+);
+
+const describeEquipmentPhotoFile = (file) => ({
+  file,
+  name: file?.name || '',
+  size: file?.size || 0,
+  contentType: file?.type || 'image/jpeg',
+  key: normalizeOtReference(file?.name || ''),
+});
+
+const equipmentReferenceKeys = (item) => [
+  normalizeOtReference(item?.codigo),
+  normalizeOtReference(item?.descripcion),
+].filter(Boolean);
+
+const photoMatchesEquipmentItem = (photo, item) => {
+  const photoKey = photo?.key || '';
+  if (!photoKey) return false;
+  return equipmentReferenceKeys(item).some((key) => key && (
+    photoKey === key || photoKey.includes(key) || key.includes(photoKey)
+  ));
+};
+
+const findPhotoMatchesForEquipmentItem = (photoFiles, item) => (
+  (Array.isArray(photoFiles) ? photoFiles : []).filter((photo) => photoMatchesEquipmentItem(photo, item))
+);
+
 
 function SummaryCard({ label, value, color = '#111827' }) {
   return (
@@ -433,8 +547,10 @@ export default function SettingsImports() {
   });
 
   const [historyState, setHistoryState] = useState(EMPTY_IMPORT_STATE);
+  const [historyPdfState, setHistoryPdfState] = useState(EMPTY_HISTORY_PDF_STATE);
   const [scheduleState, setScheduleState] = useState(EMPTY_IMPORT_STATE);
   const [equipmentState, setEquipmentState] = useState(EMPTY_IMPORT_STATE);
+  const [equipmentPhotoState, setEquipmentPhotoState] = useState(EMPTY_EQUIPMENT_PHOTO_STATE);
   const [materialsState, setMaterialsState] = useState(EMPTY_IMPORT_STATE);
   const [personalState, setPersonalState] = useState(EMPTY_IMPORT_STATE);
   const [packageExcelState, setPackageExcelState] = useState(EMPTY_IMPORT_STATE);
@@ -528,25 +644,167 @@ export default function SettingsImports() {
     }
   };
 
+  const handleHistoryPdfFiles = (fileList) => {
+    const files = Array.from(fileList || []);
+    const invalid = files.filter((file) => file.type !== 'application/pdf' && !String(file.name || '').toLowerCase().endsWith('.pdf'));
+    const validFiles = files.filter((file) => !invalid.includes(file));
+    setHistoryPdfState((prev) => ({
+      ...prev,
+      files: validFiles.map(describeHistoryPdfFile),
+      error: invalid.length ? `${invalid.length} archivo(s) ignorado(s) porque no son PDF.` : '',
+    }));
+    setHistoryState((prev) => ({ ...prev, success: '', error: '' }));
+  };
+
+  const uploadHistoryPdf = async (pdf) => {
+    const formData = new FormData();
+    formData.append('file', pdf.file);
+    formData.append('scope', `historial_ot_${pdf.otKey || Date.now()}`);
+    formData.append('category', 'HISTORIAL_OT_PDF');
+    formData.append('caption', pdf.name);
+    const uploaded = await uploadPhotoAttachment(formData);
+    return {
+      ...uploaded,
+      id: uploaded.filename || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      original_name: uploaded.original_name || pdf.name,
+      file_name: uploaded.original_name || pdf.name,
+      content_type: pdf.contentType,
+      ot_reference: pdf.otReference,
+      imported_at: new Date().toISOString(),
+    };
+  };
+
+  const attachHistoryPdfsToItems = async (items) => {
+    const pdfFiles = historyPdfState.files || [];
+    if (!pdfFiles.length) return { items, warnings: [] };
+
+    setHistoryPdfState((prev) => ({ ...prev, uploading: true, error: '' }));
+    const uploadedByName = new Map();
+    const unmatched = pdfFiles.filter((pdf) => !items.some((item) => pdfMatchesHistoryItem(pdf, item)));
+    const warnings = unmatched.map((pdf) => `PDF sin coincidencia de OT: ${pdf.name}`);
+
+    try {
+      const nextItems = [];
+      for (const item of items) {
+        const matches = findPdfMatchesForHistoryItem(pdfFiles, item);
+        if (!matches.length) {
+          nextItems.push(item);
+          continue;
+        }
+
+        const uploadedMatches = [];
+        for (const pdf of matches) {
+          if (!uploadedByName.has(pdf.name)) {
+            uploadedByName.set(pdf.name, await uploadHistoryPdf(pdf));
+          }
+          uploadedMatches.push(uploadedByName.get(pdf.name));
+        }
+        const previousPdfs = Array.isArray(item.ot_pdf_files) ? item.ot_pdf_files : [];
+        const mergedPdfs = [...uploadedMatches, ...previousPdfs.filter((previous) => (
+          !uploadedMatches.some((current) => current.filename && current.filename === previous.filename)
+        ))];
+        nextItems.push({
+          ...item,
+          ot_pdf_file: uploadedMatches[0] || item.ot_pdf_file || null,
+          ot_pdf_files: mergedPdfs,
+          ot_pdf_file_name: uploadedMatches[0]?.original_name || uploadedMatches[0]?.file_name || item.ot_pdf_file_name || '',
+        });
+      }
+      return { items: nextItems, warnings };
+    } finally {
+      setHistoryPdfState((prev) => ({ ...prev, uploading: false }));
+    }
+  };
+
+  const handleEquipmentPhotoFiles = (fileList) => {
+    const files = Array.from(fileList || []);
+    const invalid = files.filter((file) => !ALLOWED_EQUIPMENT_PHOTO_TYPES.includes(file.type));
+    const validFiles = files.filter((file) => !invalid.includes(file));
+    setEquipmentPhotoState((prev) => ({
+      ...prev,
+      files: validFiles.map(describeEquipmentPhotoFile),
+      error: invalid.length ? `${invalid.length} archivo(s) ignorado(s). Usa JPG, PNG, WEBP o GIF.` : '',
+    }));
+    setEquipmentState((prev) => ({ ...prev, success: '', error: '' }));
+  };
+
+  const uploadEquipmentPhoto = async (photo) => {
+    const formData = new FormData();
+    formData.append('file', photo.file);
+    formData.append('scope', `equipo_${photo.key || Date.now()}`);
+    formData.append('category', 'EQUIPO');
+    formData.append('caption', photo.name);
+    const uploaded = await uploadPhotoAttachment(formData);
+    return {
+      ...uploaded,
+      id: uploaded.filename || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      original_name: uploaded.original_name || photo.name,
+      content_type: photo.contentType,
+      imported_at: new Date().toISOString(),
+    };
+  };
+
+  const attachEquipmentPhotosToItems = async (items) => {
+    const photoFiles = equipmentPhotoState.files || [];
+    if (!photoFiles.length) return { items, warnings: [] };
+
+    setEquipmentPhotoState((prev) => ({ ...prev, uploading: true, error: '' }));
+    const uploadedByName = new Map();
+    const unmatched = photoFiles.filter((photo) => !items.some((item) => photoMatchesEquipmentItem(photo, item)));
+    const warnings = unmatched.map((photo) => `Foto sin coincidencia de equipo: ${photo.name}`);
+
+    try {
+      const nextItems = [];
+      for (const item of items) {
+        const matches = findPhotoMatchesForEquipmentItem(photoFiles, item);
+        if (!matches.length) {
+          nextItems.push(item);
+          continue;
+        }
+        const photo = matches[0];
+        if (!uploadedByName.has(photo.name)) {
+          uploadedByName.set(photo.name, await uploadEquipmentPhoto(photo));
+        }
+        nextItems.push({
+          ...item,
+          foto_equipo: uploadedByName.get(photo.name),
+        });
+      }
+      return { items: nextItems, warnings };
+    } finally {
+      setEquipmentPhotoState((prev) => ({ ...prev, uploading: false }));
+    }
+  };
+
   const importHistory = async () => {
     setHistoryState((prev) => ({ ...prev, importing: true, error: '', success: '' }));
     try {
+      const { items: itemsWithPdfs, warnings } = await attachHistoryPdfsToItems(historyState.items);
       const merged = mergeByKey(
         snapshot.otHistory,
-        historyState.items,
+        itemsWithPdfs,
         (item) => item.ot_numero || `${item.codigo}_${item.fecha_cierre}`,
         historyState.mode,
+        (previous, imported) => ({
+          ...previous,
+          ...imported,
+          ot_pdf_file: imported.ot_pdf_file || previous.ot_pdf_file || null,
+          ot_pdf_files: imported.ot_pdf_files || previous.ot_pdf_files || [],
+          ot_pdf_file_name: imported.ot_pdf_file_name || previous.ot_pdf_file_name || '',
+        }),
       );
       await saveSharedDocument(SHARED_DOCUMENT_KEYS.otHistory, merged);
       setHistoryState((prev) => ({
         ...prev,
         importing: false,
-        success: `${historyState.items.length} OT historica(s) importada(s) correctamente.`,
+        warnings: [...(prev.warnings || []), ...warnings],
+        success: `${historyState.items.length} OT historica(s) importada(s) correctamente.${historyPdfState.files.length ? ` ${historyPdfState.files.length - warnings.length} PDF(s) relacionado(s).` : ''}`,
       }));
       await loadSnapshot();
     } catch (error) {
       console.error('Error importando historial OT:', error);
-      setHistoryState((prev) => ({ ...prev, importing: false, error: 'No se pudo guardar el historial de OT importado.' }));
+      setHistoryPdfState((prev) => ({ ...prev, uploading: false }));
+      setHistoryState((prev) => ({ ...prev, importing: false, error: error?.response?.data?.detail || 'No se pudo guardar el historial de OT importado.' }));
     }
   };
 
@@ -575,9 +833,10 @@ export default function SettingsImports() {
   const importEquipment = async () => {
     setEquipmentState((prev) => ({ ...prev, importing: true, error: '', success: '' }));
     try {
+      const { items: itemsWithPhotos, warnings } = await attachEquipmentPhotosToItems(equipmentState.items);
       const mergedItems = mergeByKey(
         snapshot.equipmentItems,
-        equipmentState.items,
+        itemsWithPhotos,
         (item) => item.codigo || item.descripcion,
         equipmentState.mode,
         (previous, next) => ({
@@ -585,6 +844,7 @@ export default function SettingsImports() {
           ...next,
           id: previous.id || next.id,
           despiece: previous.despiece || next.despiece || [],
+          foto_equipo: next.foto_equipo || previous.foto_equipo || null,
         }),
       );
       await Promise.all([
@@ -594,12 +854,14 @@ export default function SettingsImports() {
       setEquipmentState((prev) => ({
         ...prev,
         importing: false,
-        success: `${equipmentState.items.length} equipo(s) importado(s). Tambien se actualizaron las columnas del maestro.`,
+        warnings: [...(prev.warnings || []), ...warnings],
+        success: `${equipmentState.items.length} equipo(s) importado(s).${equipmentPhotoState.files.length ? ` ${equipmentPhotoState.files.length - warnings.length} foto(s) relacionada(s).` : ''} Tambien se actualizaron las columnas del maestro.`,
       }));
       await loadSnapshot();
     } catch (error) {
       console.error('Error importando equipos:', error);
-      setEquipmentState((prev) => ({ ...prev, importing: false, error: 'No se pudo guardar la importacion de equipos.' }));
+      setEquipmentPhotoState((prev) => ({ ...prev, uploading: false }));
+      setEquipmentState((prev) => ({ ...prev, importing: false, error: error?.response?.data?.detail || 'No se pudo guardar la importacion de equipos.' }));
     }
   };
 
@@ -784,6 +1046,179 @@ export default function SettingsImports() {
     }
   };
 
+  const historyPdfSummary = useMemo(() => {
+    const files = historyPdfState.files || [];
+    const items = historyState.items || [];
+    const matchedNames = new Set();
+    items.forEach((item) => {
+      findPdfMatchesForHistoryItem(files, item).forEach((pdf) => matchedNames.add(pdf.name));
+    });
+    return {
+      total: files.length,
+      matched: matchedNames.size,
+      unmatched: files.filter((pdf) => !matchedNames.has(pdf.name)),
+    };
+  }, [historyPdfState.files, historyState.items]);
+
+  const historyPdfExtraContent = activeSection === 'historial-ot' ? (
+    <div style={{ border: '1px solid #dbeafe', borderRadius: '.95rem', background: '#f8fbff', padding: '1rem', display: 'grid', gap: '.8rem' }}>
+      <div>
+        <div style={{ fontWeight: 800, color: '#111827' }}>PDF de OT masivos (opcional)</div>
+        <div style={{ color: '#64748b', fontSize: '.9rem', marginTop: '.2rem' }}>
+          El nombre del PDF debe contener el numero de OT. Ejemplo: <strong>OT-2026-000125.pdf</strong>.
+        </div>
+      </div>
+      <input
+        type="file"
+        accept=".pdf,application/pdf"
+        multiple
+        className="form-input"
+        onChange={(event) => {
+          if (event.target.files?.length) handleHistoryPdfFiles(event.target.files);
+          event.target.value = '';
+        }}
+      />
+      {historyPdfState.error && (
+        <div style={{ color: '#b45309', fontWeight: 700, fontSize: '.9rem' }}>{historyPdfState.error}</div>
+      )}
+      {!!historyPdfSummary.total && (
+        <div style={{ display: 'grid', gap: '.65rem' }}>
+          <div style={{ display: 'flex', gap: '.55rem', flexWrap: 'wrap' }}>
+            <span style={{ padding: '.35rem .65rem', borderRadius: '999px', background: '#eef2ff', color: '#3730a3', fontWeight: 800 }}>
+              {historyPdfSummary.total} PDF(s) cargado(s)
+            </span>
+            <span style={{ padding: '.35rem .65rem', borderRadius: '999px', background: '#ecfdf5', color: '#047857', fontWeight: 800 }}>
+              {historyPdfSummary.matched} relacionado(s)
+            </span>
+            {!!historyPdfSummary.unmatched.length && (
+              <span style={{ padding: '.35rem .65rem', borderRadius: '999px', background: '#fff7ed', color: '#c2410c', fontWeight: 800 }}>
+                {historyPdfSummary.unmatched.length} sin OT coincidente
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'grid', gap: '.4rem', maxHeight: '150px', overflow: 'auto' }}>
+            {historyPdfState.files.map((pdf) => {
+              const matched = !historyPdfSummary.unmatched.some((item) => item.name === pdf.name);
+              return (
+                <div
+                  key={`${pdf.name}-${pdf.size}`}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: '.75rem',
+                    alignItems: 'center',
+                    padding: '.55rem .65rem',
+                    borderRadius: '.7rem',
+                    border: `1px solid ${matched ? '#bbf7d0' : '#fed7aa'}`,
+                    background: matched ? '#f0fdf4' : '#fff7ed',
+                  }}
+                >
+                  <span style={{ color: '#334155', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>{pdf.name}</span>
+                  <span style={{ color: matched ? '#047857' : '#c2410c', fontWeight: 800, whiteSpace: 'nowrap' }}>
+                    {matched ? 'Relacionado' : 'Sin coincidencia'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {historyPdfState.uploading && (
+        <div style={{ color: '#2563eb', fontWeight: 800 }}>Subiendo PDFs al servidor...</div>
+      )}
+    </div>
+  ) : null;
+
+  const equipmentPhotoSummary = useMemo(() => {
+    const files = equipmentPhotoState.files || [];
+    const items = equipmentState.items || [];
+    const matchedNames = new Set();
+    items.forEach((item) => {
+      findPhotoMatchesForEquipmentItem(files, item).forEach((photo) => matchedNames.add(photo.name));
+    });
+    return {
+      total: files.length,
+      matched: matchedNames.size,
+      unmatched: files.filter((photo) => !matchedNames.has(photo.name)),
+    };
+  }, [equipmentPhotoState.files, equipmentState.items]);
+
+  const equipmentPhotoExtraContent = activeSection === 'equipos' ? (
+    <div style={{ display: 'grid', gap: '.85rem' }}>
+      {equipmentState.columns?.length ? (
+        <div style={{ padding: '.85rem 1rem', borderRadius: '.85rem', background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8' }}>
+          Columnas del maestro despues de la lectura: <strong>{equipmentState.columns.length}</strong>
+        </div>
+      ) : null}
+      <div style={{ border: '1px solid #d1fae5', borderRadius: '.95rem', background: '#f8fffb', padding: '1rem', display: 'grid', gap: '.8rem' }}>
+        <div>
+          <div style={{ fontWeight: 800, color: '#111827' }}>Fotos de equipos masivas (opcional)</div>
+          <div style={{ color: '#64748b', fontSize: '.9rem', marginTop: '.2rem' }}>
+            El nombre de la foto debe contener el codigo o nombre del equipo. Ejemplo: <strong>IAISPL1.jpg</strong>.
+          </div>
+        </div>
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          multiple
+          className="form-input"
+          onChange={(event) => {
+            if (event.target.files?.length) handleEquipmentPhotoFiles(event.target.files);
+            event.target.value = '';
+          }}
+        />
+        {equipmentPhotoState.error && (
+          <div style={{ color: '#b45309', fontWeight: 700, fontSize: '.9rem' }}>{equipmentPhotoState.error}</div>
+        )}
+        {!!equipmentPhotoSummary.total && (
+          <div style={{ display: 'grid', gap: '.65rem' }}>
+            <div style={{ display: 'flex', gap: '.55rem', flexWrap: 'wrap' }}>
+              <span style={{ padding: '.35rem .65rem', borderRadius: '999px', background: '#eef2ff', color: '#3730a3', fontWeight: 800 }}>
+                {equipmentPhotoSummary.total} foto(s) cargada(s)
+              </span>
+              <span style={{ padding: '.35rem .65rem', borderRadius: '999px', background: '#ecfdf5', color: '#047857', fontWeight: 800 }}>
+                {equipmentPhotoSummary.matched} relacionada(s)
+              </span>
+              {!!equipmentPhotoSummary.unmatched.length && (
+                <span style={{ padding: '.35rem .65rem', borderRadius: '999px', background: '#fff7ed', color: '#c2410c', fontWeight: 800 }}>
+                  {equipmentPhotoSummary.unmatched.length} sin equipo coincidente
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'grid', gap: '.4rem', maxHeight: '150px', overflow: 'auto' }}>
+              {equipmentPhotoState.files.map((photo) => {
+                const matched = !equipmentPhotoSummary.unmatched.some((item) => item.name === photo.name);
+                return (
+                  <div
+                    key={`${photo.name}-${photo.size}`}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: '.75rem',
+                      alignItems: 'center',
+                      padding: '.55rem .65rem',
+                      borderRadius: '.7rem',
+                      border: `1px solid ${matched ? '#bbf7d0' : '#fed7aa'}`,
+                      background: matched ? '#f0fdf4' : '#fff7ed',
+                    }}
+                  >
+                    <span style={{ color: '#334155', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>{photo.name}</span>
+                    <span style={{ color: matched ? '#047857' : '#c2410c', fontWeight: 800, whiteSpace: 'nowrap' }}>
+                      {matched ? 'Relacionada' : 'Sin coincidencia'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {equipmentPhotoState.uploading && (
+          <div style={{ color: '#2563eb', fontWeight: 800 }}>Subiendo fotos al servidor...</div>
+        )}
+      </div>
+    </div>
+  ) : null;
+
   if (!activeSection) {
     return <Navigate to="/settings/importaciones/historial-ot" replace />;
   }
@@ -827,6 +1262,7 @@ export default function SettingsImports() {
           onImport={importHistory}
           previewColumns={PREVIEW_COLUMNS['historial-ot']}
           previewRows={historyState.items.slice(0, 12)}
+          extraContent={historyPdfExtraContent}
         />
       )}
 
@@ -859,11 +1295,7 @@ export default function SettingsImports() {
           onImport={importEquipment}
           previewColumns={PREVIEW_COLUMNS.equipos}
           previewRows={equipmentState.items.slice(0, 12)}
-          extraContent={equipmentState.columns?.length ? (
-            <div style={{ padding: '.85rem 1rem', borderRadius: '.85rem', background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1d4ed8' }}>
-              Columnas del maestro despues de la lectura: <strong>{equipmentState.columns.length}</strong>
-            </div>
-          ) : null}
+          extraContent={equipmentPhotoExtraContent}
         />
       )}
 

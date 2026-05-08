@@ -10,7 +10,12 @@ import {
   releaseWorkNotificationLock,
   uploadPhotoAttachment,
 } from '../services/api';
-import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import {
+  getSharedDocumentErrorMessage,
+  loadSharedDocument,
+  saveSharedDocument,
+  SHARED_DOCUMENT_KEYS,
+} from '../services/sharedDocuments';
 import { DEFAULT_MATERIALS, normalizeMaterialsCatalog } from '../utils/materialsCatalog';
 import { evaluateWorkReportConsistency, getAlertConsistencySummary } from '../utils/otConsistency';
 import { formatDateDisplay, formatDateTimeDisplay } from '../utils/dateFormat';
@@ -55,6 +60,7 @@ const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
 const OT_WORK_REPORTS_KEY = SHARED_DOCUMENT_KEYS.otWorkReports;
 const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
 const NOTICES_KEY = SHARED_DOCUMENT_KEYS.maintenanceNotices;
+const EQUIPOS_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
 const RRHH_KEY = SHARED_DOCUMENT_KEYS.rrhh;
 const MATERIALES_KEY = SHARED_DOCUMENT_KEYS.materials;
 const KM_PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlansKm;
@@ -111,6 +117,82 @@ const isAlertAssignedToUser = (alert, user) => {
   if (!assignedText) return false;
 
   return Array.from(getUserIdentityTokens(user)).some((token) => assignedText.includes(token));
+};
+
+const isOtHiddenFromFieldStaff = (alert) => Boolean(
+  alert?.oculta_para_personal_campo
+  || alert?.hidden_from_field_staff
+  || alert?.hiddenFromFieldStaff,
+);
+
+const getTodayDateKey = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+const isDateKey = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+
+const isOverdueUnreleasedOt = (alert, todayKey = getTodayDateKey()) => {
+  const status = String(alert?.status_ot || '').trim();
+  const dueDate = String(alert?.fecha_ejecutar || '').trim();
+  return ['Pendiente', 'Creada'].includes(status) && isDateKey(dueDate) && dueDate < todayKey;
+};
+
+const getOtVisualTone = (alert, isSelected = false) => {
+  const status = String(alert?.status_ot || '').trim();
+  if (isOverdueUnreleasedOt(alert)) {
+    return {
+      key: 'overdue',
+      label: 'Vencida sin liberar',
+      background: isSelected ? '#fee2e2' : '#fef2f2',
+      border: isSelected ? '#ef4444' : '#fecaca',
+      text: '#991b1b',
+      chipBackground: '#fee2e2',
+      chipText: '#991b1b',
+    };
+  }
+  if (status === 'Liberada') {
+    return {
+      key: 'released',
+      label: 'Liberada',
+      background: isSelected ? '#dcfce7' : '#f0fdf4',
+      border: isSelected ? '#22c55e' : '#bbf7d0',
+      text: '#166534',
+      chipBackground: '#dcfce7',
+      chipText: '#166534',
+    };
+  }
+  if (status === 'Solicitud de cierre') {
+    return {
+      key: 'close_request',
+      label: 'Solicitud de cierre',
+      background: isSelected ? '#ffedd5' : '#fff7ed',
+      border: isSelected ? '#f97316' : '#fed7aa',
+      text: '#9a3412',
+      chipBackground: '#ffedd5',
+      chipText: '#9a3412',
+    };
+  }
+  if (['Pendiente', 'Creada'].includes(status)) {
+    return {
+      key: 'fresh_unreleased',
+      label: status,
+      background: '#fff',
+      border: isSelected ? '#93c5fd' : '#e5e7eb',
+      text: '#334155',
+      chipBackground: '#f8fafc',
+      chipText: '#334155',
+    };
+  }
+  return {
+    key: 'default',
+    label: status || 'Sin estado',
+    background: isSelected ? '#dbeafe' : '#fff',
+    border: isSelected ? '#93c5fd' : '#e5e7eb',
+    text: '#1d4ed8',
+    chipBackground: '#eff6ff',
+    chipText: '#1d4ed8',
+  };
 };
 
 const getNotificationArea = (item) => item?.area_trabajo || item?.area || item?.area_equipo || 'N.A.';
@@ -797,6 +879,14 @@ function RegisterWorkModal({
   const [horaInicio, setHoraInicio] = useState(initialReport?.horaInicio || alert.registro_ot?.hora_inicio || '');
   const [fechaFin, setFechaFin] = useState(initialReport?.fechaFin || alert.registro_ot?.fecha_fin || '');
   const [horaFin, setHoraFin] = useState(initialReport?.horaFin || alert.registro_ot?.hora_fin || '');
+  const [estadoEquipo, setEstadoEquipo] = useState(
+    ['Parada de equipo', 'Operativo durante mantenimiento'].includes(initialReport?.estado_equipo)
+      ? initialReport.estado_equipo
+      : 'Operativo durante mantenimiento',
+  );
+  const [paradaAlcance, setParadaAlcance] = useState(initialReport?.parada_alcance || 'total');
+  const [paradaHoraInicio, setParadaHoraInicio] = useState(initialReport?.parada_hora_inicio || horaInicio || '');
+  const [paradaHoraFin, setParadaHoraFin] = useState(initialReport?.parada_hora_fin || horaFin || '');
   const [showTechPicker, setShowTechPicker] = useState(false);
   const [showMaterialPicker, setShowMaterialPicker] = useState(false);
   const [reportType, setReportType] = useState(initialReport?.reportType || 'TRABAJO');
@@ -1008,7 +1098,18 @@ function RegisterWorkModal({
       if (!confirmInconsistentSave) return;
     }
 
-    if (!getPhotoSource(evidencePhotos.before) || !getPhotoSource(evidencePhotos.after)) {
+    if (estadoEquipo === 'Parada de equipo') {
+      if (!['total', 'parcial'].includes(paradaAlcance)) {
+        window.alert('Indica si la parada del equipo fue durante todo el trabajo o solo por un momento.');
+        return;
+      }
+      if (paradaAlcance === 'parcial' && (!paradaHoraInicio || !paradaHoraFin)) {
+        window.alert('Indica la hora de inicio y fin de la parada parcial del equipo.');
+        return;
+      }
+    }
+
+    if (!isServiceReport && (!getPhotoSource(evidencePhotos.before) || !getPhotoSource(evidencePhotos.after))) {
       window.alert('Debes subir exactamente una foto ANTES y una foto DESPUES para esta notificacion de trabajo.');
       return;
     }
@@ -1129,6 +1230,10 @@ function RegisterWorkModal({
       horaInicio,
       fechaFin,
       horaFin,
+      estado_equipo: estadoEquipo,
+      parada_alcance: estadoEquipo === 'Parada de equipo' ? paradaAlcance : '',
+      parada_hora_inicio: estadoEquipo === 'Parada de equipo' && paradaAlcance === 'parcial' ? paradaHoraInicio : '',
+      parada_hora_fin: estadoEquipo === 'Parada de equipo' && paradaAlcance === 'parcial' ? paradaHoraFin : '',
       totalHoras: Number(tecnicosValidos.reduce((sum, row) => sum + row.horas, 0).toFixed(2)),
       dateConsistencySnapshot: {
         hasInconsistency: consistencyCheck.hasInconsistency,
@@ -1196,6 +1301,55 @@ function RegisterWorkModal({
                 </div>
               </div>
             ) : null}
+          </div>
+
+          <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
+            <h4 style={{ marginBottom: '.55rem' }}>Estado del equipo durante esta notificacion</h4>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Estado del equipo</label>
+                <select
+                  className="form-select"
+                  value={estadoEquipo}
+                  onChange={(e) => {
+                    setEstadoEquipo(e.target.value);
+                    if (e.target.value !== 'Parada de equipo') {
+                      setParadaAlcance('total');
+                    }
+                  }}
+                >
+                  <option>Operativo durante mantenimiento</option>
+                  <option>Parada de equipo</option>
+                </select>
+              </div>
+              {estadoEquipo === 'Parada de equipo' && (
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                  <label className="form-label">Alcance de la parada</label>
+                  <div style={{ display: 'flex', gap: '.8rem', flexWrap: 'wrap', marginBottom: '.65rem' }}>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '.35rem' }}>
+                      <input type="radio" name="work_parada_alcance" checked={paradaAlcance === 'total'} onChange={() => setParadaAlcance('total')} />
+                      <span>Durante todo el trabajo</span>
+                    </label>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '.35rem' }}>
+                      <input type="radio" name="work_parada_alcance" checked={paradaAlcance === 'parcial'} onChange={() => setParadaAlcance('parcial')} />
+                      <span>Solo por un momento</span>
+                    </label>
+                  </div>
+                  {paradaAlcance === 'parcial' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '.65rem' }}>
+                      <div>
+                        <label className="form-label">Hora inicio parada</label>
+                        <input type="time" className="form-input" value={paradaHoraInicio} onChange={(e) => setParadaHoraInicio(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="form-label">Hora fin parada</label>
+                        <input type="time" className="form-input" value={paradaHoraFin} onChange={(e) => setParadaHoraFin(e.target.value)} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {isServiceReport ? (
@@ -1359,15 +1513,22 @@ function RegisterWorkModal({
           )}
 
           <div className="card" style={{ padding: '.9rem', marginBottom: '.8rem', background: '#f8fafc' }}>
-            <h4 style={{ marginBottom: '.55rem' }}>Evidencia fotografica obligatoria</h4>
+            <h4 style={{ marginBottom: '.2rem' }}>
+              {isServiceReport ? 'Evidencia fotografica opcional' : 'Evidencia fotografica obligatoria'}
+            </h4>
+            <p style={{ margin: '0 0 .55rem', color: '#64748b', fontSize: '.9rem' }}>
+              {isServiceReport
+                ? 'Para servicios de terceros puedes adjuntar fotos si deseas, pero no son obligatorias para guardar.'
+                : 'Para trabajos internos se requiere una foto antes y una foto despues.'}
+            </p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '.75rem' }}>
               {WORK_REPORT_PHOTO_SLOTS.map((slot) => {
                 const photo = evidencePhotos[slot.key];
                 const src = getPhotoSource(photo);
                 return (
-                  <div key={slot.key} style={{ border: `1px solid ${src ? '#86efac' : '#fca5a5'}`, borderRadius: '.75rem', overflow: 'hidden', background: '#fff' }}>
-                    <div style={{ padding: '.65rem .75rem', background: src ? '#ecfdf5' : '#fef2f2', color: src ? '#166534' : '#991b1b', fontWeight: 800, display: 'flex', justifyContent: 'space-between', gap: '.5rem', alignItems: 'center' }}>
-                      <span>{slot.title} *</span>
+                  <div key={slot.key} style={{ border: `1px solid ${src ? '#86efac' : (isServiceReport ? '#dbe4f0' : '#fca5a5')}`, borderRadius: '.75rem', overflow: 'hidden', background: '#fff' }}>
+                    <div style={{ padding: '.65rem .75rem', background: src ? '#ecfdf5' : (isServiceReport ? '#f8fafc' : '#fef2f2'), color: src ? '#166534' : (isServiceReport ? '#475569' : '#991b1b'), fontWeight: 800, display: 'flex', justifyContent: 'space-between', gap: '.5rem', alignItems: 'center' }}>
+                      <span>{slot.title}{isServiceReport ? '' : ' *'}</span>
                       <label className="btn btn-secondary btn-sm" style={{ cursor: uploadingEvidenceSlot ? 'not-allowed' : 'pointer', opacity: uploadingEvidenceSlot ? .65 : 1 }}>
                         {uploadingEvidenceSlot === slot.key ? 'Subiendo...' : (src ? 'Reemplazar' : 'Subir')}
                         <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingEvidenceSlot} onChange={(event) => uploadEvidencePhoto(slot.key, event)} />
@@ -1381,8 +1542,8 @@ function RegisterWorkModal({
                         </div>
                       </>
                     ) : (
-                      <div style={{ height: '180px', display: 'grid', placeItems: 'center', color: '#991b1b', fontWeight: 700, padding: '1rem', textAlign: 'center' }}>
-                        Falta cargar esta foto para guardar la notificacion.
+                      <div style={{ height: '180px', display: 'grid', placeItems: 'center', color: isServiceReport ? '#64748b' : '#991b1b', fontWeight: 700, padding: '1rem', textAlign: 'center' }}>
+                        {isServiceReport ? 'Sin foto adjunta. Puedes guardar el servicio.' : 'Falta cargar esta foto para guardar la notificacion.'}
                       </div>
                     )}
                   </div>
@@ -1465,6 +1626,7 @@ export default function WorkNotifications({ user }) {
   const [alerts, setAlerts] = useState([]);
   const [workReports, setWorkReports] = useState([]);
   const [rrhhItems, setRrhhItems] = useState(RRHH_FALLBACK);
+  const [equiposItems, setEquiposItems] = useState([]);
   const [materialsCatalog, setMaterialsCatalog] = useState(MATERIALES_FALLBACK);
   const [pdfSettings, setPdfSettings] = useState(DEFAULT_OT_PDF_SETTINGS);
   const [selectedAlertId, setSelectedAlertId] = useState(null);
@@ -1493,17 +1655,19 @@ export default function WorkNotifications({ user }) {
     let active = true;
     const load = async () => {
       setLoading(true);
-      const [alertsData, reportsData, rrhhData, materialsData, pdfFormatData] = await Promise.all([
+      const [alertsData, reportsData, rrhhData, materialsData, pdfFormatData, equiposData] = await Promise.all([
         loadSharedDocument(OT_ALERTS_KEY, []),
         loadSharedDocument(OT_WORK_REPORTS_KEY, []),
         loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
         loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
         loadSharedDocument(PDF_FORMAT_KEY, DEFAULT_OT_PDF_SETTINGS),
+        loadSharedDocument(EQUIPOS_KEY, []),
       ]);
       if (!active) return;
       setAlerts(Array.isArray(alertsData) ? alertsData : []);
       setWorkReports(Array.isArray(reportsData) ? reportsData : []);
       setRrhhItems(Array.isArray(rrhhData) && rrhhData.length ? rrhhData : RRHH_FALLBACK);
+      setEquiposItems(Array.isArray(equiposData) ? equiposData : []);
       setMaterialsCatalog(normalizeMaterialsCatalog(materialsData));
       setPdfSettings(normalizeOtPdfSettings(pdfFormatData));
       setLoading(false);
@@ -1526,24 +1690,30 @@ export default function WorkNotifications({ user }) {
   }, [loading, location.state, location.pathname, alerts, navigate]);
 
   const persistAlerts = async (nextAlerts) => {
-    setAlerts(nextAlerts);
     try {
       await saveSharedDocument(OT_ALERTS_KEY, nextAlerts);
+      setAlerts(nextAlerts);
       setError('');
     } catch (err) {
       console.error('Error guardando alertas OT:', err);
-      setError('No se pudieron guardar las notificaciones de trabajo en el servidor.');
+      const message = getSharedDocumentErrorMessage(err);
+      setError(message);
+      window.alert(message);
+      throw err;
     }
   };
 
   const persistWorkReports = async (nextReports) => {
-    setWorkReports(nextReports);
     try {
       await saveSharedDocument(OT_WORK_REPORTS_KEY, nextReports);
+      setWorkReports(nextReports);
       setError('');
     } catch (err) {
       console.error('Error guardando reportes OT:', err);
-      setError('No se pudieron guardar los reportes de trabajo en el servidor.');
+      const message = getSharedDocumentErrorMessage(err);
+      setError(message);
+      window.alert(message);
+      throw err;
     }
   };
 
@@ -1561,6 +1731,8 @@ export default function WorkNotifications({ user }) {
   const normalizedRole = String(user?.role || '').toUpperCase();
   const isReadOnly = isReadOnlyRole(user);
   const isTechnician = normalizedRole === 'TECNICO';
+  const isFieldStaff = ['TECNICO', 'ENCARGADO'].includes(normalizedRole);
+  const canManageFieldStaffVisibility = ['PLANNER', 'INGENIERO', 'ADMIN'].includes(normalizedRole);
   const canCreateServiceReports = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
   const canEditLiberatedOt = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
   const canReprogramOt = ['PLANNER', 'ENCARGADO', 'INGENIERO'].includes(normalizedRole);
@@ -1595,14 +1767,21 @@ export default function WorkNotifications({ user }) {
     [alerts],
   );
 
+  const fieldVisibleLiberatedNotifications = useMemo(
+    () => (isFieldStaff
+      ? liberatedNotifications.filter((item) => !isOtHiddenFromFieldStaff(item))
+      : liberatedNotifications),
+    [isFieldStaff, liberatedNotifications],
+  );
+
   const technicianAssignedNotifications = useMemo(
-    () => liberatedNotifications.filter((item) => isAlertAssignedToUser(item, user)),
-    [liberatedNotifications, user],
+    () => fieldVisibleLiberatedNotifications.filter((item) => isAlertAssignedToUser(item, user)),
+    [fieldVisibleLiberatedNotifications, user],
   );
 
   const technicianCoworkerNotifications = useMemo(
-    () => liberatedNotifications.filter((item) => !isAlertAssignedToUser(item, user)),
-    [liberatedNotifications, user],
+    () => fieldVisibleLiberatedNotifications.filter((item) => !isAlertAssignedToUser(item, user)),
+    [fieldVisibleLiberatedNotifications, user],
   );
 
   const visibleNotifications = useMemo(() => {
@@ -1611,8 +1790,8 @@ export default function WorkNotifications({ user }) {
     if (isTechnician) {
       return showCoworkerOtView ? technicianCoworkerNotifications : technicianAssignedNotifications;
     }
-    return liberatedNotifications;
-  }, [canApproveClose, requestCloseNotifications, liberatedNotifications, isReadOnly, isTechnician, showCoworkerOtView, technicianCoworkerNotifications, technicianAssignedNotifications]);
+    return fieldVisibleLiberatedNotifications;
+  }, [canApproveClose, requestCloseNotifications, liberatedNotifications, isReadOnly, isTechnician, showCoworkerOtView, technicianCoworkerNotifications, technicianAssignedNotifications, fieldVisibleLiberatedNotifications]);
 
   const selectedAlert = useMemo(
     () => visibleNotifications.find((item) => String(item.id) === String(selectedAlertId)) || null,
@@ -1789,11 +1968,9 @@ export default function WorkNotifications({ user }) {
       if (event.key === 'Escape') closeMenu();
     };
     window.addEventListener('click', closeMenu);
-    window.addEventListener('touchstart', closeMenu);
     window.addEventListener('keydown', closeOnEscape);
     return () => {
       window.removeEventListener('click', closeMenu);
-      window.removeEventListener('touchstart', closeMenu);
       window.removeEventListener('keydown', closeOnEscape);
     };
   }, [mobileActionMenu]);
@@ -1816,7 +1993,7 @@ export default function WorkNotifications({ user }) {
   const notificationTableColumns = useMemo(() => ([
     { id: 'sel', filterable: false },
     { id: 'registro', getValue: (item) => (reportByAlert.get(String(item.id)) || []).length ? `${(reportByAlert.get(String(item.id)) || []).length} registros` : 'Pendiente' },
-    { id: 'estado_ot', getValue: (item) => `${item.status_ot || ''} ${item.cierre_ot?.devuelta_revision ? `Devuelta ${item.cierre_ot.motivo_devolucion_tipo || ''}` : ''} ${consistencyByAlert.get(String(item.id))?.hasInconsistency ? 'Inconsistencia' : ''}` },
+    { id: 'estado_ot', getValue: (item) => `${item.status_ot || ''} ${item.cierre_ot?.devuelta_revision ? `Devuelta ${item.cierre_ot.motivo_devolucion_tipo || ''}` : ''} ${isOtHiddenFromFieldStaff(item) ? 'Oculta para campo' : ''} ${consistencyByAlert.get(String(item.id))?.hasInconsistency ? 'Inconsistencia' : ''}` },
     { id: 'ot_numero', getValue: (item) => item.ot_numero || 'N.A.' },
     { id: 'codigo', getValue: (item) => item.codigo || '' },
     { id: 'descripcion', getValue: (item) => item.descripcion || '' },
@@ -1844,10 +2021,10 @@ export default function WorkNotifications({ user }) {
     [notificationTableRows, mobileVisibleCount],
   );
 
-  const acquireSelectedAlertLock = async (actionLabel = 'editar esta OT') => {
-    if (!selectedAlert?.id) return false;
+  const acquireSelectedAlertLock = async (actionLabel = 'editar esta OT', targetAlert = selectedAlert) => {
+    if (!targetAlert?.id) return false;
     try {
-      const lock = await acquireWorkNotificationLock(selectedAlert.id);
+      const lock = await acquireWorkNotificationLock(targetAlert.id);
       setSelectedAlertLock(lock);
       return true;
     } catch (err) {
@@ -1940,19 +2117,23 @@ export default function WorkNotifications({ user }) {
     const nextReports = isEditing
       ? workReports.map((item) => (item.id === editingReportId ? report : item))
       : [...workReports, report];
-    await saveSharedDocument(MATERIALES_KEY, discountedCatalog.data);
-    setMaterialsCatalog(discountedCatalog.data);
-    await persistWorkReports(nextReports);
+    try {
+      await persistWorkReports(nextReports);
+      await saveSharedDocument(MATERIALES_KEY, discountedCatalog.data);
+      setMaterialsCatalog(discountedCatalog.data);
 
-    const nextAlerts = alerts.map((item) => (String(item.id) === String(selectedAlert.id)
-      ? { ...item, cierre_ot: { ...(item.cierre_ot || {}), trabajo_registrado: true, ultima_actualizacion: report.updatedAt } }
-      : item));
-    await persistAlerts(nextAlerts);
+      const nextAlerts = alerts.map((item) => (String(item.id) === String(selectedAlert.id)
+        ? { ...item, cierre_ot: { ...(item.cierre_ot || {}), trabajo_registrado: true, ultima_actualizacion: report.updatedAt } }
+        : item));
+      await persistAlerts(nextAlerts);
 
-    setShowRegisterModal(false);
-    setEditingReportId(null);
-    await releaseSelectedAlertLock(selectedAlert.id);
-    window.alert('Trabajo registrado correctamente.');
+      setShowRegisterModal(false);
+      setEditingReportId(null);
+      await releaseSelectedAlertLock(selectedAlert.id);
+      window.alert('Trabajo registrado correctamente.');
+    } catch (err) {
+      console.error('Error guardando notificacion de trabajo:', err);
+    }
   };
 
   const handleAssignToMe = async () => {
@@ -2001,6 +2182,43 @@ export default function WorkNotifications({ user }) {
       actor: user,
       after: { status_ot: selectedAlert.status_ot, asignado_a: user?.full_name || user?.username || '' },
     }).catch((err) => console.error('Error auditando asignacion OT:', err));
+  };
+
+  const toggleFieldStaffVisibility = async (targetAlert = selectedAlert) => {
+    if (isReadOnly || !canManageFieldStaffVisibility) return;
+    if (!targetAlert) return;
+    if (targetAlert.status_ot !== 'Liberada') {
+      window.alert('Solo se pueden ocultar o mostrar OTs en estado Liberada.');
+      return;
+    }
+    const willHide = !isOtHiddenFromFieldStaff(targetAlert);
+    const actor = user?.full_name || user?.username || user?.role || 'Sistema';
+    const updatedAt = new Date().toISOString();
+    const nextAlerts = alerts.map((item) => (String(item.id) === String(targetAlert.id)
+      ? {
+        ...item,
+        oculta_para_personal_campo: willHide,
+        hidden_from_field_staff: willHide,
+        visibilidad_campo_actualizada_por: actor,
+        visibilidad_campo_actualizada_en: updatedAt,
+      }
+      : item));
+    await persistAlerts(nextAlerts);
+    setSelectedAlertId(targetAlert.id);
+    appendAuditEntry({
+      action: willHide ? 'OT_OCULTADA_PERSONAL_CAMPO' : 'OT_VISIBLE_PERSONAL_CAMPO',
+      module: 'Notificaciones de Trabajo',
+      entityType: 'OT',
+      entityId: targetAlert.id,
+      title: `OT ${targetAlert.ot_numero || targetAlert.codigo || targetAlert.id} ${willHide ? 'ocultada' : 'visible'} para personal de campo`,
+      description: willHide
+        ? 'La OT liberada se oculto para tecnicos y encargados.'
+        : 'La OT liberada volvio a estar visible para tecnicos y encargados.',
+      severity: willHide ? 'warning' : 'info',
+      actor: user,
+      before: { oculta_para_personal_campo: !willHide },
+      after: { oculta_para_personal_campo: willHide },
+    }).catch((err) => console.error('Error auditando visibilidad OT:', err));
   };
 
 const handleDeleteReport = async (reportId) => {
@@ -2098,8 +2316,8 @@ const handleDeleteReport = async (reportId) => {
     if (isReadOnly) return;
     if (!selectedAlert) return;
     if (blockIfSelectedAlertLocked('guardar la OT')) return;
-    if (!['Liberada', 'Solicitud de cierre'].includes(selectedAlert.status_ot)) {
-      window.alert('Solo puedes editar la OT mientras esté en estado Liberada o Solicitud de cierre.');
+    if (selectedAlert.status_ot !== 'Liberada') {
+      window.alert('Solo puedes editar la OT mientras este en estado Liberada.');
       return;
     }
     const nextAlerts = alerts.map((item) => {
@@ -2141,6 +2359,10 @@ const handleDeleteReport = async (reportId) => {
   const handleOpenEditOt = async () => {
     if (isReadOnly) return;
     if (!selectedAlert) return;
+    if (selectedAlert.status_ot !== 'Liberada') {
+      window.alert('Solo puedes editar la OT mientras este en estado Liberada. Si esta en Solicitud de cierre, primero devuelvela a Liberada.');
+      return;
+    }
     if (blockIfSelectedAlertLocked('editar esta OT')) return;
     if (!(await acquireSelectedAlertLock('editar esta OT'))) return;
     setShowEditOtModal(true);
@@ -2246,7 +2468,7 @@ const handleDeleteReport = async (reportId) => {
   const runMobileOtAction = (item, action) => {
     setSelectedAlertId(item.id);
     setMobileActionMenu(null);
-    window.setTimeout(action, 0);
+    window.setTimeout(() => action(item), 0);
   };
 
   const openMobileOtMenu = (event, item) => {
@@ -2314,30 +2536,20 @@ const handleDeleteReport = async (reportId) => {
   };
   void handleApproveClose;
 
-  const handleReturnToLiberated = async () => {
-    await openCloseModal('return');
+  const handleReturnToLiberated = async (targetAlert = selectedAlert) => {
+    await openCloseModal('return', targetAlert);
   };
 
-  const openCloseModal = async (intent = 'close') => {
+  const openCloseModal = async (intent = 'close', targetAlert = selectedAlert) => {
     if (isReadOnly) return;
-    if (!selectedAlert) return;
-    if (blockIfSelectedAlertLocked(intent === 'return' ? 'devolver la OT' : 'cerrar la OT')) return;
-    if (selectedAlert.status_ot !== 'Solicitud de cierre') {
+    if (!targetAlert) return;
+    setSelectedAlertId(targetAlert.id);
+    if (String(selectedAlert?.id) === String(targetAlert.id) && blockIfSelectedAlertLocked(intent === 'return' ? 'devolver la OT' : 'cerrar la OT')) return;
+    if (targetAlert.status_ot !== 'Solicitud de cierre') {
       window.alert('Solo puedes cerrar una OT que este en estado Solicitud de cierre.');
       return;
     }
-    const reportsForAlert = reportByAlert.get(String(selectedAlert.id)) || [];
-    const consistencySummary = getAlertConsistencySummary(selectedAlert, reportsForAlert);
-    if (consistencySummary.hasInconsistency) {
-      window.alert(`No puedes cerrar esta OT porque mantiene ${consistencySummary.count} inconsistencia(s) entre los registros de trabajo y el rango liberado. Edita la OT liberada, revisa las fechas y vuelve a intentar.`);
-      return;
-    }
-    const reportsMissingEvidence = findReportsMissingRequiredEvidence(reportsForAlert);
-    if (reportsMissingEvidence.length) {
-      window.alert(`No puedes cerrar esta OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`);
-      return;
-    }
-    if (!(await acquireSelectedAlertLock(intent === 'return' ? 'devolver la OT' : 'cerrar la OT'))) return;
+    if (!(await acquireSelectedAlertLock(intent === 'return' ? 'devolver la OT' : 'cerrar la OT', targetAlert))) return;
     setCloseModalIntent(intent);
     setShowCloseModal(true);
   };
@@ -2378,11 +2590,15 @@ const handleDeleteReport = async (reportId) => {
     const serviceSummary = summarizeServiceReports(effectiveReports);
     const reportsMissingEvidence = findReportsMissingRequiredEvidence(effectiveReports);
     if (reportsMissingEvidence.length) {
-      setError(`No se puede cerrar la OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`);
+      const message = `No se puede cerrar la OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`;
+      window.alert(message);
+      setError(message);
       return;
     }
     if (serviceSummary.hasMissingServiceCost) {
-      setError(`No se puede cerrar la OT porque tiene ${serviceSummary.missingCostReports.length} notificacion(es) de servicio sin costo registrado.`);
+      const message = `No se puede cerrar la OT porque tiene ${serviceSummary.missingCostReports.length} notificacion(es) de servicio sin costo registrado.`;
+      window.alert(message);
+      setError(message);
       return;
     }
 
@@ -2435,7 +2651,9 @@ const handleDeleteReport = async (reportId) => {
       setError('');
     } catch (err) {
       console.error('Error guardando historial OT:', err);
-      setError('No se pudo guardar el historial de OT, los avisos de mantenimiento o el costo del servicio en el servidor.');
+      const message = getSharedDocumentErrorMessage(err);
+      window.alert(message);
+      setError(message);
       return;
     }
 
@@ -2583,7 +2801,7 @@ const handleDeleteReport = async (reportId) => {
       <div className="stats-grid" style={{ marginBottom: '.8rem' }}>
         <div className="stat-card">
           <div className="stat-label">{isTechnician ? 'Mis OT asignadas' : 'OT Liberadas'}</div>
-          <div className="stat-value" style={{ color: '#2563eb' }}>{isTechnician ? technicianAssignedNotifications.length : liberatedNotifications.length}</div>
+          <div className="stat-value" style={{ color: '#2563eb' }}>{isTechnician ? technicianAssignedNotifications.length : (canApproveClose ? liberatedNotifications.length : fieldVisibleLiberatedNotifications.length)}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">{isTechnician ? 'OT de companeros' : 'Solicitudes de Cierre'}</div>
@@ -2659,7 +2877,7 @@ const handleDeleteReport = async (reportId) => {
             Registrar Trabajo
           </button>
         )}
-        {!isReadOnly && canEditLiberatedOt && ['Liberada', 'Solicitud de cierre'].includes(selectedAlert?.status_ot || '') && (
+        {!isReadOnly && canEditLiberatedOt && selectedAlert?.status_ot === 'Liberada' && (
           <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleOpenEditOt}>
             Editar OT
           </button>
@@ -2667,6 +2885,11 @@ const handleDeleteReport = async (reportId) => {
         {!isReadOnly && canReprogramOt && selectedAlert?.status_ot === 'Liberada' && (
           <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleOpenReprogramModal}>
             Reprogramar OT
+          </button>
+        )}
+        {!isReadOnly && canManageFieldStaffVisibility && selectedAlert?.status_ot === 'Liberada' && (
+          <button type="button" className="btn btn-secondary" onClick={() => toggleFieldStaffVisibility(selectedAlert)}>
+            {isOtHiddenFromFieldStaff(selectedAlert) ? 'Mostrar a tecnicos/encargados' : 'Ocultar a tecnicos/encargados'}
           </button>
         )}
         {!isReadOnly && canRequestClose && selectedAlert?.status_ot === 'Liberada' && (
@@ -2693,12 +2916,14 @@ const handleDeleteReport = async (reportId) => {
           const alertConsistency = consistencyByAlert.get(String(item.id)) || { hasInconsistency: false, count: 0 };
           const hasReport = reportRows.length > 0;
           const isExpanded = !!expandedOtIds[item.id];
+          const tone = getOtVisualTone(item, isSelected);
           return (
             <div
               key={`mobile_${item.id}`}
               className={`mobile-ot-card ${isSelected ? 'is-selected' : ''}`}
               onClick={() => setSelectedAlertId(item.id)}
               onContextMenu={(event) => openMobileOtMenu(event, item)}
+              style={{ background: tone.background, borderColor: tone.border }}
               title="Toca para seleccionar. Mantén presionado para ver acciones."
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'flex-start' }}>
@@ -2714,9 +2939,14 @@ const handleDeleteReport = async (reportId) => {
               </div>
 
               <div style={{ display: 'flex', gap: '.45rem', flexWrap: 'wrap' }}>
-                <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, fontSize: '.78rem' }}>
+                <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: tone.chipBackground, color: tone.chipText, fontWeight: 800, fontSize: '.78rem' }}>
                   {item.status_ot}
                 </span>
+                {tone.key === 'overdue' && (
+                  <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: tone.chipBackground, color: tone.chipText, fontWeight: 800, fontSize: '.78rem' }}>
+                    {tone.label}
+                  </span>
+                )}
                 {alertConsistency.hasInconsistency && (
                   <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#fef2f2', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
                     Inconsistencia: {alertConsistency.count}
@@ -2725,6 +2955,11 @@ const handleDeleteReport = async (reportId) => {
                 {item.cierre_ot?.devuelta_revision && item.status_ot === 'Liberada' && (
                   <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#fef2f2', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
                     Devuelta
+                  </span>
+                )}
+                {canManageFieldStaffVisibility && item.status_ot === 'Liberada' && isOtHiddenFromFieldStaff(item) && (
+                  <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#f1f5f9', color: '#475569', fontWeight: 700, fontSize: '.78rem' }}>
+                    Oculta a campo
                   </span>
                 )}
               </div>
@@ -2813,7 +3048,7 @@ const handleDeleteReport = async (reportId) => {
                     Registrar trabajo
                   </button>
                 )}
-                {canEditLiberatedOt && ['Liberada', 'Solicitud de cierre'].includes(item.status_ot || '') && (
+                {canEditLiberatedOt && item.status_ot === 'Liberada' && (
                   <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenEditOt)}>
                     Editar OT
                   </button>
@@ -2821,6 +3056,11 @@ const handleDeleteReport = async (reportId) => {
                 {canReprogramOt && item.status_ot === 'Liberada' && (
                   <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenReprogramModal)}>
                     Reprogramar OT
+                  </button>
+                )}
+                {canManageFieldStaffVisibility && item.status_ot === 'Liberada' && (
+                  <button type="button" onClick={() => runMobileOtAction(item, () => toggleFieldStaffVisibility(item))}>
+                    {isOtHiddenFromFieldStaff(item) ? 'Mostrar a campo' : 'Ocultar a campo'}
                   </button>
                 )}
                 {canRequestClose && item.status_ot === 'Liberada' && (
@@ -2833,7 +3073,7 @@ const handleDeleteReport = async (reportId) => {
                     <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleReturnToLiberated)}>
                       Devolver a liberada
                     </button>
-                    <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, () => openCloseModal('close'))}>
+                    <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, (target) => openCloseModal('close', target))}>
                       Cerrar OT
                     </button>
                   </>
@@ -2861,9 +3101,16 @@ const handleDeleteReport = async (reportId) => {
               const alertConsistency = consistencyByAlert.get(String(item.id)) || { hasInconsistency: false, count: 0, inconsistentReports: [] };
               const hasReport = reportRows.length > 0;
               const isExpanded = !!expandedOtIds[item.id];
+              const tone = getOtVisualTone(item, isSelected);
               return (
                 <React.Fragment key={item.id}>
-                  <tr style={{ background: isSelected ? '#eff6ff' : 'transparent' }} onClick={() => setSelectedAlertId(item.id)}>
+                  <tr
+                    style={{
+                      background: tone.background,
+                      boxShadow: isSelected ? `inset 4px 0 0 ${tone.border}` : 'none',
+                    }}
+                    onClick={() => setSelectedAlertId(item.id)}
+                  >
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', textAlign: 'center' }}>
                       <input type="radio" checked={isSelected} onChange={() => setSelectedAlertId(item.id)} />
                     </td>
@@ -2882,7 +3129,12 @@ const handleDeleteReport = async (reportId) => {
                       ) : 'Pendiente'}
                     </td>
                     <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem' }}>
-                      <div>{item.status_ot}</div>
+                      <div style={{ color: tone.text, fontWeight: 800 }}>{item.status_ot}</div>
+                      {tone.key === 'overdue' && (
+                        <div style={{ marginTop: '.2rem', color: tone.text, fontWeight: 800, fontSize: '.78rem' }}>
+                          {tone.label}
+                        </div>
+                      )}
                       {item.cierre_ot?.devuelta_revision && item.status_ot === 'Liberada' && (
                         <div
                           style={{
@@ -2902,6 +3154,22 @@ const handleDeleteReport = async (reportId) => {
                       {alertConsistency.hasInconsistency && (
                         <div style={{ marginTop: '.2rem', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
                           Inconsistencia: {alertConsistency.count}
+                        </div>
+                      )}
+                      {canManageFieldStaffVisibility && item.status_ot === 'Liberada' && isOtHiddenFromFieldStaff(item) && (
+                        <div
+                          style={{
+                            marginTop: '.2rem',
+                            display: 'inline-flex',
+                            padding: '.15rem .45rem',
+                            borderRadius: '999px',
+                            background: '#f1f5f9',
+                            color: '#475569',
+                            fontWeight: 700,
+                            fontSize: '.75rem',
+                          }}
+                        >
+                          Oculta para tecnicos/encargados
                         </div>
                       )}
                     </td>
@@ -2951,6 +3219,13 @@ const handleDeleteReport = async (reportId) => {
                             )}
                             <div style={{ marginTop: '.3rem', color: hasRequiredWorkReportEvidence(report) ? '#166534' : '#991b1b', fontSize: '.85rem', fontWeight: 700 }}>
                               Evidencia fotografica: {hasRequiredWorkReportEvidence(report) ? 'ANTES y DESPUES completas' : 'pendiente antes/despues'}
+                            </div>
+                            <div style={{ marginTop: '.25rem', color: '#475569', fontSize: '.85rem', fontWeight: 700 }}>
+                              Estado equipo: {report.estado_equipo || 'Operativo durante mantenimiento'}
+                              {report.estado_equipo === 'Parada de equipo' && report.parada_alcance === 'parcial'
+                                ? ` (${report.parada_hora_inicio || 'N.A.'} - ${report.parada_hora_fin || 'N.A.'})`
+                                : ''}
+                              {report.estado_equipo === 'Parada de equipo' && report.parada_alcance === 'total' ? ' (todo el trabajo)' : ''}
                             </div>
                             {reportConsistency.hasInconsistency && (
                               <div style={{ marginTop: '.35rem', color: '#991b1b', fontSize: '.85rem' }}>
@@ -3010,7 +3285,7 @@ const handleDeleteReport = async (reportId) => {
         />
       )}
 
-      {showEditOtModal && ['Liberada', 'Solicitud de cierre'].includes(selectedAlert?.status_ot || '') && (
+      {showEditOtModal && selectedAlert?.status_ot === 'Liberada' && (
         <EditLiberatedOtModal
           alert={selectedAlert}
           rrhhItems={rrhhItems}
@@ -3039,6 +3314,7 @@ const handleDeleteReport = async (reportId) => {
         <ModalCerrarOT
           alert={selectedAlert}
           reports={reportByAlert.get(String(selectedAlert.id)) || []}
+          equiposItems={equiposItems}
           initialAction={closeModalIntent}
           onClose={async () => {
             setCloseModalIntent('close');
@@ -3052,4 +3328,5 @@ const handleDeleteReport = async (reportId) => {
     </div>
   );
 }
+
 

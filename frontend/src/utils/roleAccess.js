@@ -54,6 +54,10 @@ export function isReadOnlyRole(userOrRole) {
 }
 
 export function canCreateMaintenanceNotices(userOrRole) {
+  return Boolean(getUserRole(userOrRole));
+}
+
+export function isOperationalNoticeRole(userOrRole) {
   return NOTICE_CREATOR_ROLES.includes(getUserRole(userOrRole));
 }
 

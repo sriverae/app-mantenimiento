@@ -523,6 +523,8 @@ DOCUMENT_RULES = {
     "pmp_bajas_history_v1": {"read": Role.OPERADOR.value, "write": Role.ENCARGADO.value, "default": []},
 }
 
+OT_HISTORY_DOCUMENT_KEY = "pmp_ot_historial_v1"
+
 
 def _assert_document_access(key: str, current_user: User, action: str):
     rule = DOCUMENT_RULES.get(key)
@@ -536,6 +538,56 @@ def _assert_document_access(key: str, current_user: User, action: str):
 
 def _serialize_document_data(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonical_document_record(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _ot_history_record_key(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("id", "ot_numero", "numero_ot", "ot"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    codigo = str(item.get("codigo") or "").strip()
+    fecha = str(item.get("fecha_cierre") or item.get("fecha_fin") or "").strip()
+    return f"{codigo}|{fecha}" if codigo or fecha else ""
+
+
+def _assert_ot_history_append_only_for_non_engineer(current_data: Any, next_data: Any, current_user: User) -> None:
+    if _role_level(current_user.role) >= ROLE_HIERARCHY[Role.INGENIERO.value]:
+        return
+    if not isinstance(current_data, list) or not isinstance(next_data, list):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo INGENIERO puede modificar el Historial de OT cerrado.",
+        )
+
+    next_by_key: dict[str, str] = {}
+    next_unkeyed = [_canonical_document_record(item) for item in next_data if not _ot_history_record_key(item)]
+    for item in next_data:
+        key = _ot_history_record_key(item)
+        if key and key not in next_by_key:
+            next_by_key[key] = _canonical_document_record(item)
+
+    for item in current_data:
+        key = _ot_history_record_key(item)
+        serialized = _canonical_document_record(item)
+        if key:
+            if next_by_key.get(key) != serialized:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Solo INGENIERO puede modificar o eliminar una OT cerrada.",
+                )
+        elif serialized in next_unkeyed:
+            next_unkeyed.remove(serialized)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo INGENIERO puede modificar o eliminar una OT cerrada.",
+            )
 
 
 def _document_version(serialized_value: str) -> str:
@@ -2346,7 +2398,7 @@ async def put_shared_document(
 ):
     rule = _assert_document_access(key, current_user, "write")
     setting = (await db.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
-    _, current_version, stored_value = _document_payload(rule, setting)
+    current_data, current_version, stored_value = _document_payload(rule, setting)
     expected_version = (body.version or if_match or "").strip().strip('"')
     if not expected_version:
         raise HTTPException(
@@ -2363,6 +2415,9 @@ async def put_shared_document(
         validate_shared_document_data(key, body.data)
     except SharedDocumentValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    if key == OT_HISTORY_DOCUMENT_KEY:
+        _assert_ot_history_append_only_for_non_engineer(current_data, body.data, current_user)
 
     serialized = _serialize_document_data(body.data)
     if setting:

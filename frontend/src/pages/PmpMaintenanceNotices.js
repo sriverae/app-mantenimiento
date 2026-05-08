@@ -105,8 +105,9 @@ export default function PmpMaintenanceNotices() {
   const [saving, setSaving] = useState(false);
 
   const normalizedRole = getUserRole(user);
-  const canCreateOnly = canCreateMaintenanceNotices(user);
   const canReview = canReviewMaintenanceNotices(user);
+  const canCreate = canCreateMaintenanceNotices(user);
+  const canCreateOnly = canCreate && !canReview;
 
   useEffect(() => {
     let active = true;
@@ -257,7 +258,7 @@ export default function PmpMaintenanceNotices() {
 
   const createNotice = async (event) => {
     event.preventDefault();
-    if (!canCreateOnly) return;
+    if (!canCreate) return;
     if (!selectedEquipment) {
       window.alert('Selecciona un equipo para registrar el aviso.');
       return;
@@ -529,7 +530,7 @@ export default function PmpMaintenanceNotices() {
         <StatCard label="Rechazados" value={stats.rechazados} color="#dc2626" />
       </div>
 
-      {canCreateOnly && (
+      {canCreate && (
         <div className="card" style={{ marginBottom: '1rem' }}>
           <h3 className="card-title">Crear aviso de mantenimiento</h3>
           <form onSubmit={createNotice} style={{ display: 'grid', gap: '.85rem' }}>

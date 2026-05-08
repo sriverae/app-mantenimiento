@@ -5,7 +5,13 @@ import TableFilterRow from '../components/TableFilterRow';
 import { useAuth } from '../context/AuthContext';
 import useConfigurableLists from '../hooks/useConfigurableLists';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
-import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { uploadPhotoAttachment } from '../services/api';
+import {
+  getSharedDocumentErrorMessage,
+  loadSharedDocument,
+  saveSharedDocument,
+  SHARED_DOCUMENT_KEYS,
+} from '../services/sharedDocuments';
 import { DEFAULT_MATERIALS, normalizeMaterialsCatalog } from '../utils/materialsCatalog';
 import { getAlertConsistencySummary } from '../utils/otConsistency';
 import EditLiberatedOtModal from '../components/EditLiberatedOtModal';
@@ -20,8 +26,11 @@ import {
 } from '../utils/otSequence';
 import {
   buildMaintenanceNoticesFromReports,
+  buildObservationText,
+  getObservationPreset,
   getNoticeStatusColor,
   summarizeNoticeForDisplay,
+  WORK_OBSERVATION_PRESETS,
 } from '../utils/maintenanceNotices';
 import { appendAuditEntry } from '../utils/auditLog';
 import {
@@ -43,10 +52,13 @@ import {
 } from '../utils/formValidation';
 import {
   findReportsMissingRequiredEvidence,
+  buildUploadedPhotoPayload,
   getPhotoSource,
   getWorkReportEvidencePhotos,
   hasRequiredWorkReportEvidence,
+  WORK_REPORT_PHOTO_SLOTS,
 } from '../utils/workReportEvidence';
+import { applyEquipmentExchange, getEquipmentLabel, getNodeLabel } from '../utils/equipmentExchange';
 
 const PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlans;
 const KM_PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlansKm;
@@ -58,6 +70,7 @@ const OT_SEQUENCE_KEY = SHARED_DOCUMENT_KEYS.otSequenceSettings;
 const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
 const OT_WORK_REPORTS_KEY = SHARED_DOCUMENT_KEYS.otWorkReports;
 const NOTICES_KEY = SHARED_DOCUMENT_KEYS.maintenanceNotices;
+const EXCHANGE_HISTORY_KEY = SHARED_DOCUMENT_KEYS.equipmentExchangeHistory;
 const AMEF_KEY = SHARED_DOCUMENT_KEYS.amef;
 const PDF_FORMAT_KEY = SHARED_DOCUMENT_KEYS.otPdfFormat;
 const RETURN_REASON_OPTIONS = [
@@ -100,12 +113,120 @@ const compareOtAlerts = (a, b) => {
   return aIsDate ? -1 : 1;
 };
 
+const getTodayDateKey = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const isDateKey = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+
+const isOverdueUnreleasedOt = (alert, todayKey = getTodayDateKey()) => {
+  const status = String(alert?.status_ot || '').trim();
+  const dueDate = String(alert?.fecha_ejecutar || '').trim();
+  return ['Pendiente', 'Creada'].includes(status) && isDateKey(dueDate) && dueDate < todayKey;
+};
+
+const getReprogrammingContinuityRange = (alert = {}) => {
+  const entries = (Array.isArray(alert?.reprogramaciones) ? alert.reprogramaciones : [])
+    .filter((item) => isDateKey(item?.fecha_anterior) && isDateKey(item?.fecha_nueva))
+    .sort((a, b) => String(a.fecha_anterior).localeCompare(String(b.fecha_anterior)));
+  if (!entries.length) return null;
+  const start = entries[0].fecha_anterior;
+  const end = entries.reduce((latest, item) => (
+    String(item.fecha_nueva || '') > String(latest || '') ? item.fecha_nueva : latest
+  ), entries[entries.length - 1].fecha_nueva);
+  if (!isDateKey(start) || !isDateKey(end) || end <= start) return null;
+  return { start, end, count: entries.length };
+};
+
+const getOtVisualTone = (alert, isSelected = false) => {
+  const status = String(alert?.status_ot || '').trim();
+  if (isOverdueUnreleasedOt(alert)) {
+    return {
+      key: 'overdue',
+      label: 'Vencida sin liberar',
+      background: isSelected ? '#fee2e2' : '#fef2f2',
+      border: isSelected ? '#ef4444' : '#fecaca',
+      text: '#991b1b',
+      chipBackground: '#fee2e2',
+      chipText: '#991b1b',
+    };
+  }
+  if (status === 'Liberada') {
+    return {
+      key: 'released',
+      label: 'Liberada',
+      background: isSelected ? '#dcfce7' : '#f0fdf4',
+      border: isSelected ? '#22c55e' : '#bbf7d0',
+      text: '#166534',
+      chipBackground: '#dcfce7',
+      chipText: '#166534',
+    };
+  }
+  if (status === 'Solicitud de cierre') {
+    return {
+      key: 'close_request',
+      label: 'Solicitud de cierre',
+      background: isSelected ? '#ffedd5' : '#fff7ed',
+      border: isSelected ? '#f97316' : '#fed7aa',
+      text: '#9a3412',
+      chipBackground: '#ffedd5',
+      chipText: '#9a3412',
+    };
+  }
+  if (['Pendiente', 'Creada'].includes(status)) {
+    return {
+      key: 'fresh_unreleased',
+      label: status,
+      background: '#fff',
+      border: isSelected ? '#93c5fd' : '#e5e7eb',
+      text: '#334155',
+      chipBackground: '#f8fafc',
+      chipText: '#334155',
+    };
+  }
+  return {
+    key: 'default',
+    label: status || 'Sin estado',
+    background: isSelected ? '#dbeafe' : '#fff',
+    border: isSelected ? '#93c5fd' : '#e5e7eb',
+    text: '#1d4ed8',
+    chipBackground: '#eff6ff',
+    chipText: '#1d4ed8',
+  };
+};
+
 const buildManualOtId = () => `manual_${Date.now()}`;
 const renumberOtRows = (rows) => [...rows].sort(compareOtAlerts).map((row, index) => ({ ...row, orden: index + 1 }));
 
 const PRIORITY_OPTIONS = ['Baja', 'Media', 'Alta', 'Critica'];
 const VC_OPTIONS = ['V.C - DIA', 'V.C - HRA', 'V.C - KM'];
 const OT_TYPE_OPTIONS = ['Preventivo', 'Correctivo', 'Predictivo', 'Inspeccion', 'Lubricacion', 'Mejora'];
+
+const parseCapacityValue = (value) => {
+  const normalized = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(',', '.')
+    .trim();
+  const match = normalized.match(/-?\d+(?:\.\d+)?/);
+  const parsed = match ? Number(match[0]) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const formatCost = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed.toFixed(2) : '0.00';
+};
+
+const isMissingCapacityValue = (value) => {
+  const text = String(value ?? '').trim();
+  if (!text) return true;
+  if (/^(n\.?a\.?|na|s\/?d|sin dato|no aplica)$/i.test(text)) return true;
+  return parseCapacityValue(text) <= 0;
+};
 
 const normalizeAssignableText = (value) => String(value || '')
   .trim()
@@ -138,6 +259,16 @@ const formatActivities = (items) => (Array.isArray(items) ? items : [])
 const normalizePackageActivities = (pkg) => (Array.isArray(pkg?.actividades) ? pkg.actividades : [])
   .map((item) => String(item || '').trim())
   .filter(Boolean);
+
+const cleanActivityRowsForDisplay = (value) => {
+  const rows = splitActivities(value);
+  if (!rows.length) return [];
+  return rows.filter((item, index) => {
+    if (index !== 0) return true;
+    const text = normalizeAssignableText(item);
+    return !(/^x?\d+\s*[-:]/.test(text) && text.includes('paquete'));
+  });
+};
 
 const getVcFromAlert = (alert) => {
   if (!alert) return 'V.C - DIA';
@@ -206,6 +337,288 @@ const calculateHoursBetween = (fechaInicio, horaInicio, fechaFin, horaFin) => {
   return diff > 0 ? Number(diff.toFixed(2)) : 0;
 };
 
+const parseLocalDateTime = (fecha, hora, fallbackHora = '00:00') => {
+  if (!fecha) return null;
+  const normalizedHora = /^\d{2}:\d{2}/.test(String(hora || '')) ? String(hora).slice(0, 5) : fallbackHora;
+  const parsed = new Date(`${fecha}T${normalizedHora}:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const toDateInputValue = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const toTimeInputValue = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+};
+
+const hoursBetweenDates = (start, end) => {
+  if (!(start instanceof Date) || !(end instanceof Date)) return 0;
+  const diff = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+  return diff > 0 ? Number(diff.toFixed(2)) : 0;
+};
+
+const clampIntervalHours = (start, end, minStart, maxEnd) => {
+  if (!start || !end || !minStart || !maxEnd) return 0;
+  const clampedStart = start < minStart ? minStart : start;
+  const clampedEnd = end > maxEnd ? maxEnd : end;
+  return hoursBetweenDates(clampedStart, clampedEnd);
+};
+
+const getReportRange = (report) => {
+  const start = parseLocalDateTime(report?.fechaInicio, report?.horaInicio, '00:00');
+  const end = parseLocalDateTime(report?.fechaFin, report?.horaFin, '23:59');
+  if (!start || !end || end <= start) return null;
+  return { start, end };
+};
+
+const buildCloseOtReferenceRange = (reports = [], registro = {}, fallbackDate = '') => {
+  const ranges = (Array.isArray(reports) ? reports : [])
+    .map(getReportRange)
+    .filter(Boolean);
+  if (ranges.length) {
+    const firstStart = ranges.reduce((min, range) => (range.start < min ? range.start : min), ranges[0].start);
+    const lastEnd = ranges.reduce((max, range) => (range.end > max ? range.end : max), ranges[0].end);
+    return {
+      fecha_inicio: toDateInputValue(firstStart),
+      hora_inicio: toTimeInputValue(firstStart),
+      fecha_fin: toDateInputValue(lastEnd),
+      hora_fin: toTimeInputValue(lastEnd),
+      source: 'reports',
+    };
+  }
+  return {
+    fecha_inicio: registro.fecha_inicio || fallbackDate || new Date().toISOString().slice(0, 10),
+    hora_inicio: registro.hora_inicio || '08:00',
+    fecha_fin: registro.fecha_fin || fallbackDate || new Date().toISOString().slice(0, 10),
+    hora_fin: registro.hora_fin || '09:00',
+    source: 'release',
+  };
+};
+
+const getReportUnavailableHours = (report) => {
+  if (report?.estado_equipo !== 'Parada de equipo') return 0;
+  const range = getReportRange(report);
+  if (!range) return 0;
+  if (report?.parada_alcance === 'parcial') {
+    const start = parseLocalDateTime(report.fechaInicio, report.parada_hora_inicio || report.horaInicio, report.horaInicio || '00:00');
+    const end = parseLocalDateTime(report.fechaFin, report.parada_hora_fin || report.horaFin, report.horaFin || '23:59');
+    return clampIntervalHours(start, end, range.start, range.end);
+  }
+  return hoursBetweenDates(range.start, range.end);
+};
+
+const normalizeGapStatus = (value) => value || 'PENDIENTE';
+
+const getGapUnavailableHours = (gap) => {
+  const status = normalizeGapStatus(gap?.estado);
+  const start = parseLocalDateTime(gap?.fecha_inicio, gap?.hora_inicio, '00:00');
+  const end = parseLocalDateTime(gap?.fecha_fin, gap?.hora_fin, '23:59');
+  if (!start || !end || end <= start) return 0;
+  if (status === 'PARADA_TOTAL') return hoursBetweenDates(start, end);
+  if (status === 'PARADA_PARCIAL') {
+    const partialStart = parseLocalDateTime(gap?.parada_fecha_inicio, gap?.parada_hora_inicio, '00:00');
+    const partialEnd = parseLocalDateTime(gap?.parada_fecha_fin, gap?.parada_hora_fin, '23:59');
+    return clampIntervalHours(partialStart, partialEnd, start, end);
+  }
+  return 0;
+};
+
+const buildOperationalGapPeriods = (form, reports = [], existing = []) => {
+  const otStart = parseLocalDateTime(form.fecha_inicio, form.hora_inicio, '00:00');
+  const otEnd = parseLocalDateTime(form.fecha_fin, form.hora_fin, '23:59');
+  if (!otStart || !otEnd || otEnd <= otStart) return [];
+
+  const existingById = new Map((Array.isArray(existing) ? existing : []).map((item) => [item.id, item]));
+  const intervals = (Array.isArray(reports) ? reports : [])
+    .map(getReportRange)
+    .filter(Boolean)
+    .map((range) => ({
+      start: range.start < otStart ? otStart : range.start,
+      end: range.end > otEnd ? otEnd : range.end,
+    }))
+    .filter((range) => range.end > range.start)
+    .sort((a, b) => a.start - b.start);
+
+  const merged = [];
+  intervals.forEach((range) => {
+    const last = merged[merged.length - 1];
+    if (!last || range.start > last.end) {
+      merged.push({ ...range });
+      return;
+    }
+    if (range.end > last.end) last.end = range.end;
+  });
+
+  const gaps = [];
+  let cursor = otStart;
+  [...merged, { start: otEnd, end: otEnd }].forEach((range) => {
+    if (range.start > cursor) {
+      const id = `${toDateInputValue(cursor)}_${toTimeInputValue(cursor)}__${toDateInputValue(range.start)}_${toTimeInputValue(range.start)}`;
+      const previous = existingById.get(id) || {};
+      gaps.push({
+        id,
+        fecha_inicio: toDateInputValue(cursor),
+        hora_inicio: toTimeInputValue(cursor),
+        fecha_fin: toDateInputValue(range.start),
+        hora_fin: toTimeInputValue(range.start),
+        horas_periodo: hoursBetweenDates(cursor, range.start),
+        estado: previous.estado || 'PENDIENTE',
+        parada_fecha_inicio: previous.parada_fecha_inicio || toDateInputValue(cursor),
+        parada_hora_inicio: previous.parada_hora_inicio || toTimeInputValue(cursor),
+        parada_fecha_fin: previous.parada_fecha_fin || toDateInputValue(range.start),
+        parada_hora_fin: previous.parada_hora_fin || toTimeInputValue(range.start),
+        observacion: previous.observacion || '',
+      });
+    }
+    if (range.end > cursor) cursor = range.end;
+  });
+  return gaps;
+};
+
+const splitDateTimeValue = (dateValue, fallbackTime = '00:00') => {
+  const raw = String(dateValue || '').trim();
+  if (!raw) return { date: '', time: fallbackTime };
+  if (raw.includes('T')) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return {
+        date: parsed.toISOString().slice(0, 10),
+        time: parsed.toTimeString().slice(0, 5) || fallbackTime,
+      };
+    }
+  }
+  return {
+    date: raw.slice(0, 10),
+    time: raw.length >= 16 ? raw.slice(11, 16) : fallbackTime,
+  };
+};
+
+const buildLifecycleGapPeriods = (alert = {}, existing = []) => {
+  const existingById = new Map((Array.isArray(existing) ? existing : []).map((item) => [item.id, item]));
+  const noticeStart = splitDateTimeValue(
+    alert.fecha_emision_aviso
+      || alert.aviso_origen?.fecha_aviso
+      || alert.aviso_origen?.created_at
+      || alert.aviso_creado_at
+      || alert.created_at,
+    alert.aviso_origen?.hora_evidencia || '00:00',
+  );
+  const acceptedAt = splitDateTimeValue(
+    alert.fecha_aceptacion_aviso
+      || alert.aviso_origen?.accepted_at,
+    '00:00',
+  );
+  const releasedAt = splitDateTimeValue(
+    alert.registro_ot?.fecha_liberacion
+      || alert.fecha_liberacion_ot,
+    '00:00',
+  );
+  const scheduledAt = {
+    date: alert.fecha_programada || alert.fecha_ejecutar || '',
+    time: alert.hora_programada || alert.hora_ejecutar || '00:00',
+  };
+  const executionStart = {
+    date: alert.registro_ot?.fecha_inicio || alert.fecha_ejecutar || '',
+    time: alert.registro_ot?.hora_inicio || '00:00',
+  };
+  const points = [
+    { key: 'aviso', label: 'Aviso', ...noticeStart },
+    { key: 'aceptacion', label: 'Aceptacion de aviso', ...acceptedAt },
+    { key: 'liberacion', label: 'Liberacion OT', ...releasedAt },
+    { key: 'ejecucion', label: 'Inicio de ejecucion', ...executionStart },
+  ].filter((item) => item.date);
+
+  const periods = [];
+  const reprogrammingRange = getReprogrammingContinuityRange(alert);
+  if (reprogrammingRange) {
+    const startDate = parseLocalDateTime(reprogrammingRange.start, scheduledAt.time || '00:00', '00:00');
+    const endDate = parseLocalDateTime(reprogrammingRange.end, scheduledAt.time || '00:00', '00:00');
+    if (startDate && endDate && endDate > startDate) {
+      const id = 'lifecycle_fecha_vencida_reprogramacion';
+      const previous = existingById.get(id) || {};
+      periods.push({
+        id,
+        origen: 'CICLO_OT',
+        etapa_inicio: 'Fecha vencida sin liberar',
+        etapa_fin: 'Ultima reprogramacion',
+        fecha_inicio: reprogrammingRange.start,
+        hora_inicio: scheduledAt.time || '00:00',
+        fecha_fin: reprogrammingRange.end,
+        hora_fin: scheduledAt.time || '00:00',
+        horas_periodo: hoursBetweenDates(startDate, endDate),
+        estado: previous.estado || 'PENDIENTE',
+        parada_fecha_inicio: previous.parada_fecha_inicio || reprogrammingRange.start,
+        parada_hora_inicio: previous.parada_hora_inicio || scheduledAt.time || '00:00',
+        parada_fecha_fin: previous.parada_fecha_fin || reprogrammingRange.end,
+        parada_hora_fin: previous.parada_hora_fin || scheduledAt.time || '00:00',
+        observacion: previous.observacion || '',
+        confirmado_por: previous.confirmado_por || '',
+        confirmado_en: previous.confirmado_en || '',
+      });
+    }
+  }
+  const scheduledDate = parseLocalDateTime(scheduledAt.date, scheduledAt.time, '00:00');
+  const executionDate = parseLocalDateTime(executionStart.date, executionStart.time, '00:00');
+  if (scheduledDate && executionDate && executionDate > scheduledDate) {
+    const id = 'lifecycle_programada_ejecucion';
+    const previous = existingById.get(id) || {};
+    periods.push({
+      id,
+      origen: 'CICLO_OT',
+      etapa_inicio: 'Fecha programada',
+      etapa_fin: 'Inicio real de ejecucion',
+      fecha_inicio: scheduledAt.date,
+      hora_inicio: scheduledAt.time,
+      fecha_fin: executionStart.date,
+      hora_fin: executionStart.time,
+      horas_periodo: hoursBetweenDates(scheduledDate, executionDate),
+      estado: previous.estado || 'PENDIENTE',
+      parada_fecha_inicio: previous.parada_fecha_inicio || scheduledAt.date,
+      parada_hora_inicio: previous.parada_hora_inicio || scheduledAt.time,
+      parada_fecha_fin: previous.parada_fecha_fin || executionStart.date,
+      parada_hora_fin: previous.parada_hora_fin || executionStart.time,
+      observacion: previous.observacion || '',
+      confirmado_por: previous.confirmado_por || '',
+      confirmado_en: previous.confirmado_en || '',
+    });
+  }
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const startDate = parseLocalDateTime(start.date, start.time, '00:00');
+    const endDate = parseLocalDateTime(end.date, end.time, '00:00');
+    if (!startDate || !endDate || endDate <= startDate) continue;
+    const id = `lifecycle_${start.key}_${end.key}`;
+    const previous = existingById.get(id) || {};
+    periods.push({
+      id,
+      origen: 'CICLO_OT',
+      etapa_inicio: start.label,
+      etapa_fin: end.label,
+      fecha_inicio: start.date,
+      hora_inicio: start.time,
+      fecha_fin: end.date,
+      hora_fin: end.time,
+      horas_periodo: hoursBetweenDates(startDate, endDate),
+      estado: previous.estado || 'PENDIENTE',
+      parada_fecha_inicio: previous.parada_fecha_inicio || start.date,
+      parada_hora_inicio: previous.parada_hora_inicio || start.time,
+      parada_fecha_fin: previous.parada_fecha_fin || end.date,
+      parada_hora_fin: previous.parada_hora_fin || end.time,
+      observacion: previous.observacion || '',
+      confirmado_por: previous.confirmado_por || '',
+      confirmado_en: previous.confirmado_en || '',
+    });
+  }
+  return periods;
+};
+
 const openCloseReportPdf = (alert, reports, catalog, pdfSettings) => {
   openIndustrialOtReportPdf(alert, reports, catalog, pdfSettings);
 };
@@ -237,6 +650,20 @@ const aggregateTimeByTechnician = (personalDetalle = [], reports = []) => {
 
   return Array.from(aggregated.values()).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
 };
+
+const getReportEffectiveDurationHours = (report = {}) => {
+  const technicianHours = (Array.isArray(report.tecnicos) ? report.tecnicos : [])
+    .map((row) => Number(row?.horas) || 0)
+    .filter((value) => value > 0);
+  if (technicianHours.length) return Math.max(...technicianHours);
+  return Number(report.totalHoras || 0) || 0;
+};
+
+const calculateEffectiveWorkDurationFromReports = (reports = []) => Number(
+  (Array.isArray(reports) ? reports : [])
+    .reduce((sum, report) => sum + getReportEffectiveDurationHours(report), 0)
+    .toFixed(2),
+);
 
 function ModalTiempoEfectivo({ personalDetalle, tiempoPersonalActual, maxHorasSugeridas, onClose, onSave, readOnly = false, description = '' }) {
   const [rows, setRows] = useState(() => {
@@ -388,6 +815,10 @@ export function ModalReprogramarOt({ alert, onClose, onSubmit }) {
     }
     if (newDate === alert?.fecha_ejecutar) {
       window.alert('La nueva fecha debe ser diferente a la fecha actual.');
+      return;
+    }
+    if (alert?.fecha_ejecutar && isDateKey(alert.fecha_ejecutar) && isDateKey(newDate) && newDate <= alert.fecha_ejecutar) {
+      window.alert('La nueva fecha debe ser posterior a la fecha programada actual.');
       return;
     }
     if (!reason.trim()) {
@@ -966,41 +1397,62 @@ function FailureModeCatalogModal({ options, onPick, onClose }) {
   );
 }
 
-export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturnToLiberated, initialAction = 'close' }) {
+export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose, onSubmit, onReturnToLiberated, initialAction = 'close' }) {
+  const { user } = useAuth();
   const {
     getOptions,
     addOptionQuickly,
     canManage: canManageConfigurableLists,
   } = useConfigurableLists();
+  const canClassifyGapPeriods = ['ENCARGADO', 'PLANNER', 'INGENIERO', 'ADMIN'].includes(String(user?.role || '').toUpperCase());
   const [showTiempoModal, setShowTiempoModal] = useState(false);
   const [showFailureModeCatalog, setShowFailureModeCatalog] = useState(false);
   const [expandedReportIds, setExpandedReportIds] = useState({});
   const [editableReports, setEditableReports] = useState(() => (Array.isArray(reports) ? reports.map((item) => ({ ...item })) : []));
+  const [uploadingClosePhotoSlot, setUploadingClosePhotoSlot] = useState('');
   const [amefItems, setAmefItems] = useState([]);
   const [amefComponentFilter, setAmefComponentFilter] = useState('');
-  const [operationalTouched, setOperationalTouched] = useState(
-    alert.cierre_ot?.tiempo_indisponible_operacional !== null
-    && alert.cierre_ot?.tiempo_indisponible_operacional !== undefined,
-  );
+  const [exchangeSourceQuery, setExchangeSourceQuery] = useState('');
+  const [exchangeTargetQuery, setExchangeTargetQuery] = useState('');
+  const initialExchangeSourceId = useMemo(() => {
+    const rows = Array.isArray(equiposItems) ? equiposItems : [];
+    const matched = rows.find((eq) => String(eq.id) === String(alert.equipo_id || ''))
+      || rows.find((eq) => String(eq.codigo || '').trim().toUpperCase() === String(alert.codigo || '').trim().toUpperCase());
+    return matched?.id || rows[0]?.id || '';
+  }, [equiposItems, alert.equipo_id, alert.codigo]);
+  const [exchangeForm, setExchangeForm] = useState(() => ({
+    enabled: false,
+    sourceId: initialExchangeSourceId,
+    nodeId: '',
+    targetId: '',
+    motivo: '',
+  }));
+  const closeReferenceRange = buildCloseOtReferenceRange(reports, alert.registro_ot || {}, alert.fecha_ejecutar || '');
   const [form, setForm] = useState(() => {
-    const registro = alert.registro_ot || {};
     return {
       codigo: alert.codigo || '',
       descripcion: alert.descripcion || '',
-      fecha_inicio: registro.fecha_inicio || new Date().toISOString().slice(0, 10),
-      fecha_fin: registro.fecha_fin || new Date().toISOString().slice(0, 10),
-      hora_inicio: registro.hora_inicio || '08:00',
-      hora_fin: registro.hora_fin || '09:00',
-      observaciones: registro.observaciones || '',
+      fecha_inicio: alert.cierre_ot?.fecha_inicio || closeReferenceRange.fecha_inicio,
+      fecha_fin: alert.cierre_ot?.fecha_fin || closeReferenceRange.fecha_fin,
+      hora_inicio: alert.cierre_ot?.hora_inicio || closeReferenceRange.hora_inicio,
+      hora_fin: alert.cierre_ot?.hora_fin || closeReferenceRange.hora_fin,
+      observaciones: alert.cierre_ot?.observaciones || '',
+      cierre_observation_preset: alert.cierre_ot?.cierre_observation_preset || '',
+      cierre_observation_detail: alert.cierre_ot?.cierre_observation_detail || '',
       tipo_mantenimiento: alert.tipo_mantto || 'Preventivo',
       puesto_trabajo_resp: alert.responsable || 'N.A.',
       tiempo_efectivo_hh: alert.cierre_ot?.tiempo_efectivo_hh ?? 0,
       tiempo_indisponible_generico: alert.cierre_ot?.tiempo_indisponible_generico ?? 0,
       tiempo_indisponible_operacional: alert.cierre_ot?.tiempo_indisponible_operacional ?? 0,
+      capacidad_equipo_manual: alert.cierre_ot?.capacidad_equipo_manual || '',
+      costo_tonelada_hora: alert.cierre_ot?.costo_tonelada_hora ?? '',
       tiempo_personal: alert.cierre_ot?.tiempo_personal || [],
-      satisfaccion: alert.cierre_ot?.satisfaccion || 'Satisfecho',
-      estado_equipo: alert.cierre_ot?.estado_equipo || 'Operativo',
-      informe: alert.cierre_ot?.informe || '',
+      estado_equipo: ['Parada de equipo', 'Operativo durante mantenimiento'].includes(alert.cierre_ot?.estado_equipo)
+        ? alert.cierre_ot.estado_equipo
+        : 'Operativo durante mantenimiento',
+      parada_alcance: alert.cierre_ot?.parada_alcance || 'total',
+      parada_hora_inicio: alert.cierre_ot?.parada_hora_inicio || closeReferenceRange.hora_inicio,
+      parada_hora_fin: alert.cierre_ot?.parada_hora_fin || closeReferenceRange.hora_fin,
       componente_intervenido: alert.cierre_ot?.componente_intervenido || '',
       modo_falla_origen: alert.cierre_ot?.modo_falla_origen || '',
       modo_falla: alert.cierre_ot?.modo_falla || '',
@@ -1013,6 +1465,20 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
       fecha_objetivo_reenvio: alert.cierre_ot?.fecha_objetivo_reenvio || '',
     };
   });
+  const [gapPeriods, setGapPeriods] = useState(() => buildOperationalGapPeriods(
+    {
+      fecha_inicio: closeReferenceRange.fecha_inicio,
+      hora_inicio: closeReferenceRange.hora_inicio,
+      fecha_fin: closeReferenceRange.fecha_fin,
+      hora_fin: closeReferenceRange.hora_fin,
+    },
+    reports,
+    alert.cierre_ot?.periodos_sin_notificacion || [],
+  ));
+  const [lifecycleGapPeriods, setLifecycleGapPeriods] = useState(() => buildLifecycleGapPeriods(
+    alert,
+    alert.cierre_ot?.periodos_ciclo_ot || [],
+  ));
 
   const personalDetalle = useMemo(() => alert.personal_detalle || [], [alert.personal_detalle]);
   const materialesDetalle = useMemo(() => alert.materiales_detalle || [], [alert.materiales_detalle]);
@@ -1021,6 +1487,10 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
     [personalDetalle, editableReports],
   );
   const tiempoTotalCalculado = useMemo(
+    () => calculateEffectiveWorkDurationFromReports(editableReports),
+    [editableReports],
+  );
+  const totalHorasHombreCalculado = useMemo(
     () => Number(tiempoPersonalCalculado.reduce((sum, item) => sum + (Number(item.horas) || 0), 0).toFixed(2)),
     [tiempoPersonalCalculado],
   );
@@ -1032,6 +1502,78 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
     () => summarizeServiceReports(editableReports),
     [editableReports],
   );
+  const selectedCloseObservationPreset = useMemo(
+    () => getObservationPreset(form.cierre_observation_preset),
+    [form.cierre_observation_preset],
+  );
+  const closeActivityRows = useMemo(
+    () => cleanActivityRowsForDisplay(alert.actividad),
+    [alert.actividad],
+  );
+  const reportUnavailableHours = useMemo(
+    () => Number((editableReports || []).reduce((sum, report) => sum + getReportUnavailableHours(report), 0).toFixed(2)),
+    [editableReports],
+  );
+  const gapUnavailableHours = useMemo(
+    () => Number((gapPeriods || []).reduce((sum, gap) => sum + getGapUnavailableHours(gap), 0).toFixed(2)),
+    [gapPeriods],
+  );
+  const lifecycleUnavailableHours = useMemo(
+    () => Number((lifecycleGapPeriods || []).reduce((sum, gap) => sum + getGapUnavailableHours(gap), 0).toFixed(2)),
+    [lifecycleGapPeriods],
+  );
+  const totalOperationalUnavailableHours = useMemo(
+    () => Number((reportUnavailableHours + gapUnavailableHours + lifecycleUnavailableHours).toFixed(2)),
+    [reportUnavailableHours, gapUnavailableHours, lifecycleUnavailableHours],
+  );
+  const pendingGapPeriods = useMemo(
+    () => [...gapPeriods, ...lifecycleGapPeriods].filter((gap) => normalizeGapStatus(gap.estado) === 'PENDIENTE'),
+    [gapPeriods, lifecycleGapPeriods],
+  );
+  const selectedAmefEquipment = useMemo(() => {
+    const rows = Array.isArray(equiposItems) ? equiposItems : [];
+    return rows.find((eq) => String(eq.id) === String(alert.equipo_id || ''))
+      || rows.find((eq) => String(eq.codigo || '').trim().toUpperCase() === String(alert.codigo || '').trim().toUpperCase())
+      || null;
+  }, [equiposItems, alert.equipo_id, alert.codigo]);
+  const equipmentCapacityText = selectedAmefEquipment?.capacidad || alert.capacidad || 'N.A.';
+  const equipmentCapacityMissing = isMissingCapacityValue(equipmentCapacityText);
+  const effectiveCapacityText = equipmentCapacityMissing
+    ? String(form.capacidad_equipo_manual || '').trim()
+    : equipmentCapacityText;
+  const equipmentCapacityValue = useMemo(
+    () => parseCapacityValue(effectiveCapacityText),
+    [effectiveCapacityText],
+  );
+  const hasEquipmentStopForDowntimeCost = Number(form.tiempo_indisponible_operacional || 0) > 0;
+  const downtimeCostPerTonHour = hasEquipmentStopForDowntimeCost ? Number(form.costo_tonelada_hora || 0) : 0;
+  const downtimeCost = useMemo(
+    () => Number((equipmentCapacityValue * (Number.isFinite(downtimeCostPerTonHour) ? downtimeCostPerTonHour : 0) * Number(form.tiempo_indisponible_operacional || 0)).toFixed(2)),
+    [equipmentCapacityValue, downtimeCostPerTonHour, form.tiempo_indisponible_operacional],
+  );
+  const exchangeSourceEquipo = useMemo(
+    () => (Array.isArray(equiposItems) ? equiposItems : []).find((eq) => String(eq.id) === String(exchangeForm.sourceId)) || null,
+    [equiposItems, exchangeForm.sourceId],
+  );
+  const exchangeSourceNodes = useMemo(
+    () => (Array.isArray(exchangeSourceEquipo?.despiece) ? exchangeSourceEquipo.despiece : []),
+    [exchangeSourceEquipo],
+  );
+  const exchangeTargetOptions = useMemo(
+    () => (Array.isArray(equiposItems) ? equiposItems : []).filter((eq) => String(eq.id) !== String(exchangeForm.sourceId)),
+    [equiposItems, exchangeForm.sourceId],
+  );
+  const filteredExchangeSourceOptions = useMemo(() => {
+    const q = exchangeSourceQuery.trim().toLowerCase();
+    const rows = Array.isArray(equiposItems) ? equiposItems : [];
+    if (!q) return rows;
+    return rows.filter((eq) => `${eq.codigo || ''} ${eq.descripcion || ''} ${eq.area_trabajo || ''}`.toLowerCase().includes(q));
+  }, [equiposItems, exchangeSourceQuery]);
+  const filteredExchangeTargetOptions = useMemo(() => {
+    const q = exchangeTargetQuery.trim().toLowerCase();
+    if (!q) return exchangeTargetOptions;
+    return exchangeTargetOptions.filter((eq) => `${eq.codigo || ''} ${eq.descripcion || ''} ${eq.area_trabajo || ''}`.toLowerCase().includes(q));
+  }, [exchangeTargetOptions, exchangeTargetQuery]);
   const isReturnIntent = initialAction === 'return';
   const [selectedNoticeIds, setSelectedNoticeIds] = useState(() => derivedNotices.map((item) => item.id));
   const maxHorasSugeridas = useMemo(
@@ -1040,7 +1582,20 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
   );
   const amefOptions = useMemo(
     () => (Array.isArray(amefItems) ? amefItems : [])
-      .filter((item) => String(item.equipo_codigo || '').trim() === String(alert.codigo || '').trim())
+      .filter((item) => {
+        const alertCode = String(alert.codigo || '').trim().toUpperCase();
+        const matchedCode = String(selectedAmefEquipment?.codigo || '').trim().toUpperCase();
+        const itemCode = String(item.equipo_codigo || '').trim().toUpperCase();
+        const itemEquipmentId = String(item.equipo_id || '');
+        const alertEquipmentId = String(alert.equipo_id || '');
+        const matchedEquipmentId = String(selectedAmefEquipment?.id || '');
+        return Boolean(
+          (alertEquipmentId && itemEquipmentId === alertEquipmentId)
+          || (matchedEquipmentId && itemEquipmentId === matchedEquipmentId)
+          || (alertCode && itemCode === alertCode)
+          || (matchedCode && itemCode === matchedCode),
+        );
+      })
       .map((item) => ({
         id: String(item.id),
         componentId: String(item.componente_id || ''),
@@ -1053,7 +1608,7 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
         npr: (Number(item.severidad) || 0) * (Number(item.ocurrencia) || 0) * (Number(item.deteccion) || 0),
         label: `${item.componente_nombre || item.componente_codigo || 'Componente'} · ${item.modo_falla || 'Sin modo'}`,
       })),
-    [amefItems, alert.codigo],
+    [amefItems, alert.codigo, alert.equipo_id, selectedAmefEquipment],
   );
   const amefComponentOptions = useMemo(
     () => Array.from(
@@ -1162,16 +1717,19 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
   }, [tiempoPersonalCalculado, tiempoTotalCalculado]);
 
   useEffect(() => {
+    if (!form.cierre_observation_preset) return;
+    const nextObservation = buildObservationText(form.cierre_observation_preset, form.cierre_observation_detail);
+    setForm((prev) => (
+      prev.observaciones === nextObservation
+        ? prev
+        : { ...prev, observaciones: nextObservation }
+    ));
+  }, [form.cierre_observation_preset, form.cierre_observation_detail, form.observaciones]);
+
+  useEffect(() => {
     setForm((prev) => {
       const nextGeneric = maxHorasSugeridas;
-      const currentOperational = Number(prev.tiempo_indisponible_operacional) || 0;
-      let nextOperational = currentOperational;
-
-      if (!operationalTouched) {
-        nextOperational = nextGeneric;
-      } else if (currentOperational > nextGeneric) {
-        nextOperational = nextGeneric;
-      }
+      const nextOperational = Math.min(totalOperationalUnavailableHours, nextGeneric);
 
       if (
         Number(prev.tiempo_indisponible_generico) === Number(nextGeneric)
@@ -1186,7 +1744,16 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
         tiempo_indisponible_operacional: nextOperational,
       };
     });
-  }, [maxHorasSugeridas, operationalTouched]);
+  }, [maxHorasSugeridas, totalOperationalUnavailableHours]);
+
+  useEffect(() => {
+    setGapPeriods((prev) => buildOperationalGapPeriods({
+      fecha_inicio: form.fecha_inicio,
+      hora_inicio: form.hora_inicio,
+      fecha_fin: form.fecha_fin,
+      hora_fin: form.hora_fin,
+    }, editableReports, prev));
+  }, [form.fecha_inicio, form.hora_inicio, form.fecha_fin, form.hora_fin, editableReports]);
 
   useEffect(() => {
     setEditableReports(Array.isArray(reports) ? reports.map((item) => ({ ...item })) : []);
@@ -1195,6 +1762,19 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
   useEffect(() => {
     setSelectedNoticeIds(derivedNotices.map((item) => item.id));
   }, [derivedNotices]);
+
+  useEffect(() => {
+    setExchangeForm((prev) => {
+      if (!initialExchangeSourceId) return prev;
+      const currentExists = (Array.isArray(equiposItems) ? equiposItems : []).some((eq) => String(eq.id) === String(prev.sourceId));
+      if (prev.sourceId && currentExists) return prev;
+      return {
+        ...prev,
+        sourceId: initialExchangeSourceId,
+        targetId: (Array.isArray(equiposItems) ? equiposItems : []).find((eq) => String(eq.id) !== String(initialExchangeSourceId))?.id || '',
+      };
+    });
+  }, [initialExchangeSourceId, equiposItems]);
 
   useEffect(() => {
     if (selectedAmefOption) {
@@ -1221,6 +1801,86 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
           serviceCost: value,
         }
     )));
+  };
+
+  const updateEditableReport = (reportId, patch) => {
+    setEditableReports((prev) => prev.map((item) => (
+      String(item.id) !== String(reportId)
+        ? item
+        : {
+          ...item,
+          ...patch,
+        }
+    )));
+  };
+
+  const updateGapPeriod = (gapId, patch) => {
+    setGapPeriods((prev) => prev.map((item) => (
+      item.id !== gapId
+        ? item
+        : {
+          ...item,
+          ...patch,
+          confirmado_por: user?.full_name || user?.username || user?.role || 'Sistema',
+          confirmado_en: new Date().toISOString(),
+        }
+    )));
+  };
+
+  const updateLifecycleGapPeriod = (gapId, patch) => {
+    setLifecycleGapPeriods((prev) => prev.map((item) => (
+      item.id !== gapId
+        ? item
+        : {
+          ...item,
+          ...patch,
+          confirmado_por: user?.full_name || user?.username || user?.role || 'Sistema',
+          confirmado_en: new Date().toISOString(),
+        }
+    )));
+  };
+
+  const uploadCloseReportEvidence = async (reportId, slotKey, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      window.alert('Selecciona una imagen valida.');
+      return;
+    }
+    const slot = WORK_REPORT_PHOTO_SLOTS.find((item) => item.key === slotKey);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('scope', `close_work_notification_${alert.id}_${reportId}_${slotKey}`);
+    formData.append('category', slot?.label || slotKey);
+    formData.append('caption', file.name);
+    setUploadingClosePhotoSlot(`${reportId}_${slotKey}`);
+    try {
+      const uploaded = await uploadPhotoAttachment(formData);
+      const payload = buildUploadedPhotoPayload(uploaded, {
+        category: slot?.label || slotKey,
+        original_name: file.name,
+      });
+      setEditableReports((prev) => prev.map((item) => {
+        if (String(item.id) !== String(reportId)) return item;
+        const currentPhotos = getWorkReportEvidencePhotos(item);
+        const nextPhotos = {
+          before: currentPhotos.before || null,
+          after: currentPhotos.after || null,
+          [slotKey]: payload,
+        };
+        return {
+          ...item,
+          evidencePhotos: nextPhotos,
+          evidence_photos: nextPhotos,
+        };
+      }));
+    } catch (err) {
+      console.error('Error subiendo evidencia desde cierre OT:', err);
+      window.alert(err?.response?.data?.detail || 'No se pudo subir la foto de evidencia.');
+    } finally {
+      setUploadingClosePhotoSlot('');
+    }
   };
 
   const handleAmefComponentChange = (value) => {
@@ -1251,8 +1911,11 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
       setForm((prev) => ({
         ...prev,
         modo_falla_origen: 'NINGUNA',
+        componente_intervenido: prev.componente_intervenido || 'N.A.',
         modo_falla: 'Ninguna',
         causa_raiz: prev.causa_raiz || 'N.A.',
+        accion_correctiva: prev.accion_correctiva || 'N.A.',
+        recomendacion_tecnica: prev.recomendacion_tecnica || 'N.A.',
       }));
       return;
     }
@@ -1303,10 +1966,28 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
       window.alert('No hay horas acumuladas en las notificaciones de trabajo para cerrar la OT.');
       return;
     }
+    if (gapPeriods.length && !canClassifyGapPeriods) {
+      window.alert('Solo Encargado, Planner o Ingeniero pueden confirmar los periodos sin notificacion antes del cierre.');
+      return;
+    }
+    if (pendingGapPeriods.length) {
+      window.alert(`Esta OT tiene ${pendingGapPeriods.length} periodo(s) sin notificacion pendiente(s) de clasificar. Confirma si el equipo estuvo operativo, parado o fuera de turno antes de cerrar.`);
+      return;
+    }
+    const invalidPartialGap = gapPeriods.find((gap) => normalizeGapStatus(gap.estado) === 'PARADA_PARCIAL' && getGapUnavailableHours(gap) <= 0);
+    if (invalidPartialGap) {
+      window.alert('Hay un periodo sin notificacion marcado como parada parcial, pero no tiene un rango de parada valido.');
+      return;
+    }
+    if (form.cierre_observation_preset && !String(form.cierre_observation_detail || '').trim()) {
+      window.alert('Detalla la observacion de cierre antes de cerrar la OT.');
+      return;
+    }
     const numericValidationError = validateNonNegativeFields([
       ['Tiempo efectivo', form.tiempo_efectivo_hh],
       ['Tiempo indisponible generico', form.tiempo_indisponible_generico],
       ['Tiempo indisponible operacional', form.tiempo_indisponible_operacional],
+      ['Costo por tonelada hora', form.costo_tonelada_hora || 0],
     ]);
     if (numericValidationError) {
       window.alert(numericValidationError);
@@ -1316,47 +1997,111 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
       window.alert('El tiempo indisponible operacional no puede ser mayor al tiempo indisponible genérico.');
       return;
     }
+    const isNoFailureMode = form.modo_falla_origen === 'NINGUNA'
+      || String(form.modo_falla || '').trim().toLowerCase() === 'ninguna';
     if (!String(form.modo_falla || '').trim()) {
       window.alert('Debes seleccionar un modo de falla desde el AMEF, registrar uno manual o elegir la opción Ninguna.');
       return;
     }
-    if (!String(form.componente_intervenido || selectedAmefOption?.componente || '').trim()) {
+    if (!isNoFailureMode && !String(form.componente_intervenido || selectedAmefOption?.componente || '').trim()) {
       window.alert('Debes indicar el componente intervenido antes de cerrar la OT.');
       return;
     }
-    if (!String(form.causa_raiz || '').trim()) {
+    if (!isNoFailureMode && !String(form.causa_raiz || '').trim()) {
       window.alert('Debes registrar la causa raiz antes de cerrar la OT.');
       return;
     }
-    if (!String(form.accion_correctiva || '').trim()) {
+    if (!isNoFailureMode && !String(form.accion_correctiva || '').trim()) {
       window.alert('Debes registrar la accion correctiva ejecutada antes de cerrar la OT.');
       return;
     }
     const textValidationError = validateTextFields([
-      ['Estado del equipo', form.estado_equipo],
-      ['Componente intervenido', form.componente_intervenido],
+      ['Componente intervenido', isNoFailureMode ? 'N.A.' : form.componente_intervenido],
       ['Modo de falla', form.modo_falla],
-      ['Causa raiz', form.causa_raiz],
-      ['Accion correctiva', form.accion_correctiva],
-      ['Recomendacion tecnica', form.recomendacion_tecnica],
+      ['Causa raiz', isNoFailureMode ? 'N.A.' : form.causa_raiz],
+      ['Accion correctiva', isNoFailureMode ? 'N.A.' : form.accion_correctiva],
+      ['Recomendacion tecnica', isNoFailureMode ? 'N.A.' : form.recomendacion_tecnica],
       ['Observaciones de cierre', form.observaciones],
     ]);
     if (textValidationError) {
       window.alert(textValidationError);
       return;
     }
+    if (exchangeForm.enabled) {
+      if (!exchangeForm.sourceId || !exchangeForm.nodeId || !exchangeForm.targetId) {
+        window.alert('Completa origen, subequipo y destino del intercambio antes de cerrar la OT.');
+        return;
+      }
+      if (String(exchangeForm.sourceId) === String(exchangeForm.targetId)) {
+        window.alert('El equipo destino del intercambio debe ser diferente al equipo origen.');
+        return;
+      }
+    }
+    let updateEquipmentCapacity = false;
+    if (hasEquipmentStopForDowntimeCost && equipmentCapacityMissing && String(form.capacidad_equipo_manual || '').trim() && equipmentCapacityValue > 0) {
+      updateEquipmentCapacity = window.confirm('Este equipo no tiene capacidad registrada en inventario. Deseas guardar esta capacidad tambien en el maestro del equipo?');
+    }
+
     onSubmit({
       ...form,
-      componente_intervenido: form.componente_intervenido || selectedAmefOption?.componente || '',
+      componente_intervenido: isNoFailureMode ? (form.componente_intervenido || 'N.A.') : (form.componente_intervenido || selectedAmefOption?.componente || ''),
+      modo_falla_origen: isNoFailureMode ? 'NINGUNA' : form.modo_falla_origen,
+      causa_raiz: isNoFailureMode ? (form.causa_raiz || 'N.A.') : form.causa_raiz,
+      accion_correctiva: isNoFailureMode ? (form.accion_correctiva || 'N.A.') : form.accion_correctiva,
+      recomendacion_tecnica: isNoFailureMode ? (form.recomendacion_tecnica || 'N.A.') : form.recomendacion_tecnica,
       tiempo_efectivo_hh: Number(form.tiempo_efectivo_hh || 0),
       tiempo_indisponible_generico: Number(form.tiempo_indisponible_generico || 0),
       tiempo_indisponible_operacional: Number(form.tiempo_indisponible_operacional || 0),
+      capacidad_equipo: effectiveCapacityText || 'N.A.',
+      capacidad_equipo_valor: equipmentCapacityValue,
+      actualizar_capacidad_equipo: updateEquipmentCapacity,
+      capacidad_equipo_manual: form.capacidad_equipo_manual || '',
+      costo_tonelada_hora: hasEquipmentStopForDowntimeCost ? Number(form.costo_tonelada_hora || 0) : 0,
+      costo_indisponibilidad: hasEquipmentStopForDowntimeCost ? downtimeCost : 0,
+      periodos_sin_notificacion: gapPeriods.map((gap) => ({
+        ...gap,
+        horas_indisponibles: getGapUnavailableHours(gap),
+      })),
+      periodos_ciclo_ot: lifecycleGapPeriods.map((gap) => ({
+        ...gap,
+        horas_indisponibles: getGapUnavailableHours(gap),
+      })),
+      horas_indisponibles_notificaciones: reportUnavailableHours,
+      horas_indisponibles_periodos_sin_notificacion: gapUnavailableHours,
+      horas_indisponibles_ciclo_ot: lifecycleUnavailableHours,
       reportes_actualizados: editableReports.map((item) => ({
         ...item,
         serviceCost: Number(item.serviceCost || 0),
       })),
       costo_servicios_total: serviceSummary.totalServiceCost,
-      avisos_generados_detalle: derivedNotices.filter((item) => selectedNoticeIds.includes(item.id)),
+      avisos_generados_detalle: [
+        ...derivedNotices.filter((item) => selectedNoticeIds.includes(item.id)),
+        ...(selectedCloseObservationPreset?.requiresNotice ? buildMaintenanceNoticesFromReports(alert, [{
+          id: `close_observation_${alert.id}`,
+          reportCode: `CIERRE-${alert.ot_numero || alert.id}`,
+          fechaInicio: form.fecha_fin,
+          horaInicio: form.hora_fin,
+          fechaFin: form.fecha_fin,
+          horaFin: form.hora_fin,
+          observaciones: form.observaciones,
+          maintenanceSuggestion: {
+            presetKey: form.cierre_observation_preset,
+            label: selectedCloseObservationPreset.label,
+            noticeCategory: selectedCloseObservationPreset.noticeCategory,
+            detail: form.cierre_observation_detail,
+            text: form.observaciones,
+            requiresNotice: true,
+          },
+          evidencePhotos: getWorkReportEvidencePhotos(editableReports[editableReports.length - 1] || {}),
+        }], derivedNotices, 'Revision de cierre') : []),
+      ],
+      intercambio_realizado: exchangeForm.enabled ? {
+        enabled: true,
+        sourceId: exchangeForm.sourceId,
+        nodeId: exchangeForm.nodeId,
+        targetId: exchangeForm.targetId,
+        motivo: exchangeForm.motivo,
+      } : { enabled: false },
     });
   };
 
@@ -1397,13 +2142,18 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, .5)', zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-      <div style={{ width: 'min(1180px, 100%)', maxHeight: '93vh', overflow: 'auto', background: '#fff', borderRadius: '.65rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
-        <div style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Cerrar Orden de Trabajo · {alert.ot_numero || 'OT #?'}</h3>
+      <div className="close-ot-modal-shell" style={{ width: 'min(1180px, 100%)', maxHeight: '93vh', overflow: 'auto', background: '#fff', borderRadius: '.9rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+        <div className="close-ot-modal-header" style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.85rem' }}>
+          <div>
+            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '.15rem' }}>Cerrar Orden de Trabajo · {alert.ot_numero || 'OT #?'}</h3>
+            <p style={{ margin: 0, color: '#64748b', fontSize: '.92rem' }}>
+              Revisa ejecucion, continuidad operativa, costos y cierre tecnico antes de confirmar.
+            </p>
+          </div>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar ventana</button>
         </div>
 
-        <div style={{ padding: '1rem 1.2rem' }}>
+        <div className="close-ot-modal-body" style={{ padding: '1rem 1.2rem' }}>
           {serviceSummary.hasMissingServiceCost && (
             <div className="alert alert-warning" style={{ marginBottom: '.9rem' }}>
               Esta OT tiene {serviceSummary.missingCostReports.length} notificacion(es) de servicio sin costo registrado.
@@ -1423,7 +2173,46 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
             </div>
           )}
 
+          <div className="close-ot-overview" aria-label="Resumen del cierre de OT">
+            <div className="close-ot-overview-item">
+              <span>Equipo</span>
+              <strong>{form.codigo || alert.codigo || 'N.A.'}</strong>
+              <small>{form.descripcion || alert.descripcion || 'Sin descripcion'}</small>
+            </div>
+            <div className="close-ot-overview-item">
+              <span>Notificaciones</span>
+              <strong>{editableReports.length}</strong>
+              <small>{serviceSummary.serviceReports.length} servicio(s)</small>
+            </div>
+            <div className="close-ot-overview-item">
+              <span>Indisponibilidad</span>
+              <strong>{Number(form.tiempo_indisponible_operacional || 0).toFixed(2)} Hh</strong>
+              <small>{pendingGapPeriods.length} periodo(s) por revisar</small>
+            </div>
+            <div className="close-ot-overview-item">
+              <span>Costo indisp.</span>
+              <strong>S/ {formatCost(downtimeCost)}</strong>
+              <small>{hasEquipmentStopForDowntimeCost ? 'Aplica por parada' : 'Sin parada registrada'}</small>
+            </div>
+          </div>
+
+          <div className="close-ot-flow" aria-label="Secciones del formulario">
+            {['Datos', 'Ejecucion', 'Continuidad', 'Recursos', 'Costos', 'Tecnico', 'Intercambio'].map((item, index) => (
+              <span key={`close-flow-${item}`}>
+                <b>{index + 1}</b>
+                {item}
+              </span>
+            ))}
+          </div>
+
           <div className="card">
+            <div className="close-ot-section-title">
+              <span>1</span>
+              <div>
+                <h4>Datos generales de la OT</h4>
+                <p>Fechas, responsable y datos principales que alimentaran el historial.</p>
+              </div>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Código</label><input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} /></div>
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Tipo de mantenimiento</label><input className="form-input" value={form.tipo_mantenimiento} onChange={(e) => setForm({ ...form, tipo_mantenimiento: e.target.value })} /></div>
@@ -1433,8 +2222,81 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Hora inicio</label><input type="time" className="form-input" value={form.hora_inicio} onChange={(e) => setForm({ ...form, hora_inicio: e.target.value })} /></div>
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Fecha fin</label><input type="date" className="form-input" value={form.fecha_fin} onChange={(e) => setForm({ ...form, fecha_fin: e.target.value })} /></div>
               <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Hora fin</label><input type="time" className="form-input" value={form.hora_fin} onChange={(e) => setForm({ ...form, hora_fin: e.target.value })} /></div>
-              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Observaciones</label><textarea className="form-textarea" value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} /></div>
+              <div style={{ gridColumn: '1 / -1', color: '#64748b', fontSize: '.88rem', lineHeight: 1.45 }}>
+                Referencia inicial: {closeReferenceRange.source === 'reports'
+                  ? 'inicio de la primera notificacion y fin de la ultima notificacion registrada.'
+                  : 'rango liberado de la OT porque aun no hay notificaciones validas.'}
+              </div>
             </div>
+          </div>
+
+          <div className="card">
+            <div className="close-ot-section-title">
+              <span>2</span>
+              <div>
+                <h4>Ejecucion y evidencia</h4>
+                <p>Actividades, observaciones y notificaciones que sustentan el trabajo realizado.</p>
+              </div>
+            </div>
+            <h4 className="card-title" style={{ marginBottom: '.35rem' }}>Actividades de la OT</h4>
+            <p style={{ margin: '0 0 .75rem', color: '#64748b', fontSize: '.9rem' }}>
+              Estas son las actividades planificadas que se imprimiran en el formato de OT.
+            </p>
+            {closeActivityRows.length ? (
+              <ol style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '.35rem' }}>
+                {closeActivityRows.map((item, index) => (
+                  <li key={`close_activity_${index}_${item}`} style={{ color: '#0f172a', fontWeight: 600 }}>{item}</li>
+                ))}
+              </ol>
+            ) : (
+              <div style={{ border: '1px dashed #cbd5e1', borderRadius: '.75rem', padding: '.85rem', color: '#64748b' }}>
+                Sin actividades registradas para esta OT.
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', flexWrap: 'wrap', marginBottom: '.75rem' }}>
+              <div>
+                <h4 className="card-title" style={{ marginBottom: '.2rem' }}>Observacion de cierre</h4>
+                <p style={{ margin: 0, color: '#6b7280', fontSize: '.9rem' }}>
+                  Usa este bloque solo si el cierre deja una condicion que debe convertirse en aviso de mantenimiento.
+                </p>
+              </div>
+              {selectedCloseObservationPreset?.requiresNotice && (
+                <span style={{ alignSelf: 'flex-start', background: '#fff7ed', color: '#b45309', border: '1px solid #fed7aa', borderRadius: '999px', padding: '.25rem .6rem', fontWeight: 800 }}>
+                  Generara aviso
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '.45rem', flexWrap: 'wrap', marginBottom: '.75rem' }}>
+              {WORK_OBSERVATION_PRESETS.map((item) => (
+                <button
+                  key={`close_${item.key}`}
+                  type="button"
+                  className={form.cierre_observation_preset === item.key ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+                  onClick={() => setForm((prev) => ({ ...prev, cierre_observation_preset: prev.cierre_observation_preset === item.key ? '' : item.key, cierre_observation_detail: prev.cierre_observation_preset === item.key ? '' : prev.cierre_observation_detail, observaciones: prev.cierre_observation_preset === item.key ? '' : prev.observaciones }))}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            {form.cierre_observation_preset && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Detalle de observacion</label>
+                <textarea
+                  className="form-textarea"
+                  value={form.cierre_observation_detail}
+                  onChange={(e) => setForm((prev) => ({ ...prev, cierre_observation_detail: e.target.value }))}
+                  placeholder="Describe la condicion encontrada al cierre."
+                />
+                <small style={{ color: selectedCloseObservationPreset?.requiresNotice ? '#b45309' : '#64748b', fontWeight: selectedCloseObservationPreset?.requiresNotice ? 700 : 500 }}>
+                  {selectedCloseObservationPreset?.requiresNotice
+                    ? 'Esta observacion se convertira en aviso al cerrar la OT.'
+                    : 'Esta observacion quedara solo como informacion del cierre.'}
+                </small>
+              </div>
+            )}
           </div>
 
           <div className="card">
@@ -1542,6 +2404,61 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
                           <tr style={{ background: '#f8fafc' }}>
                             <td colSpan={8} style={{ border: '1px solid #e5e7eb', padding: '.7rem .8rem' }}>
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '.8rem' }}>
+                                <div style={{ gridColumn: '1 / -1', border: '1px solid #bfdbfe', borderRadius: '.75rem', padding: '.75rem .85rem', background: '#eff6ff' }}>
+                                  <div style={{ fontWeight: 800, color: '#1e3a8a', marginBottom: '.55rem' }}>Editar notificacion antes del cierre</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '.65rem' }}>
+                                    <div>
+                                      <label className="form-label">Fecha inicio</label>
+                                      <input type="date" className="form-input" value={report.fechaInicio || ''} onChange={(e) => updateEditableReport(report.id, { fechaInicio: e.target.value })} />
+                                    </div>
+                                    <div>
+                                      <label className="form-label">Hora inicio</label>
+                                      <input type="time" className="form-input" value={report.horaInicio || ''} onChange={(e) => updateEditableReport(report.id, { horaInicio: e.target.value })} />
+                                    </div>
+                                    <div>
+                                      <label className="form-label">Fecha fin</label>
+                                      <input type="date" className="form-input" value={report.fechaFin || ''} onChange={(e) => updateEditableReport(report.id, { fechaFin: e.target.value })} />
+                                    </div>
+                                    <div>
+                                      <label className="form-label">Hora fin</label>
+                                      <input type="time" className="form-input" value={report.horaFin || ''} onChange={(e) => updateEditableReport(report.id, { horaFin: e.target.value })} />
+                                    </div>
+                                    <div>
+                                      <label className="form-label">Estado equipo</label>
+                                      <select className="form-select" value={report.estado_equipo || 'Operativo durante mantenimiento'} onChange={(e) => updateEditableReport(report.id, { estado_equipo: e.target.value, parada_alcance: e.target.value === 'Parada de equipo' ? (report.parada_alcance || 'total') : '' })}>
+                                        <option>Operativo durante mantenimiento</option>
+                                        <option>Parada de equipo</option>
+                                      </select>
+                                    </div>
+                                    {report.estado_equipo === 'Parada de equipo' && (
+                                      <>
+                                        <div>
+                                          <label className="form-label">Alcance parada</label>
+                                          <select className="form-select" value={report.parada_alcance || 'total'} onChange={(e) => updateEditableReport(report.id, { parada_alcance: e.target.value })}>
+                                            <option value="total">Todo el trabajo</option>
+                                            <option value="parcial">Solo un momento</option>
+                                          </select>
+                                        </div>
+                                        {report.parada_alcance === 'parcial' && (
+                                          <>
+                                            <div>
+                                              <label className="form-label">Inicio parada</label>
+                                              <input type="time" className="form-input" value={report.parada_hora_inicio || ''} onChange={(e) => updateEditableReport(report.id, { parada_hora_inicio: e.target.value })} />
+                                            </div>
+                                            <div>
+                                              <label className="form-label">Fin parada</label>
+                                              <input type="time" className="form-input" value={report.parada_hora_fin || ''} onChange={(e) => updateEditableReport(report.id, { parada_hora_fin: e.target.value })} />
+                                            </div>
+                                          </>
+                                        )}
+                                      </>
+                                    )}
+                                    <div style={{ gridColumn: '1 / -1' }}>
+                                      <label className="form-label">Observaciones</label>
+                                      <textarea className="form-textarea" value={report.observaciones || ''} onChange={(e) => updateEditableReport(report.id, { observaciones: e.target.value })} />
+                                    </div>
+                                  </div>
+                                </div>
                                 <div>
                                   <div style={{ fontWeight: 700, marginBottom: '.35rem', color: '#1f2937' }}>Técnicos</div>
                                   {(report.tecnicos || []).length ? (
@@ -1584,13 +2501,22 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
                                     {['before', 'after'].map((slot) => {
                                       const photo = getWorkReportEvidencePhotos(report)[slot];
                                       const src = getPhotoSource(photo);
-                                      return src ? (
-                                        <a key={slot} href={src} target="_blank" rel="noreferrer" style={{ display: 'block', border: '1px solid #d1d5db', borderRadius: '.55rem', overflow: 'hidden' }}>
-                                          <img src={src} alt={slot === 'before' ? 'Antes' : 'Despues'} style={{ width: '100%', height: '110px', objectFit: 'cover', display: 'block' }} />
-                                        </a>
-                                      ) : (
-                                        <div key={slot} style={{ border: '1px dashed #fca5a5', borderRadius: '.55rem', minHeight: '110px', display: 'grid', placeItems: 'center', color: '#991b1b', fontWeight: 700 }}>
-                                          Sin foto {slot === 'before' ? 'ANTES' : 'DESPUES'}
+                                      const uploadKey = `${report.id}_${slot}`;
+                                      return (
+                                        <div key={slot} style={{ border: `1px solid ${src ? '#d1d5db' : '#fca5a5'}`, borderRadius: '.55rem', overflow: 'hidden', background: '#fff' }}>
+                                          {src ? (
+                                            <a href={src} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
+                                              <img src={src} alt={slot === 'before' ? 'Antes' : 'Despues'} style={{ width: '100%', height: '110px', objectFit: 'cover', display: 'block' }} />
+                                            </a>
+                                          ) : (
+                                            <div style={{ minHeight: '110px', display: 'grid', placeItems: 'center', color: '#991b1b', fontWeight: 700 }}>
+                                              Sin foto {slot === 'before' ? 'ANTES' : 'DESPUES'}
+                                            </div>
+                                          )}
+                                          <label className="btn btn-secondary btn-sm" style={{ width: '100%', borderRadius: 0, cursor: uploadingClosePhotoSlot ? 'not-allowed' : 'pointer', opacity: uploadingClosePhotoSlot ? .65 : 1 }}>
+                                            {uploadingClosePhotoSlot === uploadKey ? 'Subiendo...' : (src ? 'Reemplazar' : 'Subir foto')}
+                                            <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingClosePhotoSlot} onChange={(event) => uploadCloseReportEvidence(report.id, slot, event)} />
+                                          </label>
                                         </div>
                                       );
                                     })}
@@ -1612,6 +2538,235 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <div className="card" style={{ border: pendingGapPeriods.length ? '1px solid #fbbf24' : '1px solid #dbe4f0', background: pendingGapPeriods.length ? '#fffbeb' : '#fff' }}>
+            <div className="close-ot-section-title">
+              <span>3</span>
+              <div>
+                <h4>Continuidad operativa</h4>
+                <p>Clasifica los espacios sin notificacion y el ciclo aviso-OT para calcular indisponibilidad real.</p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '.8rem', flexWrap: 'wrap', marginBottom: '.8rem' }}>
+              <div>
+                <h4 className="card-title" style={{ marginBottom: '.2rem' }}>Continuidad operativa entre notificaciones</h4>
+                <p style={{ margin: 0, color: '#6b7280', fontSize: '.9rem' }}>
+                  Clasifica los periodos donde no hubo notificacion de trabajo para calcular la indisponibilidad operacional real del equipo.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '.45rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <span style={{ padding: '.25rem .55rem', borderRadius: '999px', background: '#eff6ff', color: '#1d4ed8', fontWeight: 800 }}>
+                  {gapPeriods.length} periodo(s)
+                </span>
+                <span style={{ padding: '.25rem .55rem', borderRadius: '999px', background: pendingGapPeriods.length ? '#fef3c7' : '#dcfce7', color: pendingGapPeriods.length ? '#92400e' : '#166534', fontWeight: 800 }}>
+                  {pendingGapPeriods.length} pendiente(s)
+                </span>
+              </div>
+            </div>
+
+            {!canClassifyGapPeriods && gapPeriods.length > 0 && (
+              <div className="alert alert-warning" style={{ marginBottom: '.85rem' }}>
+                Solo Encargado, Planner o Ingeniero pueden confirmar estos periodos.
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '.65rem', marginBottom: '.85rem' }}>
+              <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: '.75rem', padding: '.75rem .85rem' }}>
+                <div style={{ color: '#64748b', fontWeight: 700, fontSize: '.8rem' }}>Indisp. por notificaciones</div>
+                <div style={{ fontSize: '1.45rem', fontWeight: 900, color: '#0f766e' }}>{reportUnavailableHours.toFixed(2)} h</div>
+              </div>
+              <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: '.75rem', padding: '.75rem .85rem' }}>
+                <div style={{ color: '#64748b', fontWeight: 700, fontSize: '.8rem' }}>Indisp. en periodos sin NT</div>
+                <div style={{ fontSize: '1.45rem', fontWeight: 900, color: '#b45309' }}>{gapUnavailableHours.toFixed(2)} h</div>
+              </div>
+              <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: '.75rem', padding: '.75rem .85rem' }}>
+                <div style={{ color: '#64748b', fontWeight: 700, fontSize: '.8rem' }}>Indisp. ciclo aviso-OT</div>
+                <div style={{ fontSize: '1.45rem', fontWeight: 900, color: '#7c3aed' }}>{lifecycleUnavailableHours.toFixed(2)} h</div>
+              </div>
+              <div style={{ background: '#ecfeff', border: '1px solid #99f6e4', borderRadius: '.75rem', padding: '.75rem .85rem' }}>
+                <div style={{ color: '#0f766e', fontWeight: 700, fontSize: '.8rem' }}>Indisp. operacional total</div>
+                <div style={{ fontSize: '1.45rem', fontWeight: 900, color: '#115e59' }}>{totalOperationalUnavailableHours.toFixed(2)} h</div>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '1rem', border: '1px solid #ddd6fe', borderRadius: '.85rem', padding: '.85rem', background: '#fbfaff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', flexWrap: 'wrap', marginBottom: '.75rem' }}>
+                <div>
+                  <div style={{ fontWeight: 900, color: '#3b0764' }}>Continuidad entre aviso, aceptacion, liberacion y ejecucion</div>
+                  <div style={{ color: '#64748b', fontSize: '.9rem' }}>Confirma que paso con el equipo antes de iniciar la ejecucion de la OT.</div>
+                </div>
+                <span style={{ color: '#7c3aed', fontWeight: 900 }}>{lifecycleGapPeriods.length} tramo(s)</span>
+              </div>
+              {lifecycleGapPeriods.length ? (
+                <div style={{ display: 'grid', gap: '.65rem' }}>
+                  {lifecycleGapPeriods.map((gap, index) => {
+                    const status = normalizeGapStatus(gap.estado);
+                    const unavailable = getGapUnavailableHours(gap);
+                    return (
+                      <div key={gap.id} style={{ border: `1px solid ${status === 'PENDIENTE' ? '#fbbf24' : '#ddd6fe'}`, borderRadius: '.75rem', padding: '.75rem', background: '#fff' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.65rem', flexWrap: 'wrap', marginBottom: '.65rem' }}>
+                          <div>
+                            <div style={{ fontWeight: 900, color: '#0f172a' }}>Tramo #{index + 1}: {gap.etapa_inicio} - {gap.etapa_fin}</div>
+                            <div style={{ color: '#475569', fontSize: '.9rem' }}>
+                              {formatDateTimeDisplay(gap.fecha_inicio, gap.hora_inicio, 'N.A.')} - {formatDateTimeDisplay(gap.fecha_fin, gap.hora_fin, 'N.A.')}
+                            </div>
+                          </div>
+                          <div style={{ color: unavailable > 0 ? '#b45309' : '#166534', fontWeight: 900 }}>
+                            {unavailable.toFixed(2)} h indisponible
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '.65rem', alignItems: 'end' }}>
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label className="form-label">Que ocurrio con el equipo?</label>
+                            <select
+                              className="form-select"
+                              value={status}
+                              disabled={!canClassifyGapPeriods}
+                              onChange={(e) => updateLifecycleGapPeriod(gap.id, {
+                                estado: e.target.value,
+                                parada_fecha_inicio: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_fecha_inicio || gap.fecha_inicio) : gap.parada_fecha_inicio,
+                                parada_hora_inicio: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_hora_inicio || gap.hora_inicio) : gap.parada_hora_inicio,
+                                parada_fecha_fin: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_fecha_fin || gap.fecha_fin) : gap.parada_fecha_fin,
+                                parada_hora_fin: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_hora_fin || gap.hora_fin) : gap.parada_hora_fin,
+                              })}
+                            >
+                              <option value="PENDIENTE">Pendiente de confirmar</option>
+                              <option value="OPERATIVO">Equipo operativo</option>
+                              <option value="PARADA_TOTAL">Equipo parado todo el periodo</option>
+                              <option value="PARADA_PARCIAL">Equipo parado parcialmente</option>
+                              <option value="FUERA_TURNO">No aplica / fuera de turno</option>
+                            </select>
+                          </div>
+                          {status === 'PARADA_PARCIAL' && (
+                            <>
+                              <div className="form-group" style={{ marginBottom: 0 }}>
+                                <label className="form-label">Inicio parada</label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr .75fr', gap: '.4rem' }}>
+                                  <input type="date" className="form-input" value={gap.parada_fecha_inicio || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateLifecycleGapPeriod(gap.id, { parada_fecha_inicio: e.target.value })} />
+                                  <input type="time" className="form-input" value={gap.parada_hora_inicio || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateLifecycleGapPeriod(gap.id, { parada_hora_inicio: e.target.value })} />
+                                </div>
+                              </div>
+                              <div className="form-group" style={{ marginBottom: 0 }}>
+                                <label className="form-label">Fin parada</label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr .75fr', gap: '.4rem' }}>
+                                  <input type="date" className="form-input" value={gap.parada_fecha_fin || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateLifecycleGapPeriod(gap.id, { parada_fecha_fin: e.target.value })} />
+                                  <input type="time" className="form-input" value={gap.parada_hora_fin || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateLifecycleGapPeriod(gap.id, { parada_hora_fin: e.target.value })} />
+                                </div>
+                              </div>
+                            </>
+                          )}
+                          <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                            <label className="form-label">Observacion</label>
+                            <textarea
+                              className="form-textarea"
+                              value={gap.observacion || ''}
+                              disabled={!canClassifyGapPeriods}
+                              onChange={(e) => updateLifecycleGapPeriod(gap.id, { observacion: e.target.value })}
+                              placeholder="Ej: Equipo se mantuvo operativo hasta la liberacion / Equipo quedo parado esperando programacion."
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ border: '1px dashed #c4b5fd', borderRadius: '.75rem', padding: '.8rem', color: '#64748b', textAlign: 'center' }}>
+                  No hay tramos suficientes entre aviso, aceptacion, liberacion y ejecucion para clasificar.
+                </div>
+              )}
+            </div>
+
+            {gapPeriods.length ? (
+              <div style={{ display: 'grid', gap: '.75rem' }}>
+                {gapPeriods.map((gap, index) => {
+                  const status = normalizeGapStatus(gap.estado);
+                  const unavailable = getGapUnavailableHours(gap);
+                  return (
+                    <div key={gap.id} style={{ border: `1px solid ${status === 'PENDIENTE' ? '#fbbf24' : '#d1d5db'}`, borderRadius: '.8rem', padding: '.85rem', background: '#fff' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.65rem', flexWrap: 'wrap', marginBottom: '.7rem' }}>
+                        <div>
+                          <div style={{ fontWeight: 900, color: '#0f172a' }}>Periodo #{index + 1}</div>
+                          <div style={{ color: '#475569', fontSize: '.92rem' }}>
+                            {formatDateTimeDisplay(gap.fecha_inicio, gap.hora_inicio, 'N.A.')} - {formatDateTimeDisplay(gap.fecha_fin, gap.hora_fin, 'N.A.')}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 900, color: '#334155' }}>{Number(gap.horas_periodo || 0).toFixed(2)} h</div>
+                          <div style={{ color: unavailable > 0 ? '#b45309' : '#166534', fontWeight: 800, fontSize: '.85rem' }}>
+                            {unavailable.toFixed(2)} h indisponible
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '.65rem', alignItems: 'end' }}>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label">Que ocurrio con el equipo?</label>
+                          <select
+                            className="form-select"
+                            value={status}
+                            disabled={!canClassifyGapPeriods}
+                            onChange={(e) => updateGapPeriod(gap.id, {
+                              estado: e.target.value,
+                              parada_fecha_inicio: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_fecha_inicio || gap.fecha_inicio) : gap.parada_fecha_inicio,
+                              parada_hora_inicio: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_hora_inicio || gap.hora_inicio) : gap.parada_hora_inicio,
+                              parada_fecha_fin: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_fecha_fin || gap.fecha_fin) : gap.parada_fecha_fin,
+                              parada_hora_fin: e.target.value === 'PARADA_PARCIAL' ? (gap.parada_hora_fin || gap.hora_fin) : gap.parada_hora_fin,
+                            })}
+                          >
+                            <option value="PENDIENTE">Pendiente de confirmar</option>
+                            <option value="OPERATIVO">Equipo operativo</option>
+                            <option value="PARADA_TOTAL">Equipo parado todo el periodo</option>
+                            <option value="PARADA_PARCIAL">Equipo parado parcialmente</option>
+                            <option value="FUERA_TURNO">No aplica / fuera de turno</option>
+                          </select>
+                        </div>
+                        {status === 'PARADA_PARCIAL' && (
+                          <>
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                              <label className="form-label">Inicio parada</label>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr .75fr', gap: '.4rem' }}>
+                                <input type="date" className="form-input" value={gap.parada_fecha_inicio || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateGapPeriod(gap.id, { parada_fecha_inicio: e.target.value })} />
+                                <input type="time" className="form-input" value={gap.parada_hora_inicio || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateGapPeriod(gap.id, { parada_hora_inicio: e.target.value })} />
+                              </div>
+                            </div>
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                              <label className="form-label">Fin parada</label>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr .75fr', gap: '.4rem' }}>
+                                <input type="date" className="form-input" value={gap.parada_fecha_fin || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateGapPeriod(gap.id, { parada_fecha_fin: e.target.value })} />
+                                <input type="time" className="form-input" value={gap.parada_hora_fin || ''} disabled={!canClassifyGapPeriods} onChange={(e) => updateGapPeriod(gap.id, { parada_hora_fin: e.target.value })} />
+                              </div>
+                            </div>
+                          </>
+                        )}
+                        <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                          <label className="form-label">Observacion</label>
+                          <textarea
+                            className="form-textarea"
+                            value={gap.observacion || ''}
+                            disabled={!canClassifyGapPeriods}
+                            onChange={(e) => updateGapPeriod(gap.id, { observacion: e.target.value })}
+                            placeholder="Ej: Equipo quedo operativo y produccion continuo normal / Equipo estuvo detenido esperando repuesto."
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ border: '1px dashed #cbd5e1', borderRadius: '.75rem', padding: '.9rem', color: '#64748b', textAlign: 'center' }}>
+                No hay periodos sin notificacion dentro del rango liberado de esta OT.
+              </div>
+            )}
+          </div>
+
+          <div className="close-ot-section-title">
+            <span>4</span>
+            <div>
+              <h4>Recursos usados</h4>
+              <p>Personal y materiales que se trasladaran al formato y al historial.</p>
             </div>
           </div>
 
@@ -1719,6 +2874,13 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
           )}
 
           <div className="card">
+            <div className="close-ot-section-title">
+              <span>5</span>
+              <div>
+                <h4>Tiempos y costos</h4>
+                <p>Resumen economico y horas calculadas antes del cierre definitivo.</p>
+              </div>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Tiempo efectivo (Hh)</label>
@@ -1726,7 +2888,9 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
                   <input className="form-input" value={form.tiempo_efectivo_hh} readOnly />
                   <button type="button" className="btn btn-secondary" onClick={() => setShowTiempoModal(true)}>Ver detalle</button>
                 </div>
-                <small style={{ color: '#6b7280' }}>Calculado automáticamente desde {reports.length} notificación(es) de trabajo. Máximo sugerido por técnico: {maxHorasSugeridas.toFixed(2)} Hh.</small>
+                <small style={{ color: '#6b7280' }}>
+                  Duracion real estimada: suma la HH mas grande de cada notificacion. HH hombre acumuladas: {totalHorasHombreCalculado.toFixed(2)}.
+                </small>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Costo total servicios</label>
@@ -1747,51 +2911,96 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Tiempo indisponible operacional (Hh)</label>
                 <input
-                  type="number"
-                  min="0"
-                  max={form.tiempo_indisponible_generico || 0}
-                  step="0.25"
                   className="form-input"
                   value={form.tiempo_indisponible_operacional}
-                  onChange={(e) => {
-                    setOperationalTouched(true);
-                    setForm((prev) => ({
-                      ...prev,
-                      tiempo_indisponible_operacional: e.target.value,
-                    }));
-                  }}
+                  readOnly
                 />
                 <small style={{ color: '#6b7280' }}>
                   Se sugiere el mismo valor del tiempo genérico como máximo permitido, pero puedes ajustarlo si la indisponibilidad operacional fue menor.
                 </small>
               </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="close-ot-section-title">
+              <span>5.1</span>
+              <div>
+                <h4>Indisponibilidad economica</h4>
+                <p>Solo aplica cuando hubo parada de equipo registrada.</p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '.8rem' }}>
+              <div>
+                <h4 className="card-title" style={{ marginBottom: '.2rem' }}>Costos por indisponibilidad</h4>
+                <p style={{ color: '#64748b', margin: 0, fontSize: '.9rem' }}>
+                  Calculado con la capacidad registrada del equipo, el costo manual por tonelada hora y el tiempo indisponible operacional.
+                </p>
+              </div>
+              <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', borderRadius: '999px', padding: '.3rem .65rem', fontWeight: 800 }}>
+                S/ {formatCost(downtimeCost)}
+              </span>
+            </div>
+            {!hasEquipmentStopForDowntimeCost && (
+              <div className="alert alert-info" style={{ marginBottom: '.8rem' }}>
+                No se registró parada del equipo. El costo por indisponibilidad queda en S/ 0.00 y no aplica costo por tonelada hora.
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Estado del equipo</label>
-                <select className="form-select" value={form.estado_equipo} onChange={(e) => setForm({ ...form, estado_equipo: e.target.value })}>
-                  <option>Operativo</option>
-                  <option>Operativo durante mantenimiento</option>
-                  <option>Parada de equipo</option>
-                </select>
+                <label className="form-label">Capacidad registrada</label>
+                <input
+                  className="form-input"
+                  value={equipmentCapacityMissing ? form.capacidad_equipo_manual : equipmentCapacityText}
+                  readOnly={!equipmentCapacityMissing}
+                  onChange={(e) => setForm({ ...form, capacidad_equipo_manual: e.target.value })}
+                  placeholder={equipmentCapacityMissing ? 'Ej: 20 ton/h' : ''}
+                />
+                <small style={{ color: equipmentCapacityMissing ? '#b45309' : '#64748b', fontWeight: equipmentCapacityMissing ? 700 : 500 }}>
+                  {equipmentCapacityMissing
+                    ? `El inventario no tiene capacidad registrada. Valor numerico usado: ${equipmentCapacityValue || 0}.`
+                    : `Valor numerico usado: ${equipmentCapacityValue || 0}. Se toma desde Inventario de equipos.`}
+                </small>
               </div>
-              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
-                <label className="form-label">¿Qué tan satisfecho quedó con el servicio?</label>
-                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                  {['Parada de equipo', 'Insatisfecho', 'Neutral', 'Satisfecho', 'Operativa durante mantto'].map((item) => (
-                    <label key={item} style={{ display: 'inline-flex', alignItems: 'center', gap: '.35rem' }}>
-                      <input type="radio" name="satisfaccion" checked={form.satisfaccion === item} onChange={() => setForm({ ...form, satisfaccion: item })} />
-                      <span>{item}</span>
-                    </label>
-                  ))}
-                </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Costo por tonelada hora</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="form-input"
+                  value={form.costo_tonelada_hora}
+                  disabled={!hasEquipmentStopForDowntimeCost}
+                  onChange={(e) => setForm({ ...form, costo_tonelada_hora: e.target.value })}
+                  placeholder="Ej: 125.00"
+                />
+                <small style={{ color: hasEquipmentStopForDowntimeCost ? '#64748b' : '#b45309', fontWeight: hasEquipmentStopForDowntimeCost ? 500 : 700 }}>
+                  {hasEquipmentStopForDowntimeCost ? 'Campo manual. Puedes dejarlo en blanco si no aplica.' : 'Solo se habilita cuando hubo parada del equipo.'}
+                </small>
               </div>
-              <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
-                <label className="form-label">Cargar informe (texto / ruta)</label>
-                <input className="form-input" value={form.informe} onChange={(e) => setForm({ ...form, informe: e.target.value })} placeholder="Ej: Informe-OT-2026-03.pdf" />
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Tiempo indisponible usado</label>
+                <input className="form-input" value={`${form.tiempo_indisponible_operacional || 0} Hh`} readOnly />
+                <small style={{ color: '#64748b' }}>Corresponde al tiempo indisponible operacional registrado.</small>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Costo por indisponibilidad</label>
+                <input className="form-input" value={`S/ ${formatCost(downtimeCost)}`} readOnly />
+                <small style={{ color: '#64748b' }}>
+                  Capacidad x costo tonelada hora x tiempo indisponible.
+                </small>
               </div>
             </div>
           </div>
 
           <div className="card" style={{ marginTop: '.9rem' }}>
+            <div className="close-ot-section-title">
+              <span>6</span>
+              <div>
+                <h4>Cierre tecnico</h4>
+                <p>Componente intervenido, modo de falla, causa y accion ejecutada.</p>
+              </div>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.8rem', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '.8rem' }}>
               <div>
                 <h4 className="card-title" style={{ marginBottom: '.25rem' }}>Cierre tecnico de mantenimiento</h4>
@@ -1812,7 +3021,7 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
                   value={amefComponentFilter || ''}
                   onChange={(e) => handleAmefComponentChange(e.target.value)}
                 >
-                  <option value="">Todos los componentes AMEF</option>
+                  <option value="">{amefComponentOptions.length ? 'Todos los componentes AMEF' : 'Sin componentes AMEF para este equipo'}</option>
                   {amefComponentOptions.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.nombre} ({item.count})
@@ -1853,7 +3062,7 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
                   </>
                 ) : (
                   <div style={{ color: '#64748b', fontSize: '.84rem' }}>
-                    Selecciona un modo desde AMEF, o elige Manual / Ninguna si corresponde.
+                    Usa el selector de modo de falla para elegir AMEF, Ninguna o Manual.
                   </div>
                 )}
               </div>
@@ -1946,8 +3155,122 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
             className="card"
             style={{
               marginTop: '.9rem',
+              border: exchangeForm.enabled ? '1px solid #bfdbfe' : '1px solid #e5e7eb',
+              background: exchangeForm.enabled ? '#f8fbff' : '#fff',
+            }}
+          >
+            <div className="close-ot-section-title">
+              <span>7</span>
+              <div>
+                <h4>Intercambio de subequipo</h4>
+                <p>Registra movimientos de sistemas o componentes entre equipos solo si ocurrieron durante la OT.</p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '.8rem' }}>
+              <div>
+                <h4 className="card-title" style={{ marginBottom: '.2rem' }}>Intercambio de subequipo</h4>
+                <p style={{ color: '#6b7280', margin: 0 }}>
+                  Activa este bloque solo si durante la OT se retiro un sistema o componente y se instalo en otro equipo.
+                </p>
+              </div>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '.45rem', fontWeight: 800, color: '#1d4ed8' }}>
+                <input
+                  type="checkbox"
+                  checked={exchangeForm.enabled}
+                  onChange={(e) => setExchangeForm((prev) => ({
+                    ...prev,
+                    enabled: e.target.checked,
+                    sourceId: prev.sourceId || initialExchangeSourceId,
+                  }))}
+                />
+                Se realizo intercambio
+              </label>
+            </div>
+
+            {exchangeForm.enabled && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Equipo origen</label>
+                  <input
+                    className="form-input"
+                    value={exchangeSourceQuery}
+                    onChange={(e) => setExchangeSourceQuery(e.target.value)}
+                    placeholder="Buscar equipo origen..."
+                    style={{ marginBottom: '.4rem' }}
+                  />
+                  <select
+                    className="form-select"
+                    value={exchangeForm.sourceId || ''}
+                    onChange={(e) => setExchangeForm((prev) => ({
+                      ...prev,
+                      sourceId: e.target.value,
+                      nodeId: '',
+                      targetId: (Array.isArray(equiposItems) ? equiposItems : []).find((eq) => String(eq.id) !== String(e.target.value))?.id || '',
+                    }))}
+                  >
+                    {!filteredExchangeSourceOptions.some((eq) => String(eq.id) === String(exchangeForm.sourceId)) && exchangeSourceEquipo && (
+                      <option value={exchangeSourceEquipo.id}>{getEquipmentLabel(exchangeSourceEquipo)}</option>
+                    )}
+                    {filteredExchangeSourceOptions.map((eq) => (
+                      <option key={`exchange-source-${eq.id}`} value={eq.id}>{getEquipmentLabel(eq)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Subequipo retirado</label>
+                  <select
+                    className="form-select"
+                    value={exchangeForm.nodeId || ''}
+                    onChange={(e) => setExchangeForm((prev) => ({ ...prev, nodeId: e.target.value }))}
+                  >
+                    <option value="">Selecciona nivel del despiece</option>
+                    {exchangeSourceNodes.map((node) => (
+                      <option key={`exchange-node-${node.id}`} value={node.id}>
+                        {getNodeLabel(node)} {node.tipo_nodo === 'titulo' ? '(sistema)' : '(componente)'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Equipo destino</label>
+                  <input
+                    className="form-input"
+                    value={exchangeTargetQuery}
+                    onChange={(e) => setExchangeTargetQuery(e.target.value)}
+                    placeholder="Buscar equipo destino..."
+                    style={{ marginBottom: '.4rem' }}
+                  />
+                  <select
+                    className="form-select"
+                    value={exchangeForm.targetId || ''}
+                    onChange={(e) => setExchangeForm((prev) => ({ ...prev, targetId: e.target.value }))}
+                  >
+                    <option value="">Selecciona destino</option>
+                    {filteredExchangeTargetOptions.map((eq) => (
+                      <option key={`exchange-target-${eq.id}`} value={eq.id}>{getEquipmentLabel(eq)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                  <label className="form-label">Motivo / detalle del intercambio</label>
+                  <textarea
+                    className="form-textarea"
+                    value={exchangeForm.motivo}
+                    onChange={(e) => setExchangeForm((prev) => ({ ...prev, motivo: e.target.value }))}
+                    placeholder="Ej: Se instalo motor disponible de equipo auxiliar por falla en rodamiento."
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {isReturnIntent && (
+          <div
+            className="card"
+            style={{
+              marginTop: '.9rem',
               border: '1px solid #fca5a5',
-              background: isReturnIntent ? '#fff5f5' : '#fef2f2',
+              background: '#fff5f5',
             }}
           >
             <div style={{ marginBottom: '.75rem' }}>
@@ -2012,12 +3335,13 @@ export function ModalCerrarOT({ alert, reports = [], onClose, onSubmit, onReturn
               </div>
             </div>
           </div>
+          )}
         </div>
 
-        <div style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
+        <div className="close-ot-modal-footer" style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
           <button type="button" className={`btn ${isReturnIntent ? 'btn-danger' : 'btn-secondary'}`} onClick={returnToLiberated}>Devolver a Liberada</button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={serviceSummary.hasMissingServiceCost}>Cerrar OT</button>
+          <button type="button" className="btn btn-primary" onClick={submit}>Cerrar OT</button>
         </div>
       </div>
 
@@ -2069,6 +3393,8 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
   const [selectedMaterialId, setSelectedMaterialId] = useState(null);
   const [cantidadMaterial, setCantidadMaterial] = useState(1);
   const [materialesAsignados, setMaterialesAsignados] = useState(Array.isArray(alert.materiales_detalle) ? alert.materiales_detalle : []);
+  const [releaseActivities, setReleaseActivities] = useState(() => cleanActivityRowsForDisplay(alert.actividad));
+  const [newReleaseActivity, setNewReleaseActivity] = useState('');
 
   const eligibleRrhh = rrhhItems.filter(isInternalOtStaff);
 
@@ -2137,6 +3463,21 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
     setMaterialesAsignados((prev) => prev.filter((m) => m.id !== id));
   };
 
+  const addReleaseActivity = () => {
+    const value = newReleaseActivity.trim();
+    if (!value) return;
+    setReleaseActivities((prev) => [...prev, value]);
+    setNewReleaseActivity('');
+  };
+
+  const updateReleaseActivity = (index, value) => {
+    setReleaseActivities((prev) => prev.map((item, itemIndex) => (itemIndex === index ? value : item)));
+  };
+
+  const removeReleaseActivity = (index) => {
+    setReleaseActivities((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  };
+
   const submit = () => {
     const validationError = firstValidationError(
       validateRequiredFields([
@@ -2147,7 +3488,6 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
       ]),
       validateTextFields([
         ['Turno', registro.turno],
-        ['Observaciones', registro.observaciones],
       ]),
       validatePositiveFields(materialesAsignados.map((item, index) => [`Cantidad material ${index + 1}`, item.cantidad])),
     );
@@ -2166,6 +3506,18 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
       setTab('personal');
       return;
     }
+    const normalizedActivities = releaseActivities.map((item) => String(item || '').trim()).filter(Boolean);
+    if (!normalizedActivities.length) {
+      window.alert('Agrega al menos una actividad para liberar la OT.');
+      setTab('registro');
+      return;
+    }
+    const activityValidationError = validateTextFields(normalizedActivities.map((item, index) => [`Actividad ${index + 1}`, item]));
+    if (activityValidationError) {
+      window.alert(activityValidationError);
+      setTab('registro');
+      return;
+    }
 
     const materialExcedido = materialesAsignados.find((item) => {
       const reservedByOtherOt = reservedByOthers.get(String(item.id)) || 0;
@@ -2180,6 +3532,7 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
 
     onSubmit({
       registro,
+      actividad: formatActivities(normalizedActivities),
       personalAsignado,
       materialesAsignados,
     });
@@ -2221,7 +3574,42 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
                 <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Fecha fin</label><input type="date" className="form-input" value={registro.fecha_fin} onChange={(e) => setRegistro({ ...registro, fecha_fin: e.target.value })} /></div>
                 <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Hora inicio</label><input type="time" className="form-input" value={registro.hora_inicio} onChange={(e) => setRegistro({ ...registro, hora_inicio: e.target.value })} /></div>
                 <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">Hora fin</label><input type="time" className="form-input" value={registro.hora_fin} onChange={(e) => setRegistro({ ...registro, hora_fin: e.target.value })} /></div>
-                <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}><label className="form-label">Observaciones</label><textarea className="form-textarea" value={registro.observaciones} onChange={(e) => setRegistro({ ...registro, observaciones: e.target.value })} /></div>
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+                  <label className="form-label">Actividades del paquete / OT</label>
+                  <div style={{ border: '1px solid #dbeafe', background: '#f8fafc', borderRadius: '.75rem', padding: '.85rem', display: 'grid', gap: '.6rem' }}>
+                    {releaseActivities.length ? (
+                      releaseActivities.map((item, index) => (
+                        <div key={`release_activity_${index}`} style={{ display: 'grid', gridTemplateColumns: '2rem minmax(0, 1fr) auto', gap: '.5rem', alignItems: 'center' }}>
+                          <div style={{ fontWeight: 800, color: '#2563eb', textAlign: 'center' }}>{index + 1}</div>
+                          <input
+                            className="form-input"
+                            value={item}
+                            onChange={(e) => updateReleaseActivity(index, e.target.value)}
+                            placeholder="Describe la actividad"
+                          />
+                          <button type="button" className="btn btn-danger btn-sm" onClick={() => removeReleaseActivity(index)}>Quitar</button>
+                        </div>
+                      ))
+                    ) : (
+                      <span style={{ color: '#64748b' }}>Sin actividades registradas para esta OT.</span>
+                    )}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '.5rem', alignItems: 'center' }}>
+                      <input
+                        className="form-input"
+                        value={newReleaseActivity}
+                        onChange={(e) => setNewReleaseActivity(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addReleaseActivity();
+                          }
+                        }}
+                        placeholder="Agregar nueva actividad"
+                      />
+                      <button type="button" className="btn btn-secondary" onClick={addReleaseActivity}>Agregar</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -2335,7 +3723,9 @@ export default function PmpGestionOt() {
   const [showReleaseModal, setShowReleaseModal] = useState(false);
   const [releaseModalMode, setReleaseModalMode] = useState('release');
   const [showCloseModal, setShowCloseModal] = useState(false);
+  const [closeModalAction, setCloseModalAction] = useState('close');
   const [showReprogramModal, setShowReprogramModal] = useState(false);
+  const [mobileActionMenu, setMobileActionMenu] = useState(null);
   const [mobileVisibleOtCount, setMobileVisibleOtCount] = useState(12);
   const [rrhhItems, setRrhhItems] = useState(RRHH_FALLBACK);
   const [materialesItems, setMaterialesItems] = useState(MATERIALES_FALLBACK);
@@ -2529,6 +3919,20 @@ export default function PmpGestionOt() {
     }
   }, [alerts, selectedId]);
 
+  useEffect(() => {
+    if (!mobileActionMenu) return undefined;
+    const closeMenu = () => setMobileActionMenu(null);
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') closeMenu();
+    };
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [mobileActionMenu]);
+
   const alertTableColumns = useMemo(() => ([
     { id: 'select', filterable: false },
     { id: 'fecha_ejecutar', getValue: (a) => formatDateDisplay(a.fecha_ejecutar || '', 'N.A.') },
@@ -2601,9 +4005,11 @@ export default function PmpGestionOt() {
   }), [alerts]);
   const selectedIdsSet = useMemo(() => new Set(selectedIds.map((item) => String(item))), [selectedIds]);
   const allSelected = filteredAlerts.length > 0 && filteredAlerts.every((item) => selectedIdsSet.has(String(item.id)));
-  const canReleaseSelected = Boolean(selected && ['Pendiente', 'Creada'].includes(selected.status_ot));
-  const canEditSelected = Boolean(selected && ['Pendiente', 'Creada', 'Liberada', 'Solicitud de cierre'].includes(selected.status_ot));
-  const canReprogramSelected = Boolean(selected && ['Pendiente', 'Creada', 'Liberada'].includes(selected.status_ot));
+  const selectedStatus = String(selected?.status_ot || '').trim();
+  const canReleaseSelected = Boolean(selected && ['Pendiente', 'Creada'].includes(selectedStatus));
+  const canEditSelected = Boolean(selected && selectedStatus === 'Liberada');
+  const canReprogramSelected = Boolean(selected && ['Pendiente', 'Creada', 'Liberada'].includes(selectedStatus));
+  const canReviewCloseSelected = Boolean(selected && selectedStatus === 'Solicitud de cierre');
 
   const toggleRowSelection = (id) => {
     const key = String(id);
@@ -2621,6 +4027,24 @@ export default function PmpGestionOt() {
       return;
     }
     setSelectedIds(filteredAlerts.map((item) => item.id));
+  };
+
+  const openMobileOtMenu = (event, item) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedId(item.id);
+    if (isReadOnly) return;
+    setMobileActionMenu({
+      id: item.id,
+      x: event.clientX || (event.touches?.[0]?.clientX ?? window.innerWidth / 2),
+      y: event.clientY || (event.touches?.[0]?.clientY ?? window.innerHeight / 2),
+    });
+  };
+
+  const runMobileOtAction = (item, action) => {
+    setSelectedId(item.id);
+    setMobileActionMenu(null);
+    window.setTimeout(() => action(item), 0);
   };
 
   const openCreateModal = async () => {
@@ -2703,9 +4127,11 @@ export default function PmpGestionOt() {
     }).catch((err) => console.error('Error auditando OT creada/editada:', err));
   };
 
-  const handleDeleteOt = async () => {
+  const handleDeleteOt = async (targetAlert = null) => {
     if (isReadOnly) return;
-    const idsToDelete = selectedIds.length
+    const idsToDelete = targetAlert
+      ? [String(targetAlert.id)]
+      : selectedIds.length
       ? selectedIds.map((item) => String(item))
       : (selected ? [String(selected.id)] : []);
 
@@ -2748,15 +4174,21 @@ export default function PmpGestionOt() {
     }).catch((err) => console.error('Error auditando OT eliminada:', err));
   };
 
-  const openReleaseModal = async () => {
+  const openReleaseModal = async (targetAlert = selected) => {
     if (isReadOnly) return;
-    if (!selected) return;
-    if (selected.status_ot === 'Liberada') {
+    const row = targetAlert || selected;
+    if (!row) return;
+    setSelectedId(row.id);
+    if (row.status_ot === 'Liberada') {
       window.alert('Una OT liberada ya no puede liberarse nuevamente. Usa Editar OT para modificar sus datos.');
       return;
     }
-    if (!['Pendiente', 'Creada'].includes(selected.status_ot)) {
+    if (!['Pendiente', 'Creada'].includes(row.status_ot)) {
       window.alert('Solo puedes liberar OTs en estado Pendiente o Creada.');
+      return;
+    }
+    if (isOverdueUnreleasedOt(row)) {
+      window.alert('Esta OT ya paso su fecha de ejecucion y no puede liberarse directamente. Primero debes reprogramarla para dejar registrado que paso con el equipo en ese periodo.');
       return;
     }
     const [rrhhData, materialesData] = await Promise.all([
@@ -2770,30 +4202,13 @@ export default function PmpGestionOt() {
     setShowReleaseModal(true);
   };
 
-  const openEditCreateModal = async () => {
+  const openEditReleaseModal = async (targetAlert = selected) => {
     if (isReadOnly) return;
-    if (!selected) return;
-    if (!['Pendiente', 'Creada'].includes(selected.status_ot)) {
-      window.alert('Solo puedes editar con este formulario una OT en estado Pendiente o Creada.');
-      return;
-    }
-    const [equiposData, packagesData] = await Promise.all([
-      loadSharedDocument(EQUIPOS_KEY, []),
-      loadSharedDocument(PACKAGES_KEY, []),
-    ]);
-    setEquiposItems(Array.isArray(equiposData) ? equiposData : []);
-    setPackageItems(Array.isArray(packagesData) ? packagesData : []);
-    setCreateModalMode('edit');
-    setCreateModalAlert(selected);
-    setError('');
-    setShowCreateModal(true);
-  };
-
-  const openEditReleaseModal = async () => {
-    if (isReadOnly) return;
-    if (!selected) return;
-    if (!['Liberada', 'Solicitud de cierre'].includes(selected.status_ot)) {
-      window.alert('Solo puedes editar una OT que ya este liberada o en solicitud de cierre.');
+    const row = targetAlert || selected;
+    if (!row) return;
+    setSelectedId(row.id);
+    if (String(row.status_ot || '').trim() !== 'Liberada') {
+      window.alert('Solo puedes editar una OT que este en estado Liberada.');
       return;
     }
     const [rrhhData, materialesData, workReportsData] = await Promise.all([
@@ -2809,24 +4224,24 @@ export default function PmpGestionOt() {
     setShowReleaseModal(true);
   };
 
-  const openEditOt = async () => {
+  const openEditOt = async (targetAlert = selected) => {
     if (isReadOnly) return;
-    if (!selected) return;
-    if (['Liberada', 'Solicitud de cierre'].includes(selected.status_ot)) {
-      await openEditReleaseModal();
+    const row = targetAlert || selected;
+    if (!row) return;
+    setSelectedId(row.id);
+    if (String(row.status_ot || '').trim() === 'Liberada') {
+      await openEditReleaseModal(row);
       return;
     }
-    if (['Pendiente', 'Creada'].includes(selected.status_ot)) {
-      await openEditCreateModal();
-      return;
-    }
-    window.alert('Solo puedes editar OTs en estado Pendiente, Creada, Liberada o Solicitud de cierre.');
+    window.alert('Solo puedes editar OTs en estado Liberada.');
   };
 
-  const openReprogramModal = () => {
+  const openReprogramModal = (targetAlert = selected) => {
     if (isReadOnly) return;
-    if (!selected) return;
-    if (!['Pendiente', 'Creada', 'Liberada'].includes(selected.status_ot)) {
+    const row = targetAlert || selected;
+    if (!row) return;
+    setSelectedId(row.id);
+    if (!['Pendiente', 'Creada', 'Liberada'].includes(row.status_ot)) {
       window.alert('Solo puedes reprogramar OTs en estado Pendiente, Creada o Liberada.');
       return;
     }
@@ -2862,7 +4277,7 @@ export default function PmpGestionOt() {
     }).catch((err) => console.error('Error auditando reprogramacion OT:', err));
   };
 
-  const confirmRelease = async ({ registro, personalAsignado, materialesAsignados }) => {
+  const confirmRelease = async ({ registro, actividad, personalAsignado, materialesAsignados }) => {
     if (isReadOnly) return;
     if (!selected) return;
 
@@ -2891,6 +4306,7 @@ export default function PmpGestionOt() {
       fecha_ejecucion: a.fecha_ejecucion || todayStr,
       fecha_liberacion_ot: a.fecha_liberacion_ot || releaseAt,
       liberado_por: a.liberado_por || releasedBy,
+      actividad: actividad || a.actividad,
       personal_mantenimiento: personalTexto,
       materiales: materialesTexto,
       personal_detalle: personalAsignado,
@@ -2980,23 +4396,28 @@ export default function PmpGestionOt() {
     }).catch((err) => console.error('Error auditando OT editada:', err));
   };
 
-  const openCloseModal = async () => {
+  const openCloseModal = async (action = 'close', targetAlert = selected) => {
     if (isReadOnly) return;
-    if (!selected) return;
-    if (selected.status_ot !== 'Solicitud de cierre') {
+    const row = targetAlert || selected;
+    if (!row) return;
+    setSelectedId(row.id);
+    if (String(row.status_ot || '').trim() !== 'Solicitud de cierre') {
       window.alert('Solo puedes cerrar una OT que esté en estado Solicitud de cierre.');
       return;
     }
     const workReports = await loadSharedDocument(OT_WORK_REPORTS_KEY, []);
     setWorkReports(Array.isArray(workReports) ? workReports : []);
-    const reportsForOt = (Array.isArray(workReports) ? workReports : []).filter((item) => String(item.alertId) === String(selected.id));
-    const consistencySummary = getAlertConsistencySummary(selected, reportsForOt);
-    if (consistencySummary.hasInconsistency) {
+    setCloseModalAction(action);
+    setShowCloseModal(true);
+    // El formato debe abrir aunque falten datos; las validaciones bloquean solo el cierre final.
+    const reportsForOt = (Array.isArray(workReports) ? workReports : []).filter((item) => String(item.alertId) === String(row.id));
+    const consistencySummary = getAlertConsistencySummary(row, reportsForOt);
+    if (false && consistencySummary.hasInconsistency) {
       window.alert(`No puedes cerrar esta OT porque tiene ${consistencySummary.count} inconsistencia(s) entre los registros de trabajo y el rango liberado. Corrige la liberación y revisa que todo quede conforme antes de cerrar.`);
       return;
     }
     const reportsMissingEvidence = findReportsMissingRequiredEvidence(reportsForOt);
-    if (reportsMissingEvidence.length) {
+    if (false && reportsMissingEvidence.length) {
       window.alert(`No puedes cerrar esta OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`);
       return;
     }
@@ -3007,12 +4428,54 @@ export default function PmpGestionOt() {
     if (isReadOnly) return;
     if (!selected) return;
     const todayStr = new Date().toISOString().split('T')[0];
-    const [history, workReports, existingNotices] = await Promise.all([
+    const [history, workReports, existingNotices, exchangeHistory, latestEquipos] = await Promise.all([
       loadSharedDocument(OT_HISTORY_KEY, []),
       loadSharedDocument(OT_WORK_REPORTS_KEY, []),
       loadSharedDocument(NOTICES_KEY, []),
+      loadSharedDocument(EXCHANGE_HISTORY_KEY, []),
+      loadSharedDocument(EQUIPOS_KEY, []),
     ]);
+    let cierreFinal = { ...cierreData };
+    let exchangedEquipos = null;
+    let nextExchangeHistory = null;
+    if (cierreData?.intercambio_realizado?.enabled) {
+      try {
+        const actor = user?.full_name || user?.username || user?.role || 'Sistema';
+        const exchangeResult = applyEquipmentExchange(Array.isArray(latestEquipos) ? latestEquipos : equiposItems, {
+          ...cierreData.intercambio_realizado,
+          otNumero: selected.ot_numero || selected.id || '',
+          registradoPor: actor,
+          registradoEn: 'Cierre de OT',
+        });
+        exchangedEquipos = exchangeResult.equipos;
+        nextExchangeHistory = [
+          exchangeResult.record,
+          ...(Array.isArray(exchangeHistory) ? exchangeHistory : []),
+        ];
+        cierreFinal = {
+          ...cierreData,
+          intercambio_realizado: {
+            ...cierreData.intercambio_realizado,
+            ...exchangeResult.record,
+          },
+        };
+      } catch (err) {
+        console.error('Error preparando intercambio en cierre OT:', err);
+        setError(err?.message || 'No se pudo registrar el intercambio indicado en el cierre de OT.');
+        return;
+      }
+    }
     const storedReports = Array.isArray(workReports) ? workReports : [];
+    if (cierreData?.actualizar_capacidad_equipo && String(cierreData?.capacidad_equipo || '').trim()) {
+      const capacityValue = String(cierreData.capacidad_equipo).trim();
+      const baseRows = exchangedEquipos || (Array.isArray(latestEquipos) ? latestEquipos : equiposItems);
+      const nextRows = (Array.isArray(baseRows) ? baseRows : []).map((eq) => {
+        const sameId = selected.equipo_id && String(eq.id) === String(selected.equipo_id);
+        const sameCode = String(eq.codigo || '').trim().toUpperCase() === String(selected.codigo || '').trim().toUpperCase();
+        return sameId || sameCode ? { ...eq, capacidad: capacityValue } : eq;
+      });
+      exchangedEquipos = nextRows;
+    }
     const reportsForOt = storedReports.filter((item) => String(item.alertId) === String(selected.id));
     const effectiveReports = (Array.isArray(cierreData?.reportes_actualizados) && cierreData.reportes_actualizados.length
       ? cierreData.reportes_actualizados
@@ -3035,16 +4498,22 @@ export default function PmpGestionOt() {
     const consistencySummary = getAlertConsistencySummary(selected, effectiveReports);
     const serviceSummary = summarizeServiceReports(effectiveReports);
     if (consistencySummary.hasInconsistency) {
-      setError(`No se puede cerrar la OT porque tiene ${consistencySummary.count} inconsistencia(s) de fechas en los registros de trabajo.`);
+      const message = `No se puede cerrar la OT porque tiene ${consistencySummary.count} inconsistencia(s) de fechas en los registros de trabajo.`;
+      window.alert(message);
+      setError(message);
       return;
     }
     if (serviceSummary.hasMissingServiceCost) {
-      setError(`No se puede cerrar la OT porque tiene ${serviceSummary.missingCostReports.length} notificacion(es) de servicio sin costo registrado.`);
+      const message = `No se puede cerrar la OT porque tiene ${serviceSummary.missingCostReports.length} notificacion(es) de servicio sin costo registrado.`;
+      window.alert(message);
+      setError(message);
       return;
     }
     const reportsMissingEvidence = findReportsMissingRequiredEvidence(effectiveReports);
     if (reportsMissingEvidence.length) {
-      setError(`No se puede cerrar la OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`);
+      const message = `No se puede cerrar la OT porque ${reportsMissingEvidence.length} notificacion(es) no tienen foto ANTES y DESPUES.`;
+      window.alert(message);
+      setError(message);
       return;
     }
     const generatedNotices = Array.isArray(cierreData?.avisos_generados_detalle) && cierreData.avisos_generados_detalle.length
@@ -3054,10 +4523,10 @@ export default function PmpGestionOt() {
       ...selected,
       status_ot: 'Cerrada',
       fecha_ejecucion: selected.fecha_ejecucion || todayStr,
-      cierre_ot: cierreData,
+      cierre_ot: cierreFinal,
       fecha_cierre: todayStr,
-      fecha_ejecucion_real: cierreData?.fecha_fin || todayStr,
-      hora_ejecucion_real: cierreData?.hora_fin || '',
+      fecha_ejecucion_real: cierreFinal?.fecha_fin || todayStr,
+      hora_ejecucion_real: cierreFinal?.hora_fin || '',
       reportes_trabajo: effectiveReports,
       avisos_generados: generatedNotices.map((item) => item.aviso_codigo),
       avisos_generados_detalle: generatedNotices,
@@ -3080,16 +4549,24 @@ export default function PmpGestionOt() {
       }
     }
     try {
-      await Promise.all([
+      const saveOperations = [
         saveSharedDocument(OT_WORK_REPORTS_KEY, mergedWorkReports),
         saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]),
         saveSharedDocument(NOTICES_KEY, [...generatedNotices, ...(Array.isArray(existingNotices) ? existingNotices : [])]),
-      ]);
+      ];
+      if (exchangedEquipos && nextExchangeHistory) {
+        saveOperations.push(saveSharedDocument(EQUIPOS_KEY, exchangedEquipos));
+        saveOperations.push(saveSharedDocument(EXCHANGE_HISTORY_KEY, nextExchangeHistory));
+      }
+      await Promise.all(saveOperations);
       setWorkReports(mergedWorkReports);
+      if (exchangedEquipos) setEquiposItems(exchangedEquipos);
       setError('');
     } catch (err) {
       console.error('Error guardando historial OT:', err);
-      setError('No se pudo guardar el historial de OT, los avisos de mantenimiento o el costo del servicio en el servidor.');
+      const message = getSharedDocumentErrorMessage(err);
+      window.alert(message);
+      setError(message);
       return;
     }
 
@@ -3223,7 +4700,8 @@ export default function PmpGestionOt() {
             {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={openReleaseModal} disabled={!canReleaseSelected}>Liberar OT</button>}
             {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={openEditOt} disabled={!canEditSelected}>Editar OT</button>}
             {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={openReprogramModal} disabled={!canReprogramSelected}>Reprogramar OT</button>}
-            {!isReadOnly && <button type="button" className="btn btn-danger" onClick={openCloseModal} disabled={!selected}>Cerrar OT</button>}
+            {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={() => openCloseModal('return')} disabled={!canReviewCloseSelected}>Devolver a Liberada</button>}
+            {!isReadOnly && <button type="button" className="btn btn-danger" onClick={() => openCloseModal('close')} disabled={!canReviewCloseSelected}>Cerrar OT</button>}
             {!isReadOnly && (
               <button type="button" className="btn btn-danger" onClick={handleDeleteOt} disabled={!selected && !selectedIds.length}>
                 {selectedIds.length > 1 ? `Eliminar OT (${selectedIds.length})` : 'Eliminar OT'}
@@ -3243,15 +4721,14 @@ export default function PmpGestionOt() {
           const rowConsistency = consistencyByAlert.get(String(a.id)) || { hasInconsistency: false, count: 0 };
           const isSelected = selectedId === a.id;
           const isMarked = selectedIdsSet.has(String(a.id));
+          const tone = getOtVisualTone(a, isSelected);
           return (
             <div
               key={`mobile_ot_${a.id}`}
               className={`mobile-ot-card ${isSelected ? 'is-selected' : ''}`}
               onClick={() => setSelectedId(a.id)}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                if (!isReadOnly) toggleRowSelection(a.id);
-              }}
+              onContextMenu={(event) => openMobileOtMenu(event, a)}
+              style={{ background: tone.background, borderColor: tone.border }}
               title="Toca para seleccionar. Mantén presionado para marcar."
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'flex-start' }}>
@@ -3272,9 +4749,14 @@ export default function PmpGestionOt() {
                     Marcada
                   </span>
                 )}
-                <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, fontSize: '.78rem' }}>
+                <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: tone.chipBackground, color: tone.chipText, fontWeight: 800, fontSize: '.78rem' }}>
                   {a.status_ot}
                 </span>
+                {tone.key === 'overdue' && (
+                  <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: tone.chipBackground, color: tone.chipText, fontWeight: 800, fontSize: '.78rem' }}>
+                    {tone.label}
+                  </span>
+                )}
                 {rowConsistency.hasInconsistency && (
                   <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#fef2f2', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
                     Inconsistencia: {rowConsistency.count}
@@ -3311,6 +4793,59 @@ export default function PmpGestionOt() {
             Ver menos
           </button>
         )}
+        {mobileActionMenu && (() => {
+          const item = filteredAlerts.find((row) => String(row.id) === String(mobileActionMenu.id));
+          if (!item) return null;
+          const status = String(item.status_ot || '').trim();
+          return (
+            <div
+              className="mobile-card-action-menu"
+              style={{
+                left: Math.min(mobileActionMenu.x, window.innerWidth - 260),
+                top: Math.min(mobileActionMenu.y, window.innerHeight - 260),
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="mobile-card-action-head">
+                <span>Acciones OT</span>
+                <strong>{item.ot_numero || item.codigo || 'OT'}</strong>
+              </div>
+              <div className="mobile-card-action-list">
+                {['Pendiente', 'Creada'].includes(status) && (
+                  <button type="button" onClick={() => runMobileOtAction(item, openReleaseModal)}>
+                    Liberar OT
+                  </button>
+                )}
+                {status === 'Liberada' && (
+                  <button type="button" onClick={() => runMobileOtAction(item, openEditOt)}>
+                    Editar OT
+                  </button>
+                )}
+                {['Pendiente', 'Creada', 'Liberada'].includes(status) && (
+                  <button type="button" onClick={() => runMobileOtAction(item, openReprogramModal)}>
+                    Reprogramar OT
+                  </button>
+                )}
+                {status === 'Solicitud de cierre' && (
+                  <>
+                    <button type="button" onClick={() => runMobileOtAction(item, (target) => openCloseModal('return', target))}>
+                      Devolver a Liberada
+                    </button>
+                    <button type="button" onClick={() => runMobileOtAction(item, (target) => openCloseModal('close', target))}>
+                      Cerrar OT
+                    </button>
+                  </>
+                )}
+                <button type="button" onClick={() => runMobileOtAction(item, (target) => toggleRowSelection(target.id))}>
+                  {selectedIdsSet.has(String(item.id)) ? 'Quitar marca' : 'Marcar para eliminar'}
+                </button>
+                <button type="button" className="danger" onClick={() => runMobileOtAction(item, handleDeleteOt)}>
+                  Eliminar OT
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       <div className="card desktop-table-wrapper" style={{ overflowX: 'auto' }}>
@@ -3329,8 +4864,18 @@ export default function PmpGestionOt() {
           <tbody>
             {filteredAlerts.map((a) => {
               const rowConsistency = consistencyByAlert.get(String(a.id)) || { hasInconsistency: false, count: 0 };
+              const isSelected = selectedId === a.id;
+              const tone = getOtVisualTone(a, isSelected);
               return (
-              <tr key={a.id} onClick={() => setSelectedId(a.id)} style={{ background: selectedId === a.id ? '#dbeafe' : '#fff', cursor: 'pointer' }}>
+              <tr
+                key={a.id}
+                onClick={() => setSelectedId(a.id)}
+                style={{
+                  background: tone.background,
+                  boxShadow: isSelected ? `inset 4px 0 0 ${tone.border}` : 'none',
+                  cursor: 'pointer',
+                }}
+              >
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -3358,7 +4903,12 @@ export default function PmpGestionOt() {
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{a.actividad}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{a.responsable}</td>
                 <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>
-                  <div>{a.status_ot}</div>
+                  <div style={{ color: tone.text, fontWeight: 800 }}>{a.status_ot}</div>
+                  {tone.key === 'overdue' && (
+                    <div style={{ marginTop: '.2rem', color: tone.text, fontSize: '.78rem', fontWeight: 800 }}>
+                      {tone.label}
+                    </div>
+                  )}
                   {a.cierre_ot?.devuelta_revision && a.status_ot === 'Liberada' && (
                     <div
                       style={{
@@ -3451,7 +5001,8 @@ export default function PmpGestionOt() {
         <ModalCerrarOT
           alert={selected}
           reports={reportByAlert.get(String(selected.id)) || []}
-          initialAction="close"
+          equiposItems={equiposItems}
+          initialAction={closeModalAction}
           onClose={() => setShowCloseModal(false)}
           onReturnToLiberated={returnOtToLiberated}
           onSubmit={confirmCloseOt}
@@ -3460,3 +5011,4 @@ export default function PmpGestionOt() {
     </div>
   );
 }
+

@@ -196,14 +196,13 @@ const padRows = (rows, minimumRows) => {
 };
 
 const buildActivityRows = (alert, reports) => {
-  const activities = splitLines(alert?.actividad);
-  const reportActivities = (reports || []).flatMap((report) => {
-    const label = report.reportCode || getWorkReportTypeLabel(report);
-    const serviceLine = report.serviceActivity ? [`${label}: ${report.serviceActivity}`] : [];
-    const observationLine = report.observaciones ? [`${label}: ${report.observaciones}`] : [];
-    return [...serviceLine, ...observationLine];
+  const rawActivities = splitLines(alert?.actividad);
+  const activities = rawActivities.filter((item, index) => {
+    if (index !== 0) return true;
+    const text = normalizeLookupText(item);
+    return !(/^x?\d+\s*[-:]/.test(text) && text.includes('paquete'));
   });
-  const rows = [...activities, ...reportActivities];
+  const rows = activities.length ? activities : rawActivities;
   return rows.length ? rows : ['Sin actividades registradas.'];
 };
 
@@ -228,19 +227,26 @@ const buildPersonnelRows = (alert, reports) => {
     const matchedStaff = findStaff(person);
     const name = person?.nombres_apellidos || person?.nombre || person?.tecnico || matchedStaff?.nombres_apellidos || '';
     const code = person?.codigo || matchedStaff?.codigo || getCodeFromPersonText(person?.tecnico || name);
-    const key = String(person?.id || person?.tecnicoId || code || name).trim().toLowerCase();
+    const codeKey = normalizeLookupText(code);
+    const nameKey = normalizeLookupText(name);
+    const idKey = String(person?.id || person?.tecnicoId || matchedStaff?.id || '').trim().toLowerCase();
+    const aliasKeys = [codeKey, nameKey, idKey].filter(Boolean);
+    const existingKey = aliasKeys.find((alias) => rowsByKey.has(alias));
+    const key = existingKey || aliasKeys[0];
     if (!key) return;
     const current = rowsByKey.get(key) || {};
     const hoursToAdd = numberValue(extra.horas);
     const rate = numberValue(person?.costo_hora ?? extra.costo_hora ?? matchedStaff?.costo_hora ?? current.costo_hora);
-    rowsByKey.set(key, {
+    const nextRow = {
       codigo: code || current.codigo || 'N.A.',
       nombre: name || current.nombre || 'N.A.',
       especialidad: person?.especialidad || matchedStaff?.especialidad || current.especialidad || person?.cargo || 'N.A.',
       horas: numberValue(current.horas) + hoursToAdd,
       costo_hora: rate || numberValue(current.costo_hora),
       costo_total: numberValue(current.costo_total) + (hoursToAdd * rate),
-    });
+    };
+    rowsByKey.set(key, nextRow);
+    aliasKeys.forEach((alias) => rowsByKey.set(alias, nextRow));
   };
 
   (alert?.personal_detalle || []).forEach((person) => addPerson(person));
@@ -271,7 +277,7 @@ const buildPersonnelRows = (alert, reports) => {
     });
   }
 
-  return Array.from(rowsByKey.values());
+  return Array.from(new Set(rowsByKey.values()));
 };
 
 const buildMaterialRows = (alert, reports) => {
@@ -394,6 +400,10 @@ const renderReportPersonnelRows = (report) => {
       <td class="label">HH</td>
       <td class="value center">${numberValue(item.horas).toFixed(2)}</td>
     </tr>
+    <tr>
+      <td class="label">Trabajo realizado</td>
+      <td class="value technical-note" colspan="3">${escapeHtml(firstValue(item.actividades, item.actividad, item.trabajo_realizado, 'Sin detalle registrado por el tecnico.'))}</td>
+    </tr>
   `).join('');
 };
 
@@ -477,7 +487,7 @@ const renderWorkEvidenceAnnex = (reports, pdfSettings) => {
         <div class="annex-block">
           <table>
             <tr>
-              <td class="work-report-head" colspan="4">${escapeHtml(report.reportCode || `NT-${index + 1}`)}</td>
+              <td class="work-report-head" colspan="4">NOTIFICACION DE TRABAJO - ${escapeHtml(report.reportCode || `NT-${index + 1}`)}</td>
             </tr>
             <tr>
               <td class="label">Tipo</td>
@@ -663,6 +673,8 @@ export const buildIndustrialOtReportHtml = (alert, reports = [], catalog = [], s
   const fechaAprobacionCierre = firstValue(cierre.cierre_aprobado_fecha, alert?.fecha_cierre, fechaCierre);
   const tipoMantto = firstValue(cierre.tipo_mantenimiento, alert?.tipo_mantto, alert?.tipo_mantenimiento, 'N.A.');
   const estadoOt = firstValue(alert?.status_ot, 'Cerrada');
+  const closeObservationText = firstValue(cierre.observaciones, registro.observaciones, '');
+  const closeRecommendationText = firstValue(cierre.recomendacion_tecnica, '');
 
   return `
     <html>
@@ -831,15 +843,15 @@ export const buildIndustrialOtReportHtml = (alert, reports = [], catalog = [], s
           </table>
 
           {REPORTS_SECTION}
-          <table>
+          ${(closeObservationText || closeRecommendationText) ? `<table>
             <tr><td class="gray">OBSERVACIONES</td></tr>
             <tr>
               <td class="observations">
-                ${escapeHtml(firstValue(cierre.observaciones, registro.observaciones, 'Sin observaciones.'))}
-                ${cierre.recomendacion_tecnica ? `<br/><strong>Recomendacion:</strong> ${escapeHtml(cierre.recomendacion_tecnica)}` : ''}
+                ${escapeHtml(closeObservationText)}
+                ${closeRecommendationText ? `<br/><strong>Recomendacion:</strong> ${escapeHtml(closeRecommendationText)}` : ''}
               </td>
             </tr>
-          </table>
+          </table>` : ''}
 
           <table>
             <tr><td class="gray" colspan="8">RESUMEN TECNICO Y COSTOS</td></tr>
@@ -860,6 +872,14 @@ export const buildIndustrialOtReportHtml = (alert, reports = [], catalog = [], s
               <td class="value center">${formatMoney(totalServiceCost)}</td>
               <td class="label">Costo total mantto</td>
               <td class="value center" colspan="3">${formatMoney(totalMaintenanceCost)}</td>
+            </tr>
+            <tr>
+              <td class="label">Capacidad</td>
+              <td class="value center">${escapeHtml(firstValue(cierre.capacidad_equipo, 'N.A.'))}</td>
+              <td class="label">Costo ton/h</td>
+              <td class="value center">${formatMoney(cierre.costo_tonelada_hora || 0)}</td>
+              <td class="label">Costo indisponibilidad</td>
+              <td class="value center" colspan="3">${formatMoney(cierre.costo_indisponibilidad || 0)}</td>
             </tr>
             <tr>
               <td class="label">Componente</td>

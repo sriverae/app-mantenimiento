@@ -12,8 +12,20 @@ export const MAX_NOTICE_PROBLEM_PHOTOS = 8;
 
 export function getPhotoSource(photo) {
   if (!photo) return '';
-  if (typeof photo === 'string') return photo;
-  return photo.url || photo.previewUrl || photo.dataUrl || '';
+  const raw = typeof photo === 'string'
+    ? photo
+    : (photo.url || photo.previewUrl || photo.dataUrl || photo.path || photo.file_url || '');
+  if (!raw) return '';
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
+  if (raw.startsWith('/')) {
+    const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+    return `${apiBase.replace(/\/$/, '')}${raw}`;
+  }
+  if (!raw.includes('/') && /\.(png|jpe?g|webp|gif)$/i.test(raw)) {
+    const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+    return `${apiBase.replace(/\/$/, '')}/uploads/${raw}`;
+  }
+  return raw;
 }
 
 export function normalizeEvidencePhotos(value = {}) {
@@ -47,6 +59,7 @@ export function getWorkReportEvidencePhotos(report = {}) {
 }
 
 export function hasRequiredWorkReportEvidence(report = {}) {
+  if (String(report?.reportType || report?.tipo_reporte || '').toUpperCase() === 'SERVICIO') return true;
   const photos = getWorkReportEvidencePhotos(report);
   return Boolean(getPhotoSource(photos.before) && getPhotoSource(photos.after));
 }
