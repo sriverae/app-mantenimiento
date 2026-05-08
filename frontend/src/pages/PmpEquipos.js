@@ -63,6 +63,8 @@ const STORAGE_KEYS = {
 };
 
 const ALLOWED_DESPIECE_ATTACHMENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
+const ALLOWED_EQUIPMENT_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const ALLOWED_EQUIPMENT_MANUAL_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 function escapeHtml(value) {
   return String(value || '')
@@ -76,6 +78,30 @@ function escapeHtml(value) {
 function isImageAttachment(file = {}) {
   return String(file.content_type || file.type || '').startsWith('image/')
     || /\.(jpg|jpeg|png|webp|gif)$/i.test(String(file.original_name || file.filename || ''));
+}
+
+function getEquipmentPhotoUrl(equipo = {}) {
+  const photo = equipo.foto_equipo || equipo.foto || equipo.photo || null;
+  if (!photo) return '';
+  return typeof photo === 'string' ? photo : (photo.url || photo.file_url || photo.path || '');
+}
+
+function getEquipmentPhotoName(photo) {
+  if (!photo) return '';
+  return typeof photo === 'string' ? 'Foto de equipo' : (photo.original_name || photo.caption || photo.filename || 'Foto de equipo');
+}
+
+function getEquipmentManuals(equipo = {}) {
+  const manuals = equipo.manuales_equipo || equipo.manuales || equipo.manuals || [];
+  return Array.isArray(manuals) ? manuals : [];
+}
+
+function getEquipmentFileUrl(file = {}) {
+  return file?.url || file?.file_url || file?.path || '';
+}
+
+function getEquipmentFileName(file = {}, fallback = 'Archivo') {
+  return file?.original_name || file?.caption || file?.filename || fallback;
 }
 
 function buildDespiecePrintHtml(equipo, nodes = []) {
@@ -233,6 +259,10 @@ export default function PmpEquipos() {
   const [draftFeatures, setDraftFeatures] = useState([]);
   const [draftAttachments, setDraftAttachments] = useState([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [equipmentPhotoDraft, setEquipmentPhotoDraft] = useState(null);
+  const [uploadingEquipmentPhoto, setUploadingEquipmentPhoto] = useState(false);
+  const [equipmentManualDrafts, setEquipmentManualDrafts] = useState([]);
+  const [uploadingEquipmentManual, setUploadingEquipmentManual] = useState(false);
   const [showNoteField, setShowNoteField] = useState(false);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
   const [exchangeHistory, setExchangeHistory] = useState([]);
@@ -329,6 +359,8 @@ export default function PmpEquipos() {
         id: col.key,
         getValue: (equipo) => equipo[col.key] || '—',
       })),
+      { id: 'foto_equipo', filterable: false },
+      { id: 'manuales_equipo', filterable: false },
       { id: 'despiece', filterable: false },
     ],
     [columns],
@@ -347,6 +379,8 @@ export default function PmpEquipos() {
     const defaultForm = {};
     columns.forEach((col) => { defaultForm[col.key] = ''; });
     setForm(defaultForm);
+    setEquipmentPhotoDraft(null);
+    setEquipmentManualDrafts([]);
     setEditingId(null);
     setShowEquipoModal(true);
   };
@@ -357,8 +391,91 @@ export default function PmpEquipos() {
     const editForm = {};
     columns.forEach((col) => { editForm[col.key] = selectedEquipo[col.key] || ''; });
     setForm(editForm);
+    setEquipmentPhotoDraft(selectedEquipo.foto_equipo || selectedEquipo.foto || selectedEquipo.photo || null);
+    setEquipmentManualDrafts(getEquipmentManuals(selectedEquipo));
     setEditingId(selectedEquipo.id);
     setShowEquipoModal(true);
+  };
+
+  const uploadEquipmentPhoto = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || isReadOnly) return;
+    if (!ALLOWED_EQUIPMENT_PHOTO_TYPES.includes(file.type)) {
+      window.alert('Selecciona una foto JPG, PNG, WEBP o GIF.');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('scope', `equipo_${form.codigo || selectedEquipo?.codigo || 'nuevo'}_${Date.now()}`);
+    formData.append('category', 'EQUIPO');
+    formData.append('caption', file.name);
+    setUploadingEquipmentPhoto(true);
+    try {
+      const uploaded = await uploadPhotoAttachment(formData);
+      setEquipmentPhotoDraft({
+        ...uploaded,
+        id: uploaded.filename || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        original_name: uploaded.original_name || file.name,
+        content_type: file.type,
+      });
+      setError('');
+    } catch (err) {
+      console.error('Error subiendo foto de equipo:', err);
+      window.alert(err?.response?.data?.detail || 'No se pudo subir la foto del equipo.');
+    } finally {
+      setUploadingEquipmentPhoto(false);
+    }
+  };
+
+  const removeEquipmentPhotoDraft = () => {
+    const filename = equipmentPhotoDraft?.filename;
+    setEquipmentPhotoDraft(null);
+    if (filename) {
+      deletePhotoAttachment(filename).catch((err) => console.error('No se pudo eliminar la foto de equipo del servidor:', err));
+    }
+  };
+
+  const uploadEquipmentManual = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || isReadOnly) return;
+    if (!ALLOWED_EQUIPMENT_MANUAL_TYPES.includes(file.type)) {
+      window.alert('Selecciona un manual PDF o una imagen JPG, PNG, WEBP o GIF.');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('scope', `manual_equipo_${form.codigo || selectedEquipo?.codigo || 'nuevo'}_${Date.now()}`);
+    formData.append('category', 'MANUAL_EQUIPO');
+    formData.append('caption', file.name);
+    setUploadingEquipmentManual(true);
+    try {
+      const uploaded = await uploadPhotoAttachment(formData);
+      setEquipmentManualDrafts((prev) => [
+        ...prev,
+        {
+          ...uploaded,
+          id: uploaded.filename || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          original_name: uploaded.original_name || file.name,
+          content_type: file.type,
+        },
+      ]);
+      setError('');
+    } catch (err) {
+      console.error('Error subiendo manual de equipo:', err);
+      window.alert(err?.response?.data?.detail || 'No se pudo subir el manual del equipo.');
+    } finally {
+      setUploadingEquipmentManual(false);
+    }
+  };
+
+  const removeEquipmentManualDraft = (manual) => {
+    const filename = manual?.filename;
+    setEquipmentManualDrafts((prev) => prev.filter((item) => String(item.filename || item.id) !== String(filename || manual?.id)));
+    if (filename) {
+      deletePhotoAttachment(filename).catch((err) => console.error('No se pudo eliminar el manual de equipo del servidor:', err));
+    }
   };
 
   const saveEquipo = (e) => {
@@ -379,11 +496,16 @@ export default function PmpEquipos() {
       return acc;
     }, {});
     if (editingId) {
-      setEquipos((prev) => prev.map((eq) => (eq.id === editingId ? { ...eq, ...cleanForm } : eq)));
+      setEquipos((prev) => prev.map((eq) => (eq.id === editingId ? {
+        ...eq,
+        ...cleanForm,
+        foto_equipo: equipmentPhotoDraft || null,
+        manuales_equipo: equipmentManualDrafts,
+      } : eq)));
       setSelectedId(editingId);
     } else {
       const nextId = equipos.length ? Math.max(...equipos.map((eq) => eq.id)) + 1 : 1;
-      const newRow = { id: nextId, ...cleanForm };
+      const newRow = { id: nextId, ...cleanForm, foto_equipo: equipmentPhotoDraft || null, manuales_equipo: equipmentManualDrafts };
       setEquipos((prev) => [newRow, ...prev]);
       setSelectedId(nextId);
     }
@@ -443,6 +565,15 @@ export default function PmpEquipos() {
     if (isReadOnly) return;
     if (!selectedEquipo) return;
     if (!window.confirm(`¿Eliminar equipo ${selectedEquipo.codigo || selectedEquipo.descripcion || selectedEquipo.id}?`)) return;
+    const photoFilename = selectedEquipo.foto_equipo?.filename || selectedEquipo.foto?.filename || selectedEquipo.photo?.filename;
+    if (photoFilename) {
+      deletePhotoAttachment(photoFilename).catch((err) => console.error('No se pudo eliminar la foto de equipo del servidor:', err));
+    }
+    getEquipmentManuals(selectedEquipo).forEach((manual) => {
+      if (manual?.filename) {
+        deletePhotoAttachment(manual.filename).catch((err) => console.error('No se pudo eliminar el manual de equipo del servidor:', err));
+      }
+    });
     const filtered = equipos.filter((eq) => eq.id !== selectedEquipo.id);
     setEquipos(filtered);
     setSelectedId(filtered[0]?.id ?? null);
@@ -750,16 +881,6 @@ export default function PmpEquipos() {
     resetDespieceForm();
   };
 
-  const openExchangeModal = () => {
-    if (isReadOnly) return;
-    const source = selectedEquipo?.id || equipos[0]?.id || null;
-    const target = equipos.find((e) => e.id !== source)?.id || null;
-    setExchangeSourceId(source);
-    setExchangeTargetId(target);
-    setExchangeNodeId('');
-    setShowExchangeModal(true);
-  };
-
   const getSubtreeIds = (rootId, nodes) => {
     const ids = new Set([rootId]);
     let changed = true;
@@ -938,16 +1059,22 @@ export default function PmpEquipos() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: '1rem' }}>
-        <div className="action-toolbar">
+      <div className="page-card equipment-actions-panel">
+        <div className="equipment-actions-copy">
+          <strong>Maestro de equipos</strong>
+          <span>Selecciona una fila para editar, dar de baja o eliminar el equipo. Los intercambios ahora se gestionan desde PMP &gt; Intercambios.</span>
+        </div>
+        <div className="equipment-actions-group">
           {!isReadOnly && <button type="button" className="btn btn-primary" onClick={openNewEquipo}>Nuevo equipo</button>}
           {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={openEditEquipo} disabled={!selectedEquipo}>Editar equipo</button>}
           {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={() => setShowColModal(true)}>Agregar columna</button>}
           {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={() => setShowRemoveColModal(true)} disabled={columns.length <= 1}>Eliminar columna</button>}
-          {!isReadOnly && <button type="button" className="btn btn-secondary" onClick={openExchangeModal} disabled={equipos.length <= 1}>Intercambios</button>}
-          <Link className="btn btn-secondary" to="/pmp/intercambios/historial">Historial intercambios</Link>
-          {!isReadOnly && <Link className="btn btn-danger" to="/pmp/bajas">Dar de baja</Link>}
-          {!isReadOnly && <button type="button" className="btn btn-danger" onClick={deleteSelected} disabled={!selectedEquipo}>Eliminar</button>}
+          {!isReadOnly && (
+            <div className="equipment-danger-actions">
+              <Link className="btn btn-danger" to="/pmp/bajas">Dar de baja</Link>
+              <button type="button" className="btn btn-danger" onClick={deleteSelected} disabled={!selectedEquipo}>Eliminar</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -961,6 +1088,12 @@ export default function PmpEquipos() {
                   {col.label}
                 </th>
               ))}
+              <th style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.65rem .55rem', fontSize: '.82rem', whiteSpace: 'nowrap' }}>
+                Foto
+              </th>
+              <th style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.65rem .55rem', fontSize: '.82rem', whiteSpace: 'nowrap' }}>
+                Manuales
+              </th>
               <th style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.65rem .55rem', fontSize: '.82rem', whiteSpace: 'nowrap' }}>
                 Despiece
               </th>
@@ -976,6 +1109,40 @@ export default function PmpEquipos() {
                   </td>
                 ))}
                 <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', whiteSpace: 'nowrap' }}>
+                  {getEquipmentPhotoUrl(equipo) ? (
+                    <a href={getEquipmentPhotoUrl(equipo)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex', alignItems: 'center', gap: '.45rem', color: '#2563eb', fontWeight: 800 }}>
+                      <img src={getEquipmentPhotoUrl(equipo)} alt={getEquipmentPhotoName(equipo.foto_equipo)} style={{ width: '42px', height: '34px', objectFit: 'cover', borderRadius: '.45rem', border: '1px solid #dbe4f0' }} />
+                      Ver
+                    </a>
+                  ) : (
+                    <span style={{ color: '#94a3b8', fontWeight: 700 }}>Sin foto</span>
+                  )}
+                </td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', whiteSpace: 'nowrap' }}>
+                  {getEquipmentManuals(equipo).length ? (
+                    <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
+                      {getEquipmentManuals(equipo).slice(0, 2).map((manual, index) => (
+                        <a
+                          key={manual.filename || manual.id || index}
+                          href={getEquipmentFileUrl(manual)}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="btn btn-sm btn-secondary"
+                          title={getEquipmentFileName(manual, `Manual ${index + 1}`)}
+                        >
+                          Manual {index + 1}
+                        </a>
+                      ))}
+                      {getEquipmentManuals(equipo).length > 2 && (
+                        <span style={{ color: '#64748b', fontWeight: 800, alignSelf: 'center' }}>+{getEquipmentManuals(equipo).length - 2}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <span style={{ color: '#94a3b8', fontWeight: 700 }}>Sin manual</span>
+                  )}
+                </td>
+                <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', whiteSpace: 'nowrap' }}>
                   <button type="button" className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); openDespiece(equipo); }}>
                     Despiece
                   </button>
@@ -984,7 +1151,7 @@ export default function PmpEquipos() {
             ))}
             {!visibleEquipos.length && (
               <tr>
-                <td colSpan={columns.length + 1} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
+                <td colSpan={columns.length + 3} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
                   No hay equipos que coincidan con los filtros aplicados.
                 </td>
               </tr>
@@ -996,6 +1163,67 @@ export default function PmpEquipos() {
       {showEquipoModal && (
         <Modal title={editingId ? 'Editar equipo' : 'Nuevo equipo'} onClose={() => setShowEquipoModal(false)}>
           <form onSubmit={saveEquipo}>
+            <div style={{ marginBottom: '1rem', border: '1px solid #dbe4f0', borderRadius: '.9rem', padding: '.9rem', background: '#f8fafc', display: 'grid', gap: '.75rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 800, color: '#111827' }}>Foto del equipo</div>
+                  <div style={{ color: '#64748b', fontSize: '.88rem' }}>JPG, PNG, WEBP o GIF. Esta imagen quedara asociada al maestro del equipo.</div>
+                </div>
+                <label className="btn btn-secondary" style={{ cursor: uploadingEquipmentPhoto ? 'not-allowed' : 'pointer' }}>
+                  {uploadingEquipmentPhoto ? 'Subiendo...' : (equipmentPhotoDraft ? 'Cambiar foto' : 'Agregar foto')}
+                  <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" style={{ display: 'none' }} disabled={uploadingEquipmentPhoto} onChange={uploadEquipmentPhoto} />
+                </label>
+              </div>
+              {equipmentPhotoDraft ? (
+                <div style={{ display: 'flex', gap: '.75rem', alignItems: 'center', padding: '.65rem', border: '1px solid #dbe4f0', borderRadius: '.75rem', background: '#fff' }}>
+                  <img src={getEquipmentPhotoUrl({ foto_equipo: equipmentPhotoDraft })} alt={getEquipmentPhotoName(equipmentPhotoDraft)} style={{ width: '88px', height: '66px', objectFit: 'cover', borderRadius: '.6rem', border: '1px solid #e5e7eb' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getEquipmentPhotoName(equipmentPhotoDraft)}</div>
+                    <a href={getEquipmentPhotoUrl({ foto_equipo: equipmentPhotoDraft })} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem' }}>Abrir foto</a>
+                  </div>
+                  <button type="button" className="btn btn-danger btn-sm" onClick={removeEquipmentPhotoDraft}>Quitar</button>
+                </div>
+              ) : (
+                <div style={{ color: '#94a3b8', fontWeight: 700 }}>Sin foto registrada para este equipo.</div>
+              )}
+            </div>
+            <div style={{ marginBottom: '1rem', border: '1px solid #dbe4f0', borderRadius: '.9rem', padding: '.9rem', background: '#fff', display: 'grid', gap: '.75rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.8rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 800, color: '#111827' }}>Manuales del equipo</div>
+                  <div style={{ color: '#64748b', fontSize: '.88rem' }}>Puedes adjuntar PDF o imagenes del manual, placa o ficha tecnica.</div>
+                </div>
+                <label className="btn btn-secondary" style={{ cursor: uploadingEquipmentManual ? 'not-allowed' : 'pointer' }}>
+                  {uploadingEquipmentManual ? 'Subiendo...' : 'Agregar manual'}
+                  <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/gif" style={{ display: 'none' }} disabled={uploadingEquipmentManual} onChange={uploadEquipmentManual} />
+                </label>
+              </div>
+              {equipmentManualDrafts.length ? (
+                <div style={{ display: 'grid', gap: '.55rem' }}>
+                  {equipmentManualDrafts.map((manual, index) => {
+                    const isImage = isImageAttachment(manual);
+                    return (
+                      <div key={manual.filename || manual.id || index} style={{ display: 'flex', gap: '.75rem', alignItems: 'center', padding: '.65rem', border: '1px solid #dbe4f0', borderRadius: '.75rem', background: '#f8fafc' }}>
+                        {isImage ? (
+                          <img src={getEquipmentFileUrl(manual)} alt={getEquipmentFileName(manual, `Manual ${index + 1}`)} style={{ width: '54px', height: '46px', objectFit: 'cover', borderRadius: '.5rem', border: '1px solid #e5e7eb' }} />
+                        ) : (
+                          <div style={{ width: '54px', height: '46px', borderRadius: '.5rem', display: 'grid', placeItems: 'center', background: '#fee2e2', color: '#b91c1c', fontWeight: 900, border: '1px solid #fecaca' }}>PDF</div>
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 800, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {getEquipmentFileName(manual, `Manual ${index + 1}`)}
+                          </div>
+                          <a href={getEquipmentFileUrl(manual)} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem' }}>Abrir archivo</a>
+                        </div>
+                        <button type="button" className="btn btn-danger btn-sm" onClick={() => removeEquipmentManualDraft(manual)}>Quitar</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ color: '#94a3b8', fontWeight: 700 }}>Sin manuales registrados para este equipo.</div>
+              )}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
               {columns.map((col) => (
                 <div key={`form-${col.key}`} className="form-group" style={{ marginBottom: 0 }}>

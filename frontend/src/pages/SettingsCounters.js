@@ -11,7 +11,12 @@ import {
   sortCounterEntries,
   toSafeNumber,
 } from '../utils/kmCounters';
-import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import {
+  getSharedDocumentErrorMessage,
+  loadSharedDocument,
+  saveSharedDocument,
+  SHARED_DOCUMENT_KEYS,
+} from '../services/sharedDocuments';
 import SettingsNav from '../components/SettingsNav';
 import { filterRowsByColumns } from '../utils/tableFilters';
 import {
@@ -54,7 +59,7 @@ function formatCounterValue(value) {
   return toSafeNumber(value).toLocaleString('es-PE', { maximumFractionDigits: 2 });
 }
 
-export default function SettingsCounters() {
+export default function SettingsCounters({ standalone = false }) {
   const { user } = useAuth();
   const [plans, setPlans] = useState([]);
   const [entries, setEntries] = useState([]);
@@ -214,7 +219,55 @@ export default function SettingsCounters() {
       setSuccess('Contador corregido correctamente. Si era la ultima toma, el plan por km ya quedo sincronizado.');
     } catch (saveError) {
       console.error('Error guardando correccion de contador:', saveError);
-      setError('No se pudo guardar la correccion del contador.');
+      setError(getSharedDocumentErrorMessage(saveError));
+      setSuccess('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const syncPlansAfterHistoryChange = (nextEntries) => {
+    const syncedPlans = applyLatestCounterEntriesToPlans(plans, nextEntries).map((plan) => {
+      const latest = getLatestCounterEntry(nextEntries, plan.id);
+      if (latest) {
+        return {
+          ...plan,
+          counter_initial_id: plan.counter_initial_id || latest.id,
+          ultimo_contador_id: latest.id,
+        };
+      }
+      return {
+        ...plan,
+        km_actual: 0,
+        fecha_toma: '',
+        ultimo_contador_id: '',
+        counter_initial_id: '',
+      };
+    });
+    return syncedPlans;
+  };
+
+  const deleteEntry = async (entry) => {
+    if (!entry?.id) return;
+    const confirmed = window.confirm(`Eliminar el registro de contador de ${entry.codigo || 'este equipo'} del ${formatDateDisplay(entry.fecha_toma)}?`);
+    if (!confirmed) return;
+
+    const nextEntries = sortCounterEntries(entries.filter((item) => String(item.id) !== String(entry.id)));
+    const nextPlans = syncPlansAfterHistoryChange(nextEntries);
+
+    setSaving(true);
+    try {
+      await Promise.all([
+        saveSharedDocument(COUNTERS_HISTORY_KEY, nextEntries),
+        saveSharedDocument(KM_STORAGE_KEY, nextPlans),
+      ]);
+      setEntries(nextEntries);
+      setPlans(nextPlans);
+      setError('');
+      setSuccess('Registro de contador eliminado. El plan por Km/Hr quedo sincronizado con la toma vigente.');
+    } catch (saveError) {
+      console.error('Error eliminando contador:', saveError);
+      setError(getSharedDocumentErrorMessage(saveError));
       setSuccess('');
     } finally {
       setSaving(false);
@@ -231,15 +284,17 @@ export default function SettingsCounters() {
 
   return (
     <div>
-      <h1 style={{ fontSize: isMobile ? '1.65rem' : '2rem', fontWeight: 700, marginBottom: '.35rem' }}>Configuraciones</h1>
+      <h1 style={{ fontSize: isMobile ? '1.65rem' : '2rem', fontWeight: 700, marginBottom: '.35rem' }}>
+        {standalone ? 'Historial de contadores' : 'Configuraciones'}
+      </h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem', lineHeight: 1.6 }}>
-        Historial de contadores registrados desde <strong>Plan de mantenimiento - Km</strong>. Desde aqui puedes corregir una toma si fue ingresada de manera erronea y el plan se actualizara automaticamente si esa toma era la ultima vigente.
+        Historial de contadores registrados desde <strong>Plan de mantenimiento - Km</strong>. Desde aqui el Ingeniero puede corregir o eliminar una toma si fue ingresada de manera erronea y el plan se actualizara automaticamente con la ultima toma vigente.
       </p>
 
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
 
-      <SettingsNav activeKey="contadores" />
+      {!standalone && <SettingsNav activeKey="contadores" />}
 
       <div className="stats-grid" style={{ marginBottom: '1rem' }}>
         <SummaryCard label="Registros de contadores" value={entries.length} color="#2563eb" />
@@ -298,8 +353,9 @@ export default function SettingsCounters() {
                   ) : null}
                 </div>
 
-                <div style={{ marginTop: '.85rem' }}>
+                <div style={{ marginTop: '.85rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
                   <button type="button" className="btn btn-primary" onClick={() => openEdit(entry)}>Editar contador</button>
+                  <button type="button" className="btn btn-danger" onClick={() => deleteEntry(entry)} disabled={saving}>Eliminar</button>
                 </div>
               </div>
             );
@@ -354,7 +410,10 @@ export default function SettingsCounters() {
                       </div>
                     </td>
                     <td style={{ padding: '.55rem .6rem', border: '1px solid #dbe4f0' }}>
-                      <button type="button" className="btn btn-primary btn-sm" onClick={() => openEdit(entry)}>Editar</button>
+                      <div style={{ display: 'flex', gap: '.45rem', flexWrap: 'wrap' }}>
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => openEdit(entry)}>Editar</button>
+                        <button type="button" className="btn btn-danger btn-sm" onClick={() => deleteEntry(entry)} disabled={saving}>Eliminar</button>
+                      </div>
                     </td>
                   </tr>
                 );

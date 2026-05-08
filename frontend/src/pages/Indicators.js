@@ -142,12 +142,6 @@ const asNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const getDateValue = (value) => {
-  if (!value) return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-
 const getMonthKey = (value) => String(value || '').slice(0, 7);
 
 const getDaysInMonth = (monthKey) => {
@@ -218,8 +212,18 @@ const getOtEffectiveHours = (item) => {
   const closeHours = asNumber(item?.cierre_ot?.tiempo_efectivo_hh);
   if (closeHours > 0) return closeHours;
   return (Array.isArray(item?.reportes_trabajo) ? item.reportes_trabajo : [])
-    .reduce((sum, report) => sum + asNumber(report?.totalHoras), 0);
+    .reduce((sum, report) => {
+      const techHours = (Array.isArray(report?.tecnicos) ? report.tecnicos : [])
+        .map((row) => asNumber(row?.horas))
+        .filter((value) => value > 0);
+      return sum + (techHours.length ? Math.max(...techHours) : asNumber(report?.totalHoras));
+    }, 0);
 };
+
+const getOtDowntimeHours = (item) => asNumber(
+  item?.cierre_ot?.tiempo_indisponible_operacional
+  || item?.cierre_ot?.tiempo_indisponible_generico,
+);
 
 const matchesEquipment = (item, code) => {
   if (!code) return true;
@@ -248,43 +252,27 @@ function buildIndicators(data, selectedEquipment, monthKeys) {
   ));
   const completedCodes = new Set(closedPreventive.map((item) => `${item.codigo || ''}_${item.fecha_ejecutar || ''}`));
   const compliantPlans = duePlans.filter((plan) => completedCodes.has(`${plan.codigo}_${plan.fecha_inicio}`)).length;
-  const downtimeHours = closedCorrective.reduce(
-    (sum, item) => sum + asNumber(item.cierre_ot?.tiempo_indisponible_operacional || item.cierre_ot?.tiempo_indisponible_generico),
-    0,
-  );
+  const failureDowntimeHours = closedCorrective.reduce((sum, item) => sum + getOtDowntimeHours(item), 0);
+  const preventiveDowntimeHours = closedPreventive.reduce((sum, item) => sum + getOtDowntimeHours(item), 0);
+  const totalDowntimeHours = historyRows.reduce((sum, item) => sum + getOtDowntimeHours(item), 0);
   const preventiveHours = closedPreventive.reduce((sum, item) => sum + getOtEffectiveHours(item), 0);
   const correctiveHours = closedCorrective.reduce((sum, item) => sum + getOtEffectiveHours(item), 0);
-  const mttr = closedCorrective.length ? downtimeHours / closedCorrective.length : 0;
-  let mtbfAccumulator = 0;
-  let mtbfEvents = 0;
-
-  const failuresByEquipment = new Map();
-  closedCorrective.forEach((item) => {
-    const key = item.codigo || item.descripcion || 'Sin equipo';
-    if (!failuresByEquipment.has(key)) failuresByEquipment.set(key, []);
-    failuresByEquipment.get(key).push(item);
-  });
-  failuresByEquipment.forEach((rows) => {
-    const sortedFailures = rows
-      .map((row) => ({ ...row, _date: getDateValue(row.fecha_cierre || row.fecha_ejecucion || row.fecha_ejecutar) }))
-      .filter((row) => row._date)
-      .sort((a, b) => a._date - b._date);
-    for (let index = 1; index < sortedFailures.length; index += 1) {
-      const diffMs = sortedFailures[index]._date - sortedFailures[index - 1]._date;
-      if (diffMs > 0) {
-        mtbfAccumulator += diffMs / (1000 * 60 * 60 * 24);
-        mtbfEvents += 1;
-      }
-    }
-  });
-  const mtbfDays = mtbfEvents ? mtbfAccumulator / mtbfEvents : 0;
   const rollingPeriodDays = Math.max(monthKeys.reduce((sum, key) => sum + getDaysInMonth(key), 0), 1);
   const observationHours = equipmentCount * rollingPeriodDays * 24;
+  const operatingHours = Math.max(observationHours - totalDowntimeHours, 0);
+  const reliabilityOperatingHours = Math.max(observationHours - failureDowntimeHours, 0);
+  const failureCount = closedCorrective.length;
+  const mttr = failureCount ? correctiveHours / failureCount : 0;
+  const mtbfHours = failureCount ? reliabilityOperatingHours / failureCount : 0;
+  const mtbfDays = mtbfHours / 24;
+  const failureRate = reliabilityOperatingHours > 0 ? failureCount / reliabilityOperatingHours : 0;
+  const missionTimeHours = rollingPeriodDays * 24;
   const availability = observationHours > 0
-    ? Math.max(0, Math.min(100, ((observationHours - downtimeHours) / observationHours) * 100))
+    ? Math.max(0, Math.min(100, (operatingHours / observationHours) * 100))
     : 100;
-  const failuresPerEquipment = closedCorrective.length / equipmentCount;
-  const reliability = Math.max(0, Math.min(100, Math.exp(-failuresPerEquipment / rollingPeriodDays) * 100));
+  const reliability = failureRate > 0
+    ? Math.max(0, Math.min(100, Math.exp(-failureRate * missionTimeHours) * 100))
+    : 100;
   return {
     created: activeAlerts.filter((item) => item.status_ot === 'Creada').length,
     liberated: activeAlerts.filter((item) => item.status_ot === 'Liberada').length,
@@ -299,8 +287,16 @@ function buildIndicators(data, selectedEquipment, monthKeys) {
     mtbfDays,
     availability,
     reliability,
-    failureCount: closedCorrective.length,
-    downtimeHours,
+    failureCount,
+    downtimeHours: totalDowntimeHours,
+    totalDowntimeHours,
+    failureDowntimeHours,
+    preventiveDowntimeHours,
+    operatingHours,
+    reliabilityOperatingHours,
+    observationHours,
+    failureRate,
+    mtbfHours,
     duePlans: duePlans.length,
     equipmentCount: selectedEquipment ? 1 : data.equipment.length,
   };
@@ -507,7 +503,7 @@ export default function Indicators() {
               <div>
                 <h2 className="card-title" style={{ marginBottom: '.35rem' }}>Confiabilidad del activo</h2>
                 <p style={{ color: '#64748b', margin: 0, lineHeight: 1.55 }}>
-                  Indicadores calculados con OT correctivas cerradas en el periodo {periodLabel}.
+                  Indicadores calculados con criterio ISO 14224 usando fallas correctivas cerradas, tiempo operativo, tiempo indisponible y tiempo activo de reparacion del periodo {periodLabel}.
                 </p>
               </div>
               <div style={{ display: 'flex', gap: '.55rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -525,10 +521,10 @@ export default function Indicators() {
             </div>
 
             <div className="indicator-kpi-grid" style={{ display: 'grid', gap: '.85rem', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
-              <KpiTile label="MTTR" value={indicators.mttr.toFixed(2)} unit="h" color="#0f766e" helper="Menor es mejor" tone="#f0fdfa" />
-              <KpiTile label="MTBF" value={indicators.mtbfDays.toFixed(1)} unit="dias" color="#2563eb" helper="Mayor es mejor" tone="#eff6ff" />
-              <KpiTile label="Disponibilidad" value={indicators.availability.toFixed(1)} unit="%" color="#059669" helper="Tiempo disponible estimado" tone="#f0fdf4" />
-              <KpiTile label="Confiabilidad" value={indicators.reliability.toFixed(1)} unit="%" color="#7c3aed" helper="Basada en fallas correctivas" tone="#f5f3ff" />
+              <KpiTile label="MTTR" value={indicators.mttr.toFixed(2)} unit="h" color="#0f766e" helper="Tiempo activo de reparacion correctiva / fallas" tone="#f0fdfa" />
+              <KpiTile label="MTBF" value={indicators.mtbfDays.toFixed(1)} unit="dias" color="#2563eb" helper="Tiempo operativo / fallas correctivas" tone="#eff6ff" />
+              <KpiTile label="Disponibilidad" value={indicators.availability.toFixed(1)} unit="%" color="#059669" helper="Tiempo operativo total / tiempo calendario" tone="#f0fdf4" />
+              <KpiTile label="Confiabilidad" value={indicators.reliability.toFixed(1)} unit="%" color="#7c3aed" helper="R(t)=e^(-lambda t) con tasa de falla del periodo" tone="#f5f3ff" />
             </div>
 
             <div className="indicator-secondary-grid" style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', marginTop: '1rem' }}>
@@ -540,12 +536,43 @@ export default function Indicators() {
                 </div>
               </div>
               <div className="dashboard-panel-card indicator-secondary-tile" style={{ background: '#fff' }}>
-                <div style={{ color: '#64748b', fontSize: '.85rem', marginBottom: '.35rem' }}>Horas indisponibles</div>
-                <strong style={{ fontSize: '1.8rem', color: '#c2410c' }}>{indicators.downtimeHours.toFixed(2)}</strong>
+                <div style={{ color: '#64748b', fontSize: '.85rem', marginBottom: '.35rem' }}>Indisp. por falla</div>
+                <strong style={{ fontSize: '1.8rem', color: '#dc2626' }}>{indicators.failureDowntimeHours.toFixed(2)}</strong>
                 <div style={{ color: '#64748b', fontSize: '.84rem', marginTop: '.4rem' }}>
-                  Suma de indisponibilidad operacional o generica en correctivos cerrados.
+                  Horas indisponibles asociadas a OT correctivas cerradas.
                 </div>
               </div>
+              <div className="dashboard-panel-card indicator-secondary-tile" style={{ background: '#fff' }}>
+                <div style={{ color: '#64748b', fontSize: '.85rem', marginBottom: '.35rem' }}>Indisp. preventiva</div>
+                <strong style={{ fontSize: '1.8rem', color: '#0891b2' }}>{indicators.preventiveDowntimeHours.toFixed(2)}</strong>
+                <div style={{ color: '#64748b', fontSize: '.84rem', marginTop: '.4rem' }}>
+                  Horas de parada por OT preventivas cerradas.
+                </div>
+              </div>
+              <div className="dashboard-panel-card indicator-secondary-tile" style={{ background: '#fff' }}>
+                <div style={{ color: '#64748b', fontSize: '.85rem', marginBottom: '.35rem' }}>Indisp. total</div>
+                <strong style={{ fontSize: '1.8rem', color: '#c2410c' }}>{indicators.totalDowntimeHours.toFixed(2)}</strong>
+                <div style={{ color: '#64748b', fontSize: '.84rem', marginTop: '.4rem' }}>
+                  Suma de indisponibilidad de todas las OT cerradas del periodo.
+                </div>
+              </div>
+              <div className="dashboard-panel-card indicator-secondary-tile" style={{ background: '#fff' }}>
+                <div style={{ color: '#64748b', fontSize: '.85rem', marginBottom: '.35rem' }}>Tiempo operativo</div>
+                <strong style={{ fontSize: '1.8rem', color: '#0369a1' }}>{indicators.operatingHours.toFixed(2)}</strong>
+                <div style={{ color: '#64748b', fontSize: '.84rem', marginTop: '.4rem' }}>
+                  Horas calendario menos horas indisponibles del alcance seleccionado.
+                </div>
+              </div>
+              <div className="dashboard-panel-card indicator-secondary-tile" style={{ background: '#fff' }}>
+                <div style={{ color: '#64748b', fontSize: '.85rem', marginBottom: '.35rem' }}>Tasa de falla</div>
+                <strong style={{ fontSize: '1.8rem', color: '#7c2d12' }}>{indicators.failureRate.toFixed(5)}</strong>
+                <div style={{ color: '#64748b', fontSize: '.84rem', marginTop: '.4rem' }}>
+                  Fallas por hora operativa registrada en el periodo.
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: '1rem', border: '1px solid #dbeafe', borderRadius: '.85rem', background: '#eff6ff', padding: '.85rem .95rem', color: '#1e3a8a', lineHeight: 1.5 }}>
+              <strong>Base ISO 14224 aplicada:</strong> falla = OT correctiva cerrada; tiempo activo de reparacion = horas efectivas correctivas; MTBF y tasa de falla usan tiempo operativo descontando indisponibilidad por falla; disponibilidad operacional usa tiempo operativo descontando toda la indisponibilidad registrada, incluida la preventiva. Si una OT no tiene indisponibilidad operacional, se usa la generica como respaldo.
             </div>
           </section>
 

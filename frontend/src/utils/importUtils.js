@@ -363,11 +363,26 @@ export function mapOtHistoryRows(rows) {
     const fechaInicio = parseSpreadsheetDate(getRowValue(row, ['fecha_inicio', 'inicio_ot']));
     const fechaFin = parseSpreadsheetDate(getRowValue(row, ['fecha_fin', 'fin_ot']));
     const fechaCierre = parseSpreadsheetDate(getRowValue(row, ['fecha_cierre', 'cierre_ot'])) || fechaFin;
-    const horaInicio = parseSpreadsheetTime(getRowValue(row, ['hora_inicio', 'inicio_hora']));
-    const horaFin = parseSpreadsheetTime(getRowValue(row, ['hora_fin', 'fin_hora']));
-    const responsable = safeString(getRowValue(row, ['responsable', 'puesto_trabajo_resp', 'puesto_responsable']));
-    const tipoMantenimiento = safeString(getRowValue(row, ['tipo_mantenimiento', 'tipo_mantto', 'tipo'])) || 'Correctivo';
+    const horaInicio = parseSpreadsheetTime(getRowValue(row, ['hora_inicio', 'inicio_hora', 'hora_inicial']));
+    const horaFin = parseSpreadsheetTime(getRowValue(row, ['hora_fin', 'fin_hora', 'hora_final']));
+    const responsable = safeString(getRowValue(row, ['responsable', 'puesto_trabajo_resp', 'puesto_responsable', 'puesto_trabajo_responsable', 'psto_tbjo_responsable', 'psto_tbjo_responsable'])) || 'N.A.';
+    const tipoMantenimiento = safeString(getRowValue(row, ['tipo_mantenimiento', 'tipo_mantto', 'tipo', 'tipo_de_mantenimiento'])) || 'Correctivo';
     const observaciones = safeString(getRowValue(row, ['observaciones', 'observacion', 'comentarios']));
+    const personalMantenimiento = safeString(getRowValue(row, ['personal_mantenimiento', 'personal', 'tecnicos', 'trabajadores', 'personal_trabajo', 'personal_de_trabajo'])) || 'N.A.';
+    const materiales = safeString(getRowValue(row, ['materiales', 'repuestos', 'repuestos_utilizados'])) || 'N.A.';
+    const actividad = safeString(getRowValue(row, ['actividad_mantenimiento', 'actividad_de_mantenimiento', 'actividad', 'actividades'])) || observaciones;
+    const vc = safeString(getRowValue(row, ['vc', 'v_c', 'v.c', 'v.c.']));
+    const contador = toNumber(getRowValue(row, ['contador', 'lectura_contador', 'valor_contador']), 0);
+    const tiempoEfectivo = toNumber(getRowValue(row, ['tiempo_efectivo_hh', 'tiempo_efectivo', 'hh']), 0);
+    const tiempoIndisponibleGenerico = toNumber(getRowValue(row, ['tiempo_indisponible_generico', 't_indisp_generico', 't_indisp_generico']), 0);
+    const tiempoIndisponibleOperacional = toNumber(getRowValue(row, ['tiempo_indisponible_operacional', 't_indisp_operacional', 't_indisp_operacional']), 0);
+    const gastosPersonal = toNumber(getRowValue(row, ['gastos_personal', 'gastos_de_personal', 'costo_personal']), 0);
+    const gastosTerceros = toNumber(getRowValue(row, ['gastos_terceros', 'gastos_de_terceros', 'costo_terceros']), 0);
+    const gastosRepuestos = toNumber(getRowValue(row, ['gastos_repuestos', 'gastos_de_repuestos', 'costo_repuestos']), 0);
+    const nombreTerceros = safeString(getRowValue(row, ['nombre_terceros', 'nombre_de_terceros', 'terceros']));
+    const evaluacion = safeString(getRowValue(row, ['evaluacion', 'evaluacion_servicio', 'satisfaccion', 'nivel_satisfaccion'])) || 'N.A.';
+    const tipoOt = safeString(getRowValue(row, ['tipo_ot', 'tipo_de_ot'])) || tipoMantenimiento;
+    const reprogramacion = safeString(getRowValue(row, ['reprogramacion', 'reprog', 'reprog.']));
 
     acc.push({
       id: buildId('history', index),
@@ -375,12 +390,23 @@ export function mapOtHistoryRows(rows) {
       ot_numero: otNumero,
       codigo,
       descripcion,
-      area_trabajo: safeString(getRowValue(row, ['area_trabajo', 'area'])) || 'N.A.',
+      area_trabajo: safeString(getRowValue(row, ['area_trabajo', 'area_de_trabajo', 'area'])) || 'N.A.',
       responsable,
+      vc,
+      contador,
       tipo_mantto: tipoMantenimiento,
+      tipo_ot: tipoOt,
+      actividad,
+      actividad_mantenimiento: actividad,
       fecha_cierre: fechaCierre,
-      personal_mantenimiento: safeString(getRowValue(row, ['personal_mantenimiento', 'personal', 'tecnicos', 'trabajadores'])) || 'N.A.',
-      materiales: safeString(getRowValue(row, ['materiales', 'repuestos'])) || 'N.A.',
+      personal_mantenimiento: personalMantenimiento,
+      materiales,
+      gastos_personal: gastosPersonal,
+      nombre_terceros: nombreTerceros,
+      gastos_terceros: gastosTerceros,
+      gastos_repuestos: gastosRepuestos,
+      evaluacion,
+      reprogramacion,
       reportes_trabajo: [],
       registro_ot: {
         fecha_inicio: fechaInicio,
@@ -396,9 +422,12 @@ export function mapOtHistoryRows(rows) {
         hora_inicio: horaInicio,
         fecha_fin: fechaFin,
         hora_fin: horaFin,
-        tiempo_efectivo_hh: toNumber(getRowValue(row, ['tiempo_efectivo_hh', 'tiempo_efectivo', 'hh']), 0),
+        tiempo_efectivo_hh: tiempoEfectivo,
+        tiempo_indisponible_generico: tiempoIndisponibleGenerico,
+        tiempo_indisponible_operacional: tiempoIndisponibleOperacional,
         estado_equipo: safeString(getRowValue(row, ['estado_equipo'])) || 'Operativo',
-        satisfaccion: safeString(getRowValue(row, ['satisfaccion', 'nivel_satisfaccion'])) || 'N.A.',
+        satisfaccion: evaluacion,
+        evaluacion,
         observaciones,
       },
     });

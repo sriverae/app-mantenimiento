@@ -19,6 +19,7 @@ import PmpAmef from './pages/PmpAmef';
 import PmpCalendario from './pages/PmpCalendario';
 import PmpKm from './pages/PmpKm';
 import PmpEquipos from './pages/PmpEquipos';
+import PmpIntercambios from './pages/PmpIntercambios';
 import PmpIntercambiosHistorial from './pages/PmpIntercambiosHistorial';
 import PmpBajas from './pages/PmpBajas';
 import PmpBajasHistorial from './pages/PmpBajasHistorial';
@@ -37,7 +38,7 @@ import SettingsDropdownLists from './pages/SettingsDropdownLists';
 import SettingsPdfFormat from './pages/SettingsPdfFormat';
 import { RRHH_SECTIONS } from './components/RrhhSectionNav';
 import { getDefaultSettingsPath, getVisibleSettingsSections } from './utils/settingsSections';
-import { ROLE_COLORS, canCreateMaintenanceNotices } from './utils/roleAccess';
+import { ROLE_COLORS, isOperationalNoticeRole } from './utils/roleAccess';
 import { SHARED_DOCUMENT_CONFLICT_EVENT } from './services/sharedDocuments';
 
 function PrivateRoute({ children, minRole }) {
@@ -70,10 +71,12 @@ function AppLayout() {
     { label: 'Equipos', path: '/pmp/equipos' },
     { label: 'Plan de mantenimiento - Fechas', path: '/pmp/fechas' },
     { label: 'Plan de mantenimiento - Km', path: '/pmp/km' },
+    ...(hasMinRole('INGENIERO') ? [{ label: 'Historial de contadores', path: '/pmp/contadores/historial' }] : []),
     { label: 'Paquetes de mantenimiento', path: '/pmp/paquetes' },
     { label: 'Gestion de OT', path: '/pmp/gestion-ot' },
     { label: 'Avisos de Mantenimiento', path: '/pmp/avisos' },
     { label: 'Historial de OTs', path: '/pmp/historial-ot' },
+    { label: 'Intercambios', path: '/pmp/intercambios' },
     { label: 'Bajas', path: '/pmp/bajas' },
     { label: 'Historial intercambios', path: '/pmp/intercambios/historial' },
     { label: 'Historial bajas', path: '/pmp/bajas/historial' },
@@ -89,7 +92,7 @@ function AppLayout() {
   ];
   const settingsOptions = getVisibleSettingsSections(user);
   const defaultSettingsPath = getDefaultSettingsPath(user);
-  const isOperationalRole = canCreateMaintenanceNotices(user);
+  const isOperationalRole = isOperationalNoticeRole(user);
   const operationalBrowseOptions = [
     { label: 'Notificaciones de Trabajo', path: '/tasks' },
     { label: 'Indicadores', path: '/indicadores' },
@@ -450,7 +453,9 @@ function AppLayout() {
           <Route path="/pmp/amef/matriz" element={<PrivateRoute minRole="OPERADOR"><PmpAmef matrixOnly /></PrivateRoute>} />
           <Route path="/pmp/calendario" element={<PrivateRoute minRole="OPERADOR"><PmpCalendario /></PrivateRoute>} />
           <Route path="/pmp/km" element={<PrivateRoute minRole="OPERADOR"><PmpKm /></PrivateRoute>} />
+          <Route path="/pmp/contadores/historial" element={<PrivateRoute minRole="INGENIERO"><SettingsCounters standalone /></PrivateRoute>} />
           <Route path="/pmp/bajas" element={<PrivateRoute minRole="OPERADOR"><PmpBajas /></PrivateRoute>} />
+          <Route path="/pmp/intercambios" element={<PrivateRoute minRole="OPERADOR"><PmpIntercambios /></PrivateRoute>} />
           <Route path="/pmp/intercambios/historial" element={<PrivateRoute minRole="OPERADOR"><PmpIntercambiosHistorial /></PrivateRoute>} />
           <Route path="/pmp/bajas/historial" element={<PrivateRoute minRole="OPERADOR"><PmpBajasHistorial /></PrivateRoute>} />
           <Route path="/pmp/gestion-ot" element={<PrivateRoute minRole="OPERADOR"><PmpGestionOt /></PrivateRoute>} />

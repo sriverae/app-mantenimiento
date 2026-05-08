@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import TableFilterRow from '../components/TableFilterRow';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
@@ -26,12 +27,14 @@ export default function PmpIntercambiosHistorial() {
   );
   const tableColumns = useMemo(() => ([
     { id: 'fecha', getValue: (item) => new Date(item.fecha).toLocaleString() },
+    { id: 'otNumero', getValue: (item) => item.otNumero || '' },
     { id: 'sourceEquipo', getValue: (item) => item.sourceEquipo },
     { id: 'targetEquipo', getValue: (item) => item.targetEquipo },
     { id: 'nodeName', getValue: (item) => item.nodeName },
     { id: 'oldCode', getValue: (item) => item.oldCode },
     { id: 'newCode', getValue: (item) => item.newCode },
     { id: 'levelsMigrated', getValue: (item) => item.levelsMigrated },
+    { id: 'motivo', getValue: (item) => item.motivo || '' },
   ]), []);
   const { filters, setFilter } = useTableColumnFilters(tableColumns);
   const visibleRows = useMemo(
@@ -49,17 +52,22 @@ export default function PmpIntercambiosHistorial() {
 
   return (
     <div>
-      <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '.45rem' }}>Historial de intercambios</h1>
-      <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Registro de migraciones de subequipos entre equipos.</p>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Historial de intercambios</h1>
+          <p className="page-subtitle">Registro de migraciones de subequipos entre equipos.</p>
+        </div>
+        <Link className="btn btn-primary" to="/pmp/intercambios">Registrar intercambio</Link>
+      </div>
 
       <div className="card" style={{ overflowX: 'auto' }}>
         {sorted.length === 0 ? (
-          <p style={{ color: '#6b7280' }}>No hay intercambios registrados todavía.</p>
+          <p style={{ color: '#6b7280' }}>No hay intercambios registrados todavia.</p>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '900px' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1080px' }}>
             <thead>
               <tr style={{ background: '#1f3b5b', color: '#fff' }}>
-                {['Fecha', 'Equipo origen', 'Equipo destino', 'Subequipo', 'Código origen', 'Código final', 'Niveles migrados'].map((h) => (
+                {['Fecha', 'OT', 'Equipo origen', 'Equipo destino', 'Subequipo', 'Codigo origen', 'Codigo final', 'Niveles', 'Motivo'].map((h) => (
                   <th key={h} style={{ border: '1px solid #2f4f75', textAlign: 'left', padding: '.55rem .5rem', fontSize: '.8rem' }}>{h}</th>
                 ))}
               </tr>
@@ -69,17 +77,19 @@ export default function PmpIntercambiosHistorial() {
               {visibleRows.map((item) => (
                 <tr key={item.id}>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{new Date(item.fecha).toLocaleString()}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.otNumero || 'N.A.'}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.sourceEquipo}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.targetEquipo}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.nodeName}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.oldCode}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.newCode}</td>
                   <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.levelsMigrated}</td>
+                  <td style={{ border: '1px solid #e5e7eb', padding: '.5rem' }}>{item.motivo || 'N.A.'}</td>
                 </tr>
               ))}
               {!visibleRows.length && (
                 <tr>
-                  <td colSpan={7} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
+                  <td colSpan={9} style={{ border: '1px solid #e5e7eb', padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
                     No hay intercambios que coincidan con los filtros aplicados.
                   </td>
                 </tr>

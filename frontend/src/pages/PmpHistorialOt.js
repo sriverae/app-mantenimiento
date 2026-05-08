@@ -6,7 +6,7 @@ import TableFilterRow from '../components/TableFilterRow';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
 import { formatDateDisplay } from '../utils/dateFormat';
-import { isReadOnlyRole } from '../utils/roleAccess';
+import { hasMinRole } from '../utils/roleAccess';
 import { filterRowsByColumns } from '../utils/tableFilters';
 import { DEFAULT_OT_PDF_SETTINGS, normalizeOtPdfSettings, openIndustrialOtReportPdf } from '../utils/otPdfReport';
 import { DEFAULT_MATERIALS, normalizeMaterialsCatalog } from '../utils/materialsCatalog';
@@ -61,10 +61,26 @@ const sumReports = (reports, getter) => (Array.isArray(reports) ? reports : [])
     return sum + (Number.isFinite(value) ? value : 0);
   }, 0);
 
+const moneyValue = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const getImportedOtPdfs = (item) => {
+  const files = Array.isArray(item?.ot_pdf_files) ? item.ot_pdf_files : [];
+  return files.length ? files : (item?.ot_pdf_file ? [item.ot_pdf_file] : []);
+};
+
+const getStoredPdfUrl = (pdf) => pdf?.url || pdf?.file_url || pdf?.download_url || pdf?.path || '';
+
+const getStoredPdfName = (pdf, index = 0) => (
+  pdf?.original_name || pdf?.file_name || pdf?.caption || pdf?.filename || `PDF OT ${index + 1}`
+);
+
 export default function PmpHistorialOt() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
-  const isReadOnly = isReadOnlyRole(user);
+  const canModifyClosedHistory = hasMinRole(user, 'INGENIERO');
   const [items, setItems] = useState([]);
   const [pdfSettings, setPdfSettings] = useState(DEFAULT_OT_PDF_SETTINGS);
   const [materialsCatalog, setMaterialsCatalog] = useState(DEFAULT_MATERIALS);
@@ -95,7 +111,7 @@ export default function PmpHistorialOt() {
   }, []);
 
   const filtered = useMemo(() => items.filter((it) => (
-    `${it.ot_numero} ${noticeCodes(it)} ${noticeCategories(it)} ${noticeDetails(it)} ${it.codigo} ${it.descripcion} ${it.area_trabajo} ${it.responsable} ${it.personal_mantenimiento}`.toLowerCase().includes(query.toLowerCase())
+    `${it.ot_numero} ${noticeCodes(it)} ${noticeCategories(it)} ${noticeDetails(it)} ${it.codigo} ${it.descripcion} ${it.area_trabajo} ${it.responsable} ${it.personal_mantenimiento} ${it.actividad} ${it.actividad_mantenimiento} ${it.nombre_terceros}`.toLowerCase().includes(query.toLowerCase())
   )), [items, query]);
 
   const historyTableColumns = useMemo(() => ([
@@ -125,14 +141,21 @@ export default function PmpHistorialOt() {
     { id: 'solicitud_cierre_por', label: 'Solicitud por', getValue: (it) => firstText(it.cierre_ot?.solicitud_cierre_por) },
     { id: 'cerrado_por', label: 'Cerrado por', getValue: (it) => firstText(it.cierre_ot?.cerrado_por, it.cierre_ot?.aprobado_por, it.cierre_ot?.supervisor_cierre) },
     { id: 'vc', label: 'Var. Ctrl', getValue: (it) => firstText(it.vc, it.origen_programacion, 'Dia') },
+    { id: 'contador', label: 'Contador', getValue: (it) => it.contador ?? it.valor_contador ?? 'N.A.' },
     { id: 'tipo_mantto', label: 'Tipo mantto', getValue: (it) => it.cierre_ot?.tipo_mantenimiento || it.tipo_mantto || 'N.A.' },
+    { id: 'tipo_ot', label: 'Tipo de OT', getValue: (it) => firstText(it.tipo_ot, it.tipo_mantto, it.cierre_ot?.tipo_mantenimiento) },
     { id: 'prioridad', label: 'Prioridad', getValue: (it) => it.prioridad || 'N.A.' },
     { id: 'status_ot', label: 'Status cierre', getValue: (it) => it.status_ot || 'N.A.' },
     { id: 'puesto_resp', label: 'Puesto trabajo resp.', getValue: (it) => it.cierre_ot?.puesto_trabajo_resp || it.responsable || 'N.A.' },
     { id: 'solicitante', label: 'Solicitante', getValue: (it) => firstText(it.solicitante, it.responsable) },
     { id: 'ejecuta', label: 'Ejecuta', getValue: (it) => firstText(it.personal_mantenimiento, it.cierre_ot?.puesto_trabajo_resp) },
     { id: 'personal', label: 'Personal de trabajo', getValue: (it) => it.personal_mantenimiento || 'N.A.' },
+    { id: 'gastos_personal', label: 'Gastos personal', getValue: (it) => `S/ ${moneyValue(it.gastos_personal).toFixed(2)}` },
+    { id: 'nombre_terceros', label: 'Nombre terceros', getValue: (it) => it.nombre_terceros || 'N.A.' },
+    { id: 'gastos_terceros', label: 'Gastos terceros', getValue: (it) => `S/ ${moneyValue(it.gastos_terceros).toFixed(2)}` },
+    { id: 'actividad_mantenimiento', label: 'Actividad mantenimiento', getValue: (it) => firstText(it.actividad_mantenimiento, it.actividad) },
     { id: 'materiales', label: 'Materiales', getValue: (it) => it.materiales || 'N.A.' },
+    { id: 'gastos_repuestos', label: 'Gastos repuestos', getValue: (it) => `S/ ${moneyValue(it.gastos_repuestos).toFixed(2)}` },
     { id: 'reportes', label: 'Notificaciones trabajo', getValue: (it) => String((it.reportes_trabajo || []).length || 0) },
     { id: 'evidencia_fotos', label: 'Evidencias foto', getValue: (it) => {
       const reports = it.reportes_trabajo || [];
@@ -143,11 +166,14 @@ export default function PmpHistorialOt() {
     { id: 'tiempo_efectivo', label: 'Tiempo efectivo (Hh)', getValue: (it) => it.cierre_ot?.tiempo_efectivo_hh ?? '0' },
     { id: 'indisponible_generico', label: 'T. indisponible generico', getValue: (it) => it.cierre_ot?.tiempo_indisponible_generico ?? '0' },
     { id: 'indisponible_operacional', label: 'T. indisponible operacional', getValue: (it) => it.cierre_ot?.tiempo_indisponible_operacional ?? '0' },
+    { id: 'capacidad_equipo', label: 'Capacidad equipo', getValue: (it) => firstText(it.cierre_ot?.capacidad_equipo, it.capacidad_equipo, it.capacidad) },
+    { id: 'costo_tonelada_hora', label: 'Costo ton/h', getValue: (it) => `S/ ${moneyValue(it.cierre_ot?.costo_tonelada_hora ?? it.costo_tonelada_hora).toFixed(2)}` },
+    { id: 'costo_indisponibilidad', label: 'Costo indisponibilidad', getValue: (it) => `S/ ${moneyValue(it.cierre_ot?.costo_indisponibilidad ?? it.costo_indisponibilidad).toFixed(2)}` },
     { id: 'estado_equipo', label: 'Estado equipo', getValue: (it) => it.cierre_ot?.estado_equipo || 'N.A.' },
-    { id: 'satisfaccion', label: 'Satisfaccion', getValue: (it) => it.cierre_ot?.satisfaccion || 'N.A.' },
-    { id: 'mano_obra', label: 'Mano de obra', getValue: (it) => `S/ ${sumReports(it.reportes_trabajo, (report) => report.laborCost || report.costo_mano_obra || 0).toFixed(2)}` },
-    { id: 'costo_materiales', label: 'Costo materiales', getValue: (it) => `S/ ${sumReports(it.reportes_trabajo, (report) => report.materialCost || report.costo_materiales || 0).toFixed(2)}` },
-    { id: 'costo_servicios', label: 'Costo servicios', getValue: (it) => `S/ ${sumReports(it.reportes_trabajo, (report) => report.serviceCost || report.costo_servicio || 0).toFixed(2)}` },
+    { id: 'satisfaccion', label: 'Evaluacion', getValue: (it) => it.cierre_ot?.evaluacion || it.evaluacion || it.cierre_ot?.satisfaccion || 'N.A.' },
+    { id: 'mano_obra', label: 'Mano de obra', getValue: (it) => `S/ ${moneyValue(it.gastos_personal || sumReports(it.reportes_trabajo, (report) => report.laborCost || report.costo_mano_obra || 0)).toFixed(2)}` },
+    { id: 'costo_materiales', label: 'Costo materiales', getValue: (it) => `S/ ${moneyValue(it.gastos_repuestos || sumReports(it.reportes_trabajo, (report) => report.materialCost || report.costo_materiales || 0)).toFixed(2)}` },
+    { id: 'costo_servicios', label: 'Costo servicios', getValue: (it) => `S/ ${moneyValue(it.gastos_terceros || sumReports(it.reportes_trabajo, (report) => report.serviceCost || report.costo_servicio || 0)).toFixed(2)}` },
     { id: 'componente', label: 'Componente', getValue: (it) => it.cierre_ot?.componente_intervenido || 'N.A.' },
     { id: 'modo_falla', label: 'Modo falla', getValue: (it) => it.cierre_ot?.modo_falla || 'N.A.' },
     { id: 'causa_raiz', label: 'Causa raiz', getValue: (it) => it.cierre_ot?.causa_raiz || 'N.A.' },
@@ -157,6 +183,11 @@ export default function PmpHistorialOt() {
     { id: 'riesgo_seguridad', label: 'Riesgo seguridad', getValue: (it) => yesNo(it.riesgo_seguridad || it.aviso_origen?.has_safety_risk) },
     { id: 'impacto_produccion', label: 'Impacto produccion', getValue: (it) => yesNo(it.impacto_produccion || it.aviso_origen?.has_production_impact) },
     { id: 'observaciones', label: 'Observaciones', getValue: (it) => it.cierre_ot?.observaciones || it.registro_ot?.observaciones || 'N.A.' },
+    { id: 'reprogramacion', label: 'Reprog.', getValue: (it) => firstText(it.reprogramacion, it.motivo_reprogramacion) },
+    { id: 'pdf_importado', label: 'PDF importado', getValue: (it) => {
+      const pdfs = getImportedOtPdfs(it);
+      return pdfs.length ? pdfs.map((pdf, index) => getStoredPdfName(pdf, index)).join(', ') : 'N.A.';
+    } },
     { id: 'pdf', label: 'PDF', filterable: false },
   ]), []);
 
@@ -182,10 +213,13 @@ export default function PmpHistorialOt() {
     'puesto_resp',
     'personal',
     'tiempo_efectivo',
+    'indisponible_operacional',
+    'costo_indisponibilidad',
     'estado_equipo',
     'modo_falla',
     'causa_raiz',
     'observaciones',
+    'pdf_importado',
     'pdf',
   ]), []);
 
@@ -289,7 +323,10 @@ export default function PmpHistorialOt() {
   };
 
   const clearHistory = async () => {
-    if (isReadOnly) return;
+    if (!canModifyClosedHistory) {
+      window.alert('Solo el usuario INGENIERO puede modificar o limpiar OTs cerradas del historial.');
+      return;
+    }
     if (!window.confirm('Seguro que deseas limpiar el historial de OTs cerradas?')) return;
     await saveSharedDocument(OT_HISTORY_KEY, []);
     setItems([]);
@@ -323,8 +360,8 @@ export default function PmpHistorialOt() {
       <h1 style={{ fontSize: '1.9rem', fontWeight: 700, marginBottom: '.35rem' }}>Historial de OTs</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>Aqui se guardan las ordenes cerradas para revision historica.</p>
 
-      {isReadOnly && (
-        <ReadOnlyAccessNotice message="Puedes revisar el historial y regenerar PDFs de cierre, pero este perfil no puede limpiar registros del historial." />
+      {!canModifyClosedHistory && (
+        <ReadOnlyAccessNotice message="Puedes revisar el historial y regenerar PDFs de cierre. Solo el usuario INGENIERO puede modificar, reemplazar o borrar OTs cerradas." />
       )}
 
       <div className="card" style={{ marginBottom: '1rem' }}>
@@ -341,7 +378,7 @@ export default function PmpHistorialOt() {
           </button>
           <button type="button" className="btn btn-primary" onClick={exportHistory} disabled={!items.length}>Exportar vista</button>
           <button type="button" className="btn btn-secondary" onClick={reloadHistory}>Recargar</button>
-          {!isReadOnly && <button type="button" className="btn btn-danger" onClick={clearHistory}>Limpiar historial</button>}
+          {canModifyClosedHistory && <button type="button" className="btn btn-danger" onClick={clearHistory}>Limpiar historial</button>}
         </div>
         <div style={{ marginTop: '.6rem', color: '#64748b', fontSize: '.88rem' }}>
           {hiddenColumnsCount ? `${hiddenColumnsCount} columna(s) ocultas. La exportacion respetara esta vista.` : 'Todas las columnas estan visibles.'}
@@ -409,9 +446,26 @@ export default function PmpHistorialOt() {
                 {visibleTableColumns.map((column) => (
                   <td key={`${it.id}-${column.id}`} style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem', verticalAlign: 'top' }}>
                     {column.id === 'pdf' ? (
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleRegeneratePdf(it)}>
-                        Generar PDF
-                      </button>
+                      <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
+                        {getImportedOtPdfs(it).map((pdf, index) => {
+                          const url = getStoredPdfUrl(pdf);
+                          return (
+                            <button
+                              key={pdf.filename || pdf.url || `${it.id}-pdf-${index}`}
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              disabled={!url}
+                              onClick={() => url && window.open(url, '_blank', 'noopener,noreferrer')}
+                              title={getStoredPdfName(pdf, index)}
+                            >
+                              Ver subido {getImportedOtPdfs(it).length > 1 ? index + 1 : ''}
+                            </button>
+                          );
+                        })}
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleRegeneratePdf(it)}>
+                          Generar PDF
+                        </button>
+                      </div>
                     ) : (
                       column.getValue?.(it) ?? 'N.A.'
                     )}

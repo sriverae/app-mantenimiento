@@ -10,7 +10,7 @@ import {
   summarizeNoticeForDisplay,
 } from '../utils/maintenanceNotices';
 import { formatIsoTimestampDisplay } from '../utils/dateFormat';
-import { canCreateMaintenanceNotices, getUserRole, ROLE_LABELS } from '../utils/roleAccess';
+import { getUserRole, isOperationalNoticeRole, ROLE_LABELS } from '../utils/roleAccess';
 import { isWorkReportOwnedByUser } from '../utils/workReportOwnership';
 
 function StatCard({ label, value, color = '#111827' }) {
@@ -152,7 +152,7 @@ function Dashboard({ user }) {
   const [loading, setLoading] = useState(true);
 
   const normalizedRole = getUserRole(user);
-  const isOperationalRole = canCreateMaintenanceNotices(user);
+  const isOperationalRole = isOperationalNoticeRole(user);
   const roleLabel = ROLE_LABELS[normalizedRole] || normalizedRole || 'Usuario';
 
   useEffect(() => {

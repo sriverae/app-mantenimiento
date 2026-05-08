@@ -73,6 +73,8 @@ def _as_number(value: Any) -> float | None:
 
 
 def _has_photo_source(photo: Any) -> bool:
+    if isinstance(photo, str):
+        return not _is_blank(photo)
     if not isinstance(photo, dict):
         return False
     return not _is_blank(
@@ -358,8 +360,8 @@ def _validate_notices(data: Any, errors: list[str]) -> None:
         for field in ("codigo", "descripcion", "detalle", "categoria"):
             _require(row, field, path, errors)
         photos = row.get("problem_photos") or row.get("problemPhotos") or row.get("photos") or []
-        if not isinstance(photos, list) or not any(_has_photo_source(photo) for photo in photos):
-            _add(errors, f"{path}.problem_photos debe tener al menos una foto del problema.")
+        if photos and not isinstance(photos, list):
+            _add(errors, f"{path}.problem_photos debe ser una lista.")
 
 
 def _validate_ot_alerts(data: Any, errors: list[str]) -> None:
@@ -382,10 +384,8 @@ def _validate_work_reports(data: Any, errors: list[str]) -> None:
         _require(row, "alertId", path, errors)
         _date_time_order(row, "fechaInicio", "horaInicio", "fechaFin", "horaFin", path, errors)
         evidence = row.get("evidencePhotos") or row.get("evidence_photos") or row.get("photos") or {}
-        before = evidence.get("before") or evidence.get("antes") or evidence.get("ANTES") if isinstance(evidence, dict) else None
-        after = evidence.get("after") or evidence.get("despues") or evidence.get("DESPUES") if isinstance(evidence, dict) else None
-        if not _has_photo_source(before) or not _has_photo_source(after):
-            _add(errors, f"{path}.evidencePhotos debe tener foto before y after.")
+        if evidence and not isinstance(evidence, dict):
+            _add(errors, f"{path}.evidencePhotos debe ser un objeto.")
         report_type = str(row.get("reportType") or row.get("tipo") or "TRABAJO").upper()
         if report_type in {"SERVICIO", "SERVICE"}:
             _require_any(row, ["serviceProviderId", "serviceProviderName"], path, "proveedor de servicio", errors)
