@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
 import TableFilterRow from '../components/TableFilterRow';
+import ImagePreviewModal from '../components/ImagePreviewModal';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { loadSharedDocument, saveSharedDocument } from '../services/sharedDocuments';
 import { isReadOnlyRole } from '../utils/roleAccess';
@@ -263,6 +264,7 @@ export default function PmpEquipos() {
   const [uploadingEquipmentPhoto, setUploadingEquipmentPhoto] = useState(false);
   const [equipmentManualDrafts, setEquipmentManualDrafts] = useState([]);
   const [uploadingEquipmentManual, setUploadingEquipmentManual] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   const [showNoteField, setShowNoteField] = useState(false);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
   const [exchangeHistory, setExchangeHistory] = useState([]);
@@ -1029,6 +1031,13 @@ export default function PmpEquipos() {
 
   return (
     <div>
+      <ImagePreviewModal
+        src={previewPhoto?.url}
+        alt={previewPhoto?.alt || 'Foto del equipo'}
+        title="Foto del equipo"
+        onClose={() => setPreviewPhoto(null)}
+      />
+
       <div style={{ marginBottom: '1.2rem' }}>
         <h1 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '.35rem' }}>Control de equipos</h1>
         <p style={{ color: '#6b7280' }}>Gestión de inventario PMP con columnas dinámicas para nuevos campos.</p>
@@ -1110,10 +1119,17 @@ export default function PmpEquipos() {
                 ))}
                 <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', whiteSpace: 'nowrap' }}>
                   {getEquipmentPhotoUrl(equipo) ? (
-                    <a href={getEquipmentPhotoUrl(equipo)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex', alignItems: 'center', gap: '.45rem', color: '#2563eb', fontWeight: 800 }}>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPreviewPhoto({ url: getEquipmentPhotoUrl(equipo), alt: getEquipmentPhotoName(equipo.foto_equipo) });
+                      }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '.45rem', color: '#2563eb', fontWeight: 800, background: 'transparent', border: 0, padding: 0, cursor: 'zoom-in' }}
+                    >
                       <img src={getEquipmentPhotoUrl(equipo)} alt={getEquipmentPhotoName(equipo.foto_equipo)} style={{ width: '42px', height: '34px', objectFit: 'cover', borderRadius: '.45rem', border: '1px solid #dbe4f0' }} />
                       Ver
-                    </a>
+                    </button>
                   ) : (
                     <span style={{ color: '#94a3b8', fontWeight: 700 }}>Sin foto</span>
                   )}
@@ -1121,19 +1137,36 @@ export default function PmpEquipos() {
                 <td style={{ border: '1px solid #e5e7eb', padding: '.45rem .5rem', whiteSpace: 'nowrap' }}>
                   {getEquipmentManuals(equipo).length ? (
                     <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap' }}>
-                      {getEquipmentManuals(equipo).slice(0, 2).map((manual, index) => (
-                        <a
-                          key={manual.filename || manual.id || index}
-                          href={getEquipmentFileUrl(manual)}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="btn btn-sm btn-secondary"
-                          title={getEquipmentFileName(manual, `Manual ${index + 1}`)}
-                        >
-                          Manual {index + 1}
-                        </a>
-                      ))}
+                      {getEquipmentManuals(equipo).slice(0, 2).map((manual, index) => {
+                        const label = `Manual ${index + 1}`;
+                        const title = getEquipmentFileName(manual, label);
+                        return isImageAttachment(manual) ? (
+                          <button
+                            key={manual.filename || manual.id || index}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPreviewPhoto({ url: getEquipmentFileUrl(manual), alt: title });
+                            }}
+                            className="btn btn-sm btn-secondary"
+                            title={title}
+                          >
+                            {label}
+                          </button>
+                        ) : (
+                          <a
+                            key={manual.filename || manual.id || index}
+                            href={getEquipmentFileUrl(manual)}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="btn btn-sm btn-secondary"
+                            title={title}
+                          >
+                            {label}
+                          </a>
+                        );
+                      })}
                       {getEquipmentManuals(equipo).length > 2 && (
                         <span style={{ color: '#64748b', fontWeight: 800, alignSelf: 'center' }}>+{getEquipmentManuals(equipo).length - 2}</span>
                       )}
@@ -1171,7 +1204,7 @@ export default function PmpEquipos() {
                 </div>
                 <label className="btn btn-secondary" style={{ cursor: uploadingEquipmentPhoto ? 'not-allowed' : 'pointer' }}>
                   {uploadingEquipmentPhoto ? 'Subiendo...' : (equipmentPhotoDraft ? 'Cambiar foto' : 'Agregar foto')}
-                  <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" style={{ display: 'none' }} disabled={uploadingEquipmentPhoto} onChange={uploadEquipmentPhoto} />
+                  <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" capture="environment" style={{ display: 'none' }} disabled={uploadingEquipmentPhoto} onChange={uploadEquipmentPhoto} />
                 </label>
               </div>
               {equipmentPhotoDraft ? (
@@ -1179,7 +1212,13 @@ export default function PmpEquipos() {
                   <img src={getEquipmentPhotoUrl({ foto_equipo: equipmentPhotoDraft })} alt={getEquipmentPhotoName(equipmentPhotoDraft)} style={{ width: '88px', height: '66px', objectFit: 'cover', borderRadius: '.6rem', border: '1px solid #e5e7eb' }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 800, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getEquipmentPhotoName(equipmentPhotoDraft)}</div>
-                    <a href={getEquipmentPhotoUrl({ foto_equipo: equipmentPhotoDraft })} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem' }}>Abrir foto</a>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewPhoto({ url: getEquipmentPhotoUrl({ foto_equipo: equipmentPhotoDraft }), alt: getEquipmentPhotoName(equipmentPhotoDraft) })}
+                      style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem', background: 'transparent', border: 0, padding: 0, cursor: 'zoom-in' }}
+                    >
+                      Ver foto
+                    </button>
                   </div>
                   <button type="button" className="btn btn-danger btn-sm" onClick={removeEquipmentPhotoDraft}>Quitar</button>
                 </div>
@@ -1213,7 +1252,17 @@ export default function PmpEquipos() {
                           <div style={{ fontWeight: 800, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {getEquipmentFileName(manual, `Manual ${index + 1}`)}
                           </div>
-                          <a href={getEquipmentFileUrl(manual)} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem' }}>Abrir archivo</a>
+                          {isImage ? (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewPhoto({ url: getEquipmentFileUrl(manual), alt: getEquipmentFileName(manual, `Manual ${index + 1}`) })}
+                              style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem', background: 'transparent', border: 0, padding: 0, cursor: 'zoom-in' }}
+                            >
+                              Ver imagen
+                            </button>
+                          ) : (
+                            <a href={getEquipmentFileUrl(manual)} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: 700, fontSize: '.88rem' }}>Abrir PDF</a>
+                          )}
                         </div>
                         <button type="button" className="btn btn-danger btn-sm" onClick={() => removeEquipmentManualDraft(manual)}>Quitar</button>
                       </div>
@@ -1434,7 +1483,17 @@ export default function PmpEquipos() {
                         )}
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.original_name || file.caption || file.filename || 'Adjunto'}</div>
-                          <a href={file.url} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontSize: '.8rem' }}>Abrir archivo</a>
+                          {isImageAttachment(file) ? (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewPhoto({ url: file.url, alt: file.original_name || file.caption || 'Foto' })}
+                              style={{ color: '#2563eb', fontSize: '.8rem', background: 'transparent', border: 0, padding: 0, cursor: 'zoom-in' }}
+                            >
+                              Ver imagen
+                            </button>
+                          ) : (
+                            <a href={file.url} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontSize: '.8rem' }}>Abrir PDF</a>
+                          )}
                         </div>
                         <button type="button" className="btn btn-danger btn-sm" onClick={() => removeDraftAttachment(file)}>
                           Quitar

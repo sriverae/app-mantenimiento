@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
 import ConfigurableSelectField from '../components/ConfigurableSelectField';
 import TableFilterRow from '../components/TableFilterRow';
+import CatalogSearchSelect from '../components/CatalogSearchSelect';
+import ImagePreviewModal from '../components/ImagePreviewModal';
 import { useAuth } from '../context/AuthContext';
 import useConfigurableLists from '../hooks/useConfigurableLists';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
@@ -501,13 +503,19 @@ const splitDateTimeValue = (dateValue, fallbackTime = '00:00') => {
 
 const buildLifecycleGapPeriods = (alert = {}, existing = []) => {
   const existingById = new Map((Array.isArray(existing) ? existing : []).map((item) => [item.id, item]));
+  const noticeEventTime = alert.hora_visualizacion_evento
+    || alert.hora_emision_aviso
+    || alert.aviso_origen?.hora_evidencia
+    || '00:00';
   const noticeStart = splitDateTimeValue(
-    alert.fecha_emision_aviso
+    alert.fecha_visualizacion_evento
+      || alert.fecha_emision_aviso
+      || alert.aviso_origen?.fecha_evidencia
       || alert.aviso_origen?.fecha_aviso
       || alert.aviso_origen?.created_at
       || alert.aviso_creado_at
       || alert.created_at,
-    alert.aviso_origen?.hora_evidencia || '00:00',
+    noticeEventTime,
   );
   const acceptedAt = splitDateTimeValue(
     alert.fecha_aceptacion_aviso
@@ -528,7 +536,7 @@ const buildLifecycleGapPeriods = (alert = {}, existing = []) => {
     time: alert.registro_ot?.hora_inicio || '00:00',
   };
   const points = [
-    { key: 'aviso', label: 'Aviso', ...noticeStart },
+    { key: 'aviso', label: 'Evento visualizado', ...noticeStart },
     { key: 'aceptacion', label: 'Aceptacion de aviso', ...acceptedAt },
     { key: 'liberacion', label: 'Liberacion OT', ...releasedAt },
     { key: 'ejecucion', label: 'Inicio de ejecucion', ...executionStart },
@@ -881,7 +889,7 @@ export function ModalReprogramarOt({ alert, onClose, onSubmit }) {
   );
 }
 
-function ModalCrearOt({
+export function ModalCrearOt({
   initialAlert,
   equipmentItems,
   packageItems,
@@ -890,36 +898,52 @@ function ModalCrearOt({
   canManageConfigurableLists = false,
   onQuickAddOption,
   mode = 'create',
+  title,
+  subtitle,
+  submitLabel: submitLabelOverride,
+  showLeadDays = false,
+  lockDate = false,
   onClose,
   onSubmit,
 }) {
   const [form, setForm] = useState(() => buildCreateFormFromAlert(initialAlert));
   const [descriptionFilter, setDescriptionFilter] = useState(initialAlert?.descripcion || '');
   const [codeFilter, setCodeFilter] = useState(initialAlert?.codigo || '');
+  const [areaFilter, setAreaFilter] = useState('');
+  const [brandFilter, setBrandFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const [packageFilter, setPackageFilter] = useState('');
   const [activityInput, setActivityInput] = useState('');
   const [activities, setActivities] = useState(() => buildCreateFormFromAlert(initialAlert).actividades);
+  const [leadDays, setLeadDays] = useState(Math.max(0, Number(initialAlert?.dias_anticipacion_alerta) || 0));
   const eligibleAssignableRrhh = rrhhItems.filter(isAssignableOtStaff);
 
   void eligibleAssignableRrhh;
   const isEditMode = mode === 'edit';
-  const modalTitle = isEditMode ? 'Editar OT pendiente' : 'OT no programada / Crear OT';
-  const submitLabel = isEditMode ? 'Guardar cambios OT' : 'Registrar OT';
+  const modalTitle = title || (isEditMode ? 'Editar OT pendiente' : 'OT no programada / Crear OT');
+  const submitLabel = submitLabelOverride || (isEditMode ? 'Guardar cambios OT' : 'Registrar OT');
   const otStatusLabel = initialAlert?.status_ot || 'Pendiente';
   const priorityOptions = dropdownOptions.priorities || PRIORITY_OPTIONS;
   const vcOptions = dropdownOptions.vcOptions || VC_OPTIONS;
   const responsibleOptions = dropdownOptions.responsibles || [];
   const maintenanceTypeOptions = dropdownOptions.maintenanceTypes || OT_TYPE_OPTIONS;
   const areaOptions = dropdownOptions.areas || [];
+  const equipmentAreas = useMemo(() => Array.from(new Set((equipmentItems || []).map((item) => item.area_trabajo).filter(Boolean))).sort(), [equipmentItems]);
+  const equipmentBrands = useMemo(() => Array.from(new Set((equipmentItems || []).map((item) => item.marca).filter(Boolean))).sort(), [equipmentItems]);
+  const equipmentStatuses = useMemo(() => Array.from(new Set((equipmentItems || []).map((item) => item.estado).filter(Boolean))).sort(), [equipmentItems]);
 
   useEffect(() => {
     const next = buildCreateFormFromAlert(initialAlert);
     setForm(next);
     setDescriptionFilter(initialAlert?.descripcion || '');
     setCodeFilter(initialAlert?.codigo || '');
+    setAreaFilter('');
+    setBrandFilter('');
+    setStatusFilter('');
     setPackageFilter('');
     setActivityInput('');
     setActivities(next.actividades);
+    setLeadDays(Math.max(0, Number(initialAlert?.dias_anticipacion_alerta) || 0));
   }, [initialAlert]);
 
   const handleQuickAdd = async (key, label, field) => {
@@ -943,24 +967,11 @@ function ModalCrearOt({
   const filteredEquipments = useMemo(() => (equipmentItems || []).filter((item) => {
     const matchesDesc = !descriptionFilter.trim() || String(item.descripcion || '').toLowerCase().includes(descriptionFilter.trim().toLowerCase());
     const matchesCode = !codeFilter.trim() || String(item.codigo || '').toLowerCase().includes(codeFilter.trim().toLowerCase());
-    return matchesDesc && matchesCode;
-  }), [equipmentItems, descriptionFilter, codeFilter]);
-  const equipmentPickerColumns = useMemo(() => [
-    { id: 'codigo', label: 'Codigo' },
-    { id: 'descripcion', label: 'Descripcion' },
-    { id: 'area_trabajo', label: 'Area de trabajo' },
-    { id: 'marca', label: 'Marca' },
-    { id: 'capacidad', label: 'Capacidad' },
-    { id: 'potencia_kw', label: 'Potencia (kW)' },
-    { id: 'amperaje', label: 'Amperaje' },
-    { id: 'voltaje_trabajo', label: 'Voltaje' },
-    { id: 'estado', label: 'Estado' },
-  ], []);
-  const equipmentPickerFilters = useTableColumnFilters(equipmentPickerColumns);
-  const visibleEquipments = useMemo(
-    () => filterRowsByColumns(filteredEquipments, equipmentPickerColumns, equipmentPickerFilters.filters),
-    [filteredEquipments, equipmentPickerColumns, equipmentPickerFilters.filters],
-  );
+    const matchesArea = !areaFilter || String(item.area_trabajo || '') === areaFilter;
+    const matchesBrand = !brandFilter || String(item.marca || '') === brandFilter;
+    const matchesStatus = !statusFilter || String(item.estado || '') === statusFilter;
+    return matchesDesc && matchesCode && matchesArea && matchesBrand && matchesStatus;
+  }), [equipmentItems, descriptionFilter, codeFilter, areaFilter, brandFilter, statusFilter]);
   const activityTableRows = useMemo(
     () => activities.map((activity, index) => ({ id: `${index}_${activity}`, index, activity })),
     [activities],
@@ -1064,6 +1075,7 @@ function ModalCrearOt({
       servicio: form.servicio.trim(),
       actividad: formatActivities(activities),
       paquete_pm_nombre: selectedPackage?.nombre || '',
+      dias_anticipacion_alerta: showLeadDays ? Math.max(0, Math.trunc(Number(leadDays) || 0)) : (Number(form.dias_anticipacion_alerta) || 0),
     });
   };
 
@@ -1074,11 +1086,11 @@ function ModalCrearOt({
           <div>
             <h3 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '.2rem' }}>{modalTitle}</h3>
             <p style={{ color: '#6b7280', fontSize: '.92rem', margin: 0 }}>
-              {isEditMode && initialAlert
+              {subtitle || (isEditMode && initialAlert
                 ? `Edita la OT ${initialAlert.codigo} - ${initialAlert.descripcion} con el mismo formato con el que fue creada.`
                 : initialAlert
                   ? `Creacion de OT para ${initialAlert.codigo} - ${initialAlert.descripcion}.`
-                  : 'Selecciona un equipo desde inventario y registra la OT.'}
+                  : 'Selecciona un equipo desde inventario y registra la OT.')}
             </p>
           </div>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar</button>
@@ -1108,71 +1120,66 @@ function ModalCrearOt({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.8rem', flexWrap: 'wrap', marginBottom: '.9rem' }}>
               <div>
                 <h4 className="card-title" style={{ marginBottom: '.2rem' }}>Busqueda de equipo</h4>
-                <p style={{ color: '#6b7280', fontSize: '.9rem', margin: 0 }}>Filtra por descripcion o codigo y selecciona un equipo desde el inventario.</p>
+                <p style={{ color: '#6b7280', fontSize: '.9rem', margin: 0 }}>Filtra por area, descripcion, codigo, marca o estado y selecciona el equipo.</p>
               </div>
+              <span style={{ fontSize: '.86rem', color: '#475569', fontWeight: 700 }}>{filteredEquipments.length} resultado(s)</span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1.6fr) minmax(180px, .8fr)', gap: '.75rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, .8fr) minmax(240px, 1.3fr) minmax(150px, .7fr) minmax(150px, .7fr) minmax(150px, .7fr)', gap: '.75rem', marginBottom: '.75rem' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Buscar por descripcion</label>
-                <input className="form-input" value={descriptionFilter} onChange={(e) => setDescriptionFilter(e.target.value)} placeholder="Ej: Pre limpia, montacargas, ventilador..." />
+                <label className="form-label">Area</label>
+                <select className="form-select" value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
+                  <option value="">Todas</option>
+                  {equipmentAreas.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Descripcion</label>
+                <input className="form-input" value={descriptionFilter} onChange={(e) => setDescriptionFilter(e.target.value)} placeholder="Ej: Pre limpia, montacargas..." />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Codigo</label>
                 <input className="form-input" value={codeFilter} onChange={(e) => setCodeFilter(e.target.value)} placeholder="Ej: IAISPL1" />
               </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Marca</label>
+                <select className="form-select" value={brandFilter} onChange={(e) => setBrandFilter(e.target.value)}>
+                  <option value="">Todas</option>
+                  {equipmentBrands.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Estado</label>
+                <select className="form-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                  <option value="">Todos</option>
+                  {equipmentStatuses.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Equipo</label>
+              <select
+                className="form-select"
+                value={selectedEquipment?.id || ''}
+                onChange={(e) => {
+                  const equipment = filteredEquipments.find((item) => String(item.id) === String(e.target.value));
+                  if (equipment) selectEquipment(equipment);
+                }}
+              >
+                <option value="">Selecciona un equipo...</option>
+                {filteredEquipments.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.codigo} - {item.descripcion} | {item.area_trabajo || 'N.A.'} | {item.marca || 'N.A.'}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.45fr) minmax(340px, .95fr)', gap: '1rem', alignItems: 'start' }}>
-            <div className="card" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.8rem', flexWrap: 'wrap', marginBottom: '.8rem' }}>
-                <h4 className="card-title" style={{ marginBottom: 0 }}>Inventario de equipos</h4>
-                <span style={{ fontSize: '.85rem', color: '#6b7280' }}>{visibleEquipments.length} resultados</span>
-              </div>
-              <div style={{ maxHeight: '360px', overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: '.8rem' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '920px', background: '#fff' }}>
-                  <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
-                    <tr style={{ background: '#eff6ff' }}>
-                      {['Codigo', 'Descripcion', 'Area de trabajo', 'Marca', 'Capacidad', 'Potencia (kW)', 'Amperaje', 'Voltaje', 'Estado'].map((h) => (
-                        <th key={h} style={{ borderBottom: '1px solid #dbeafe', padding: '.55rem .5rem', textAlign: 'left', fontSize: '.82rem', color: '#1e3a8a' }}>{h}</th>
-                      ))}
-                    </tr>
-                    <TableFilterRow columns={equipmentPickerColumns} rows={filteredEquipments} filters={equipmentPickerFilters.filters} onChange={equipmentPickerFilters.setFilter} />
-                  </thead>
-                  <tbody>
-                    {visibleEquipments.map((item) => (
-                      <tr
-                        key={item.id}
-                        onClick={() => selectEquipment(item)}
-                        style={{ cursor: 'pointer', background: String(form.equipo_id) === String(item.id) ? '#dbeafe' : '#fff' }}
-                      >
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem', fontWeight: 700 }}>{item.codigo}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.descripcion}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.area_trabajo || 'N.A.'}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.marca || 'N.A.'}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.capacidad || 'N.A.'}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.potencia_kw || 'N.A.'}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.amperaje || 'N.A.'}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.voltaje_trabajo || 'N.A.'}</td>
-                        <td style={{ borderTop: '1px solid #e5e7eb', padding: '.55rem .5rem' }}>{item.estado || 'N.A.'}</td>
-                      </tr>
-                    ))}
-                    {!visibleEquipments.length && (
-                      <tr>
-                        <td colSpan={9} style={{ padding: '1rem', textAlign: 'center', color: '#6b7280' }}>
-                          No hay equipos que coincidan con los filtros.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
+          <div style={{ display: 'grid', gap: '1rem' }}>
             <div style={{ display: 'grid', gap: '1rem' }}>
               <div className="card" style={{ marginBottom: 0 }}>
                 <h4 className="card-title" style={{ marginBottom: '.85rem' }}>Datos de la OT</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '.8rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '.8rem' }}>
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">Codigo</label>
                     <input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value })} />
@@ -1223,8 +1230,14 @@ function ModalCrearOt({
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">Fecha</label>
-                    <input type="date" className="form-input" value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} />
+                    <input type="date" className="form-input" value={form.fecha} disabled={lockDate} onChange={(e) => setForm({ ...form, fecha: e.target.value })} />
                   </div>
+                  {showLeadDays && (
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Aviso anticipado (dias)</label>
+                      <input type="number" min="0" className="form-input" value={leadDays} onChange={(e) => setLeadDays(Math.max(0, Number(e.target.value) || 0))} />
+                    </div>
+                  )}
                   <ConfigurableSelectField
                     label="Area de trabajo"
                     value={form.area_trabajo}
@@ -1479,6 +1492,7 @@ export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose,
     alert,
     alert.cierre_ot?.periodos_ciclo_ot || [],
   ));
+  const [previewPhoto, setPreviewPhoto] = useState(null);
 
   const personalDetalle = useMemo(() => alert.personal_detalle || [], [alert.personal_detalle]);
   const materialesDetalle = useMemo(() => alert.materiales_detalle || [], [alert.materiales_detalle]);
@@ -2140,8 +2154,126 @@ export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose,
     onReturnToLiberated(form);
   };
 
+  const returnToLiberatedPanel = (
+    <div
+      className="card"
+      style={{
+        marginTop: isReturnIntent ? 0 : '.9rem',
+        border: '1px solid #fca5a5',
+        background: '#fff5f5',
+      }}
+    >
+      <div style={{ marginBottom: '.75rem' }}>
+        <h4 className="card-title" style={{ marginBottom: '.2rem', color: '#991b1b' }}>Si devuelves la OT a Liberada</h4>
+        <p style={{ color: '#991b1b', margin: 0 }}>
+          Completa este bloque para que el tecnico sepa exactamente que corregir y cuando debe reenviar la OT a revision.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.75rem' }}>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label" style={{ color: '#991b1b', fontWeight: 700 }}>Motivo estructurado *</label>
+          <select
+            className="form-select"
+            value={form.motivo_devolucion_tipo}
+            onChange={(e) => setForm({ ...form, motivo_devolucion_tipo: e.target.value })}
+          >
+            <option value="">Selecciona motivo</option>
+            {RETURN_REASON_OPTIONS.map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <ConfigurableSelectField
+            label={<div className="form-label" style={{ color: '#991b1b', fontWeight: 700, marginBottom: 0 }}>Responsable de correccion *</div>}
+            manageLabel="Responsable de correccion"
+            value={form.responsable_correccion}
+            options={responsibleOptions}
+            onChange={(e) => setForm({ ...form, responsable_correccion: e.target.value })}
+            onQuickAdd={async () => {
+              const result = await addOptionQuickly('responsables', 'Responsable');
+              if (result?.added) {
+                setForm((prev) => ({ ...prev, responsable_correccion: result.value }));
+              }
+            }}
+            canManageOptions={canManageConfigurableLists}
+            placeholder="Selecciona responsable"
+          />
+        </div>
+
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label" style={{ color: '#991b1b', fontWeight: 700 }}>Fecha objetivo de reenvio *</label>
+          <input
+            type="date"
+            className="form-input"
+            value={form.fecha_objetivo_reenvio}
+            onChange={(e) => setForm({ ...form, fecha_objetivo_reenvio: e.target.value })}
+          />
+        </div>
+
+        <div className="form-group" style={{ marginBottom: 0, gridColumn: '1 / -1' }}>
+          <label className="form-label" style={{ color: '#991b1b', fontWeight: 700 }}>Detalle visible para correccion *</label>
+          <textarea
+            className="form-textarea"
+            value={form.motivo_devolucion_detalle}
+            onChange={(e) => setForm({ ...form, motivo_devolucion_detalle: e.target.value })}
+            placeholder="Ej: Corregir fechas de liberacion, completar costo de servicio y definir modo de falla antes de reenviar."
+            style={{ borderColor: '#fca5a5', background: '#fff' }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+
+  if (isReturnIntent) {
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, .5)', zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+        <div className="close-ot-modal-shell close-ot-return-shell" style={{ width: 'min(760px, 100%)', maxHeight: '93vh', overflow: 'auto', background: '#fff', borderRadius: '.9rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
+          <div className="close-ot-modal-header" style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.85rem' }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, marginBottom: '.15rem' }}>Devolver OT a Liberada - {alert.ot_numero || 'OT #?'}</h3>
+              <p style={{ margin: 0, color: '#64748b', fontSize: '.92rem' }}>
+                Registra solo la correccion requerida para que el tecnico pueda reenviar la OT a revision.
+              </p>
+            </div>
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cerrar ventana</button>
+          </div>
+
+          <div className="close-ot-modal-body" style={{ padding: '1rem 1.2rem' }}>
+            <div className="close-ot-overview" aria-label="Resumen de devolucion de OT" style={{ marginBottom: '.9rem' }}>
+              <div className="close-ot-overview-item">
+                <span>Equipo</span>
+                <strong>{form.codigo || alert.codigo || 'N.A.'}</strong>
+                <small>{form.descripcion || alert.descripcion || 'Sin descripcion'}</small>
+              </div>
+              <div className="close-ot-overview-item">
+                <span>Estado actual</span>
+                <strong>{alert.estado_ot || 'Solicitud de cierre'}</strong>
+                <small>{editableReports.length} notificacion(es)</small>
+              </div>
+            </div>
+            {returnToLiberatedPanel}
+          </div>
+
+          <div className="close-ot-modal-footer" style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+            <button type="button" className="btn btn-danger" onClick={returnToLiberated}>Devolver a Liberada</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, .5)', zIndex: 1400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <ImagePreviewModal
+        src={previewPhoto?.url}
+        alt={previewPhoto?.alt || 'Evidencia fotografica'}
+        title="Evidencia fotografica"
+        onClose={() => setPreviewPhoto(null)}
+      />
       <div className="close-ot-modal-shell" style={{ width: 'min(1180px, 100%)', maxHeight: '93vh', overflow: 'auto', background: '#fff', borderRadius: '.9rem', boxShadow: '0 20px 60px rgba(0,0,0,.35)' }}>
         <div className="close-ot-modal-header" style={{ padding: '1rem 1.2rem', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.85rem' }}>
           <div>
@@ -2505,9 +2637,13 @@ export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose,
                                       return (
                                         <div key={slot} style={{ border: `1px solid ${src ? '#d1d5db' : '#fca5a5'}`, borderRadius: '.55rem', overflow: 'hidden', background: '#fff' }}>
                                           {src ? (
-                                            <a href={src} target="_blank" rel="noreferrer" style={{ display: 'block' }}>
+                                            <button
+                                              type="button"
+                                              onClick={() => setPreviewPhoto({ url: src, alt: slot === 'before' ? 'Foto antes' : 'Foto despues' })}
+                                              style={{ display: 'block', width: '100%', border: 0, padding: 0, background: 'transparent', cursor: 'zoom-in' }}
+                                            >
                                               <img src={src} alt={slot === 'before' ? 'Antes' : 'Despues'} style={{ width: '100%', height: '110px', objectFit: 'cover', display: 'block' }} />
-                                            </a>
+                                            </button>
                                           ) : (
                                             <div style={{ minHeight: '110px', display: 'grid', placeItems: 'center', color: '#991b1b', fontWeight: 700 }}>
                                               Sin foto {slot === 'before' ? 'ANTES' : 'DESPUES'}
@@ -2515,7 +2651,7 @@ export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose,
                                           )}
                                           <label className="btn btn-secondary btn-sm" style={{ width: '100%', borderRadius: 0, cursor: uploadingClosePhotoSlot ? 'not-allowed' : 'pointer', opacity: uploadingClosePhotoSlot ? .65 : 1 }}>
                                             {uploadingClosePhotoSlot === uploadKey ? 'Subiendo...' : (src ? 'Reemplazar' : 'Subir foto')}
-                                            <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingClosePhotoSlot} onChange={(event) => uploadCloseReportEvidence(report.id, slot, event)} />
+                                            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} disabled={!!uploadingClosePhotoSlot} onChange={(event) => uploadCloseReportEvidence(report.id, slot, event)} />
                                           </label>
                                         </div>
                                       );
@@ -2826,7 +2962,7 @@ export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose,
                 <div>
                   <h4 className="card-title" style={{ marginBottom: '.2rem' }}>Avisos de mantenimiento sugeridos</h4>
                   <p style={{ margin: 0, color: '#6b7280', fontSize: '.9rem' }}>
-                    Estos avisos se crearán al cerrar la OT y luego podrán aceptarse o rechazarse desde PMP &gt; Avisos de Mantenimiento.
+                    Estos avisos quedaran como propuesta dentro del cierre de la OT. No se publicaran automaticamente en Avisos de Mantenimiento.
                   </p>
                 </div>
                 <span style={{ fontWeight: 700, color: '#b45309' }}>{derivedNotices.length} aviso(s)</span>
@@ -3340,7 +3476,6 @@ export function ModalCerrarOT({ alert, reports = [], equiposItems = [], onClose,
 
         <div className="close-ot-modal-footer" style={{ padding: '1rem 1.2rem', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: '.65rem' }}>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-          <button type="button" className={`btn ${isReturnIntent ? 'btn-danger' : 'btn-secondary'}`} onClick={returnToLiberated}>Devolver a Liberada</button>
           <button type="button" className="btn btn-primary" onClick={submit}>Cerrar OT</button>
         </div>
       </div>
@@ -3616,8 +3751,23 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
 
           {tab === 'personal' && (
             <div className="card" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.7rem', marginBottom: '.8rem' }}>
-                <select className="form-select" value={selectedPersonalId || ''} onChange={(e) => setSelectedPersonalId(e.target.value)}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '.7rem', marginBottom: '.8rem', alignItems: 'end' }}>
+                <CatalogSearchSelect
+                  label="Buscar personal"
+                  items={eligibleAssignableRrhh}
+                  value={selectedPersonalId || ''}
+                  onChange={setSelectedPersonalId}
+                  placeholder="Selecciona personal..."
+                  textPlaceholder="Buscar por codigo, nombre, cargo, especialidad o empresa"
+                  searchFields={['codigo', 'nombres_apellidos', 'cargo', 'especialidad', 'tipo_personal', 'empresa']}
+                  filters={[
+                    { id: 'tipo_personal', getValue: (item) => item.tipo_personal || 'Propio', allLabel: 'Todos los tipos' },
+                    { id: 'especialidad', getValue: (item) => item.especialidad || 'N.A.', allLabel: 'Todas' },
+                    { id: 'empresa', getValue: (item) => item.empresa || 'N.A.', allLabel: 'Todas' },
+                  ]}
+                  optionLabel={(item) => `${item.codigo || 'S/C'} - ${item.nombres_apellidos || 'Sin nombre'} | ${item.cargo || 'N.A.'} | ${item.especialidad || 'N.A.'}${item.tipo_personal === 'Tercero' ? ` | ${item.empresa || 'Tercero'}` : ''}`}
+                />
+                <select className="form-select" style={{ display: 'none' }} value={selectedPersonalId || ''} onChange={(e) => setSelectedPersonalId(e.target.value)}>
                   <option value="">Selecciona personal...</option>
                   {eligibleAssignableRrhh.map((item) => (
                     <option key={item.id} value={item.id}>{item.nombres_apellidos} · {item.cargo || 'N.A.'} ({item.especialidad}){item.tipo_personal === 'Tercero' ? ` · ${item.empresa || 'Tercero'}` : ''}</option>
@@ -3654,14 +3804,32 @@ function ModalOtLiberacion({ alert, rrhhItems, materialesItems, activeAlerts, mo
 
           {tab === 'materiales' && (
             <div className="card" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px auto', gap: '.7rem', marginBottom: '.8rem' }}>
-                <select className="form-select" value={selectedMaterialId || ''} onChange={(e) => setSelectedMaterialId(e.target.value)}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 140px auto', gap: '.7rem', marginBottom: '.8rem', alignItems: 'end' }}>
+                <CatalogSearchSelect
+                  label="Buscar material"
+                  items={materialesItems}
+                  value={selectedMaterialId || ''}
+                  onChange={setSelectedMaterialId}
+                  placeholder="Selecciona material..."
+                  textPlaceholder="Buscar por codigo, descripcion, unidad o ubicacion"
+                  searchFields={['codigo', 'descripcion', 'unidad', 'ubicacion', 'categoria', 'tipo']}
+                  filters={[
+                    { id: 'categoria', getValue: (item) => item.categoria || item.tipo || 'N.A.', allLabel: 'Todas' },
+                    { id: 'unidad', getValue: (item) => item.unidad || 'UND', allLabel: 'Todas' },
+                    { id: 'ubicacion', getValue: (item) => item.ubicacion || 'N.A.', allLabel: 'Todas' },
+                  ]}
+                  optionLabel={(item) => `${item.codigo || 'S/C'} - ${item.descripcion || 'Sin descripcion'} | Stock: ${Number(item.stock) || 0} ${item.unidad || 'UND'}`}
+                />
+                <select className="form-select" style={{ display: 'none' }} value={selectedMaterialId || ''} onChange={(e) => setSelectedMaterialId(e.target.value)}>
                   <option value="">Selecciona material...</option>
                   {materialesItems.map((item) => (
                     <option key={item.id} value={item.id}>{item.codigo} · {item.descripcion}</option>
                   ))}
                 </select>
-                <input type="number" min="1" className="form-input" value={cantidadMaterial} onChange={(e) => setCantidadMaterial(e.target.value)} />
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Cantidad</label>
+                  <input type="number" min="1" className="form-input" value={cantidadMaterial} onChange={(e) => setCantidadMaterial(e.target.value)} />
+                </div>
                 <button type="button" className="btn btn-primary" onClick={addMaterial}>Agregar</button>
               </div>
 
@@ -3763,7 +3931,15 @@ export default function PmpGestionOt() {
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
       const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
-      const activeExisting = existing.filter((a) => a.status_ot !== 'Cerrada' && !deletedSet.has(String(a.id)));
+      const activeExisting = existing.filter((a) => {
+        if (a.status_ot === 'Cerrada' || deletedSet.has(String(a.id))) return false;
+        const isPrematureScheduledOt = ['FECHA', 'CALENDARIO_MANUAL'].includes(String(a.origen_programacion || ''))
+          && ['Pendiente', 'Creada'].includes(String(a.status_ot || ''))
+          && !a.ot_numero
+          && a.alerta_desde
+          && a.alerta_desde > todayStr;
+        return !isPrematureScheduledOt;
+      });
       const mapExisting = new Map(activeExisting.map((a) => [a.id, a]));
       const closedHistoryIds = new Set(history.map((item) => item.id));
 
@@ -3771,16 +3947,15 @@ export default function PmpGestionOt() {
         .flatMap((plan) => {
           const eq = equipos.find((e) => (e.codigo || '') === (plan.codigo || ''));
           const dueDates = getDatePlanOccurrencesInWindow(plan, monthStart, monthEnd, { includeAlertWindow: true });
-          return dueDates.map((scheduleInfo, idx) => {
+          return dueDates
+            .filter((scheduleInfo) => String(scheduleInfo.alerta_desde || scheduleInfo.fecha || '') <= todayStr)
+            .map((scheduleInfo, idx) => {
             const fecha = scheduleInfo.fecha;
             const cycleId = scheduleInfo.id;
             const legacyId = `${fecha}_${plan.id}`;
             const old = mapExisting.get(cycleId) || mapExisting.get(legacyId);
             const id = old?.id || cycleId;
             if (closedHistoryIds.has(id) || deletedSet.has(String(id)) || deletedSet.has(String(legacyId)) || closedHistoryIds.has(legacyId)) return null;
-            const stepLabel = scheduleInfo.marker && scheduleInfo.title
-              ? `${scheduleInfo.marker} - ${scheduleInfo.title}`
-              : scheduleInfo.title || scheduleInfo.marker || '';
             const activityText = scheduleInfo.activities_text || '';
             return {
               id,
@@ -3796,7 +3971,7 @@ export default function PmpGestionOt() {
               descripcion: plan.equipo || '',
               area_trabajo: eq?.area_trabajo || 'N.A.',
               prioridad: plan.prioridad || 'Media',
-              actividad: `${stepLabel}${activityText ? `\n${activityText}` : ''}`.trim(),
+              actividad: activityText || scheduleInfo.title || 'Mantenimiento preventivo programado',
               responsable: plan.responsable || 'N.A.',
               status_ot: old?.status_ot || (fecha === todayStr ? 'Pendiente' : 'Pendiente'),
               ot_numero: old?.ot_numero || '',
@@ -3846,7 +4021,7 @@ export default function PmpGestionOt() {
             descripcion: plan.equipo || eq?.descripcion || '',
             area_trabajo: eq?.area_trabajo || 'N.A.',
             prioridad: plan.prioridad || 'Media',
-            actividad: `${nextPmLabel ? `${nextPmLabel}${packageLabel ? ` - ${packageLabel}` : ''}\n` : ''}${plan.actividades || 'Mantenimiento preventivo por kilometraje'}${target ? `\nObjetivo km: ${target.toLocaleString('es-PE')} | Restantes: ${remaining.toLocaleString('es-PE')}` : ''}`,
+            actividad: `${plan.actividades || 'Mantenimiento preventivo por kilometraje'}${target ? `\nObjetivo km: ${target.toLocaleString('es-PE')} | Restantes: ${remaining.toLocaleString('es-PE')}` : ''}`,
             responsable: plan.responsable || 'N.A.',
             status_ot: old?.status_ot || 'Pendiente',
             ot_numero: old?.ot_numero || '',
@@ -4552,7 +4727,7 @@ export default function PmpGestionOt() {
       const saveOperations = [
         saveSharedDocument(OT_WORK_REPORTS_KEY, mergedWorkReports),
         saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]),
-        saveSharedDocument(NOTICES_KEY, [...generatedNotices, ...(Array.isArray(existingNotices) ? existingNotices : [])]),
+        saveSharedDocument(NOTICES_KEY, Array.isArray(existingNotices) ? existingNotices : []),
       ];
       if (exchangedEquipos && nextExchangeHistory) {
         saveOperations.push(saveSharedDocument(EQUIPOS_KEY, exchangedEquipos));

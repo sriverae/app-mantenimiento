@@ -42,6 +42,7 @@ export default function WorkLogs({ user }) {
   const [attendanceRows, setAttendanceRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);
+  const [specificDate, setSpecificDate] = useState('');
   const [showCoworkers, setShowCoworkers] = useState(false);
   const [query, setQuery] = useState('');
   const [expandedIds, setExpandedIds] = useState({});
@@ -126,8 +127,9 @@ export default function WorkLogs({ user }) {
   const visibleRows = useMemo(() => normalizedRows.filter((item) => {
     const matchesOwnership = showCoworkers ? !item.isMine : item.isMine;
     const matchesQuery = !query.trim() || item.searchText.includes(query.trim().toLowerCase());
-    return matchesOwnership && matchesQuery;
-  }), [normalizedRows, showCoworkers, query]);
+    const matchesSpecificDate = !specificDate || item.workDate === specificDate;
+    return matchesOwnership && matchesQuery && matchesSpecificDate;
+  }), [normalizedRows, showCoworkers, query, specificDate]);
 
   const stats = useMemo(() => {
     const totalHours = visibleRows.reduce((sum, item) => sum + getReportHours(item.report), 0);
@@ -322,7 +324,7 @@ export default function WorkLogs({ user }) {
       </div>
 
       <div className="card" style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 220px) minmax(240px, 1fr) auto', gap: '1rem', alignItems: 'end' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 220px) minmax(180px, 220px) minmax(240px, 1fr) auto', gap: '1rem', alignItems: 'end' }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Mostrar ultimos</label>
             <select className="form-select" value={days} onChange={(e) => setDays(parseInt(e.target.value, 10))}>
@@ -332,6 +334,15 @@ export default function WorkLogs({ user }) {
               <option value={60}>60 dias</option>
               <option value={90}>90 dias</option>
             </select>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Fecha especifica</label>
+            <input
+              type="date"
+              className="form-input"
+              value={specificDate}
+              onChange={(e) => setSpecificDate(e.target.value)}
+            />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Buscar registro</label>
@@ -350,10 +361,18 @@ export default function WorkLogs({ user }) {
             {showCoworkers ? 'Volver a mis registros' : 'Ver registros de companeros'}
           </button>
         </div>
-        <div style={{ marginTop: '.85rem', fontSize: '.9rem', color: '#6b7280' }}>
-          {showCoworkers
-            ? 'Estas viendo registros hechos por otros tecnicos. Desde aqui solo se revisan en modo lectura.'
-            : 'Se muestran tus propios subregistros. Si la OT sigue liberada, puedes entrar a la OT para modificarlos.'}
+        <div style={{ marginTop: '.85rem', fontSize: '.9rem', color: '#6b7280', display: 'flex', justifyContent: 'space-between', gap: '.75rem', flexWrap: 'wrap' }}>
+          <span>
+            {showCoworkers
+              ? 'Estas viendo registros hechos por otros tecnicos. Desde aqui solo se revisan en modo lectura.'
+              : 'Se muestran tus propios subregistros. Si la OT sigue liberada, puedes entrar a la OT para modificarlos.'}
+            {specificDate ? ` Filtro activo: ${formatDateDisplay(specificDate, specificDate)}.` : ''}
+          </span>
+          {specificDate && (
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSpecificDate('')}>
+              Limpiar fecha
+            </button>
+          )}
         </div>
       </div>
 
