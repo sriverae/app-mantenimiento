@@ -134,14 +134,18 @@ const getTodayDateKey = () => {
 
 const isDateKey = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 
+const getOtStatus = (alert) => String(alert?.status_ot || '').trim();
+
+const isReleasedOt = (alert) => getOtStatus(alert) === 'Liberada';
+
 const isOverdueUnreleasedOt = (alert, todayKey = getTodayDateKey()) => {
-  const status = String(alert?.status_ot || '').trim();
+  const status = getOtStatus(alert);
   const dueDate = String(alert?.fecha_ejecutar || '').trim();
   return ['Pendiente', 'Creada'].includes(status) && isDateKey(dueDate) && dueDate < todayKey;
 };
 
 const getOtVisualTone = (alert, isSelected = false) => {
-  const status = String(alert?.status_ot || '').trim();
+  const status = getOtStatus(alert);
   if (isOverdueUnreleasedOt(alert)) {
     return {
       key: 'overdue',
@@ -1870,7 +1874,14 @@ export default function WorkNotifications({ user }) {
     () => summarizeServiceReports(workReports).totalServiceCost,
     [workReports],
   );
-  const canAssignSelectedToMe = !isReadOnly && isTechnician && showCoworkerOtView && selectedAlert?.status_ot === 'Liberada' && !selectedAlertAssignedToMe;
+  const canAssignAlertToMe = (alert) => (
+    !isReadOnly
+    && isTechnician
+    && showCoworkerOtView
+    && isReleasedOt(alert)
+    && !isAlertAssignedToUser(alert, user)
+  );
+  const canAssignSelectedToMe = canAssignAlertToMe(selectedAlert);
 
   useEffect(() => {
     if (!selectedAlert?.id) {
@@ -2166,9 +2177,10 @@ export default function WorkNotifications({ user }) {
     }
   };
 
-  const handleAssignToMe = async () => {
+  const handleAssignToMe = async (targetAlert = selectedAlert) => {
     if (isReadOnly) return;
-    if (!selectedAlert || !canAssignSelectedToMe) return;
+    const row = targetAlert || selectedAlert;
+    if (!row || !canAssignAlertToMe(row)) return;
 
     const rrhhMatch = findMatchingRrhhForUser(rrhhItems, user);
     const nextAssignee = rrhhMatch || {
@@ -2182,7 +2194,7 @@ export default function WorkNotifications({ user }) {
     };
 
     const nextAlerts = alerts.map((item) => {
-      if (String(item.id) !== String(selectedAlert.id)) return item;
+      if (String(item.id) !== String(row.id)) return item;
 
       const existingRows = Array.isArray(item.personal_detalle) ? item.personal_detalle : [];
       if (existingRows.some((row) => doesStaffRowMatchUser(row, user))) {
@@ -2199,25 +2211,25 @@ export default function WorkNotifications({ user }) {
 
     await persistAlerts(nextAlerts);
     setShowCoworkerOtView(false);
-    setSelectedAlertId(selectedAlert.id);
+    setSelectedAlertId(row.id);
     window.alert('La OT ya quedo asignada a ti. Ahora la veras dentro de tus OTs y podras registrar tu trabajo.');
     appendAuditEntry({
       action: 'OT_ASIGNADA_A_TECNICO',
       module: 'Notificaciones de Trabajo',
       entityType: 'OT',
-      entityId: selectedAlert.id,
-      title: `OT ${selectedAlert.ot_numero || selectedAlert.codigo || selectedAlert.id} asignada`,
+      entityId: row.id,
+      title: `OT ${row.ot_numero || row.codigo || row.id} asignada`,
       description: `${user?.full_name || user?.username || 'Tecnico'} se asigno la OT para registrar trabajo.`,
       severity: 'info',
       actor: user,
-      after: { status_ot: selectedAlert.status_ot, asignado_a: user?.full_name || user?.username || '' },
+      after: { status_ot: row.status_ot, asignado_a: user?.full_name || user?.username || '' },
     }).catch((err) => console.error('Error auditando asignacion OT:', err));
   };
 
   const toggleFieldStaffVisibility = async (targetAlert = selectedAlert) => {
     if (isReadOnly || !canManageFieldStaffVisibility) return;
     if (!targetAlert) return;
-    if (targetAlert.status_ot !== 'Liberada') {
+    if (!isReleasedOt(targetAlert)) {
       window.alert('Solo se pueden ocultar o mostrar OTs en estado Liberada.');
       return;
     }
@@ -2299,7 +2311,7 @@ const handleDeleteReport = async (reportId) => {
   const handleOpenRegister = async (targetAlert = selectedAlert) => {
     if (isReadOnly) return;
     const row = targetAlert || selectedAlert;
-    if (!row || row.status_ot !== 'Liberada') {
+    if (!row || !isReleasedOt(row)) {
       window.alert('Solo puedes registrar trabajo en una OT que esté Liberada.');
       return;
     }
@@ -2349,7 +2361,7 @@ const handleDeleteReport = async (reportId) => {
     if (isReadOnly) return;
     if (!selectedAlert) return;
     if (blockIfSelectedAlertLocked('guardar la OT')) return;
-    if (selectedAlert.status_ot !== 'Liberada') {
+    if (!isReleasedOt(selectedAlert)) {
       window.alert('Solo puedes editar la OT mientras este en estado Liberada.');
       return;
     }
@@ -2389,28 +2401,32 @@ const handleDeleteReport = async (reportId) => {
     }
   };
 
-  const handleOpenEditOt = async () => {
+  const handleOpenEditOt = async (targetAlert = selectedAlert) => {
     if (isReadOnly) return;
-    if (!selectedAlert) return;
-    if (selectedAlert.status_ot !== 'Liberada') {
+    const row = targetAlert || selectedAlert;
+    if (!row) return;
+    if (!isReleasedOt(row)) {
       window.alert('Solo puedes editar la OT mientras este en estado Liberada. Si esta en Solicitud de cierre, primero devuelvela a Liberada.');
       return;
     }
-    if (blockIfSelectedAlertLocked('editar esta OT')) return;
-    if (!(await acquireSelectedAlertLock('editar esta OT'))) return;
+    setSelectedAlertId(row.id);
+    if (String(selectedAlert?.id) === String(row.id) && blockIfSelectedAlertLocked('editar esta OT')) return;
+    if (!(await acquireSelectedAlertLock('editar esta OT', row))) return;
     setShowEditOtModal(true);
   };
 
-  const handleOpenReprogramModal = async () => {
+  const handleOpenReprogramModal = async (targetAlert = selectedAlert) => {
     if (isReadOnly) return;
-    if (!selectedAlert) return;
+    const row = targetAlert || selectedAlert;
+    if (!row) return;
     if (!canReprogramOt) return;
-    if (blockIfSelectedAlertLocked('reprogramar esta OT')) return;
-    if (selectedAlert.status_ot !== 'Liberada') {
+    if (String(selectedAlert?.id) === String(row.id) && blockIfSelectedAlertLocked('reprogramar esta OT')) return;
+    if (!isReleasedOt(row)) {
       window.alert('Desde Notificaciones de Trabajo solo puedes reprogramar OTs liberadas. Si esta en Solicitud de cierre, primero devuelvela a Liberada.');
       return;
     }
-    if (!(await acquireSelectedAlertLock('reprogramar esta OT'))) return;
+    setSelectedAlertId(row.id);
+    if (!(await acquireSelectedAlertLock('reprogramar esta OT', row))) return;
     setShowReprogramModal(true);
   };
 
@@ -2815,7 +2831,7 @@ const handleDeleteReport = async (reportId) => {
         </div>
       )}
 
-      {selectedAlert?.cierre_ot?.devuelta_revision && selectedAlert.status_ot === 'Liberada' && (
+      {selectedAlert?.cierre_ot?.devuelta_revision && isReleasedOt(selectedAlert) && (
         <div className="alert alert-error" style={{ border: '1px solid #fca5a5' }}>
           <strong>OT devuelta a correccion.</strong>{' '}
           {selectedAlert.cierre_ot.motivo_devolucion_tipo || 'Motivo pendiente'}.
@@ -2904,34 +2920,34 @@ const handleDeleteReport = async (reportId) => {
           <button
             type="button"
             className="btn btn-primary"
-            disabled={!selectedAlert || selectedAlert.status_ot !== 'Liberada' || (isTechnician && !selectedAlertAssignedToMe) || selectedAlertLockedByOthers}
-            onClick={handleOpenRegister}
+            disabled={!selectedAlert || !isReleasedOt(selectedAlert) || (isTechnician && !selectedAlertAssignedToMe) || selectedAlertLockedByOthers}
+            onClick={() => handleOpenRegister()}
           >
             Registrar Trabajo
           </button>
         )}
-        {!isReadOnly && canEditLiberatedOt && selectedAlert?.status_ot === 'Liberada' && (
-          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleOpenEditOt}>
+        {!isReadOnly && canEditLiberatedOt && isReleasedOt(selectedAlert) && (
+          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={() => handleOpenEditOt()}>
             Editar OT
           </button>
         )}
-        {!isReadOnly && canReprogramOt && selectedAlert?.status_ot === 'Liberada' && (
-          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleOpenReprogramModal}>
+        {!isReadOnly && canReprogramOt && isReleasedOt(selectedAlert) && (
+          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={() => handleOpenReprogramModal()}>
             Reprogramar OT
           </button>
         )}
-        {!isReadOnly && canManageFieldStaffVisibility && selectedAlert?.status_ot === 'Liberada' && (
+        {!isReadOnly && canManageFieldStaffVisibility && isReleasedOt(selectedAlert) && (
           <button type="button" className="btn btn-secondary" onClick={() => toggleFieldStaffVisibility(selectedAlert)}>
             {isOtHiddenFromFieldStaff(selectedAlert) ? 'Mostrar a tecnicos/encargados' : 'Ocultar a tecnicos/encargados'}
           </button>
         )}
-        {!isReadOnly && canRequestClose && selectedAlert?.status_ot === 'Liberada' && (
+        {!isReadOnly && canRequestClose && isReleasedOt(selectedAlert) && (
           <button type="button" className="btn btn-danger" disabled={selectedAlertLockedByOthers} onClick={handleRequestClose}>
             Solicitar cierre
           </button>
         )}
         {!isReadOnly && canApproveClose && selectedAlert?.status_ot === 'Solicitud de cierre' && (
-          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={handleReturnToLiberated}>
+          <button type="button" className="btn btn-secondary" disabled={selectedAlertLockedByOthers} onClick={() => handleReturnToLiberated()}>
             Devolver a Liberada
           </button>
         )}
@@ -2985,12 +3001,12 @@ const handleDeleteReport = async (reportId) => {
                     Inconsistencia: {alertConsistency.count}
                   </span>
                 )}
-                {item.cierre_ot?.devuelta_revision && item.status_ot === 'Liberada' && (
+                {item.cierre_ot?.devuelta_revision && isReleasedOt(item) && (
                   <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#fef2f2', color: '#b91c1c', fontWeight: 700, fontSize: '.78rem' }}>
                     Devuelta
                   </span>
                 )}
-                {canManageFieldStaffVisibility && item.status_ot === 'Liberada' && isOtHiddenFromFieldStaff(item) && (
+                {canManageFieldStaffVisibility && isReleasedOt(item) && isOtHiddenFromFieldStaff(item) && (
                   <span style={{ borderRadius: '999px', padding: '.2rem .55rem', background: '#f1f5f9', color: '#475569', fontWeight: 700, fontSize: '.78rem' }}>
                     Oculta a campo
                   </span>
@@ -3086,32 +3102,32 @@ const handleDeleteReport = async (reportId) => {
                 <strong>{item.ot_numero || item.codigo || 'OT'}</strong>
               </div>
               <div className="mobile-card-action-list">
-                {isTechnician && showCoworkerOtView && item.status_ot === 'Liberada' && !assignedToMe && (
+                {isTechnician && showCoworkerOtView && isReleasedOt(item) && !assignedToMe && (
                   <button type="button" onClick={() => runMobileOtAction(item, handleAssignToMe)}>
                     Asignarme OT
                   </button>
                 )}
-                {item.status_ot === 'Liberada' && (!isTechnician || assignedToMe) && (
+                {isReleasedOt(item) && (!isTechnician || assignedToMe) && (
                   <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenRegister)}>
                     Registrar trabajo
                   </button>
                 )}
-                {canEditLiberatedOt && item.status_ot === 'Liberada' && (
+                {canEditLiberatedOt && isReleasedOt(item) && (
                   <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenEditOt)}>
                     Editar OT
                   </button>
                 )}
-                {canReprogramOt && item.status_ot === 'Liberada' && (
+                {canReprogramOt && isReleasedOt(item) && (
                   <button type="button" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleOpenReprogramModal)}>
                     Reprogramar OT
                   </button>
                 )}
-                {canManageFieldStaffVisibility && item.status_ot === 'Liberada' && (
+                {canManageFieldStaffVisibility && isReleasedOt(item) && (
                   <button type="button" onClick={() => runMobileOtAction(item, () => toggleFieldStaffVisibility(item))}>
                     {isOtHiddenFromFieldStaff(item) ? 'Mostrar a campo' : 'Ocultar a campo'}
                   </button>
                 )}
-                {canRequestClose && item.status_ot === 'Liberada' && (
+                {canRequestClose && isReleasedOt(item) && (
                   <button type="button" className="danger" disabled={actionDisabled} onClick={() => runMobileOtAction(item, handleRequestClose)}>
                     Solicitar cierre
                   </button>
@@ -3183,7 +3199,7 @@ const handleDeleteReport = async (reportId) => {
                           {tone.label}
                         </div>
                       )}
-                      {item.cierre_ot?.devuelta_revision && item.status_ot === 'Liberada' && (
+                      {item.cierre_ot?.devuelta_revision && isReleasedOt(item) && (
                         <div
                           style={{
                             marginTop: '.2rem',
@@ -3204,7 +3220,7 @@ const handleDeleteReport = async (reportId) => {
                           Inconsistencia: {alertConsistency.count}
                         </div>
                       )}
-                      {canManageFieldStaffVisibility && item.status_ot === 'Liberada' && isOtHiddenFromFieldStaff(item) && (
+                      {canManageFieldStaffVisibility && isReleasedOt(item) && isOtHiddenFromFieldStaff(item) && (
                         <div
                           style={{
                             marginTop: '.2rem',
@@ -3334,7 +3350,7 @@ const handleDeleteReport = async (reportId) => {
         />
       )}
 
-      {showEditOtModal && selectedAlert?.status_ot === 'Liberada' && (
+      {showEditOtModal && isReleasedOt(selectedAlert) && (
         <EditLiberatedOtModal
           alert={selectedAlert}
           rrhhItems={rrhhItems}
