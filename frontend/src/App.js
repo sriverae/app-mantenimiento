@@ -25,6 +25,7 @@ import PmpBajas from './pages/PmpBajas';
 import PmpBajasHistorial from './pages/PmpBajasHistorial';
 import PmpGestionOt from './pages/PmpGestionOt';
 import PmpHistorialOt from './pages/PmpHistorialOt';
+import PmpHistoriales from './pages/PmpHistoriales';
 import PmpMaintenanceNotices from './pages/PmpMaintenanceNotices';
 import PmpPaquetesMantenimiento from './pages/PmpPaquetesMantenimiento';
 import RrhhManagement from './pages/RrhhManagement';
@@ -66,22 +67,28 @@ function AppLayout() {
   const rrhhMenuRef = useRef(null);
   const controlMenuRef = useRef(null);
   const settingsMenuRef = useRef(null);
+  const historiesMenuRef = useRef(null);
   const userMenuRef = useRef(null);
   const pmpOptions = [
     { label: 'Equipos', path: '/pmp/equipos' },
     { label: 'Plan de mantenimiento - Fechas', path: '/pmp/fechas' },
     { label: 'Plan de mantenimiento - Km', path: '/pmp/km' },
-    ...(hasMinRole('INGENIERO') ? [{ label: 'Historial de contadores', path: '/pmp/contadores/historial' }] : []),
     { label: 'Paquetes de mantenimiento', path: '/pmp/paquetes' },
     { label: 'Gestion de OT', path: '/pmp/gestion-ot' },
     { label: 'Avisos de Mantenimiento', path: '/pmp/avisos' },
-    { label: 'Historial de OTs', path: '/pmp/historial-ot' },
     { label: 'Intercambios', path: '/pmp/intercambios' },
     { label: 'Bajas', path: '/pmp/bajas' },
-    { label: 'Historial intercambios', path: '/pmp/intercambios/historial' },
-    { label: 'Historial bajas', path: '/pmp/bajas/historial' },
     { label: 'Calendario', path: '/pmp/calendario' },
     { label: 'AMEF', path: '/pmp/amef' },
+  ];
+  const historyOptions = [
+    { label: 'Resumen de historiales', path: '/historiales' },
+    { label: 'Historial de OT', path: '/historiales/ot' },
+    { label: 'Historial de avisos', path: '/historiales/avisos' },
+    { label: 'Historial intercambios', path: '/historiales/intercambios' },
+    { label: 'Historial bajas', path: '/historiales/bajas' },
+    ...(hasMinRole('INGENIERO') ? [{ label: 'Historial de contadores', path: '/historiales/contadores' }] : []),
+    { label: 'Historial de asistencia', path: '/historiales/asistencia' },
   ];
   const rrhhOptions = RRHH_SECTIONS;
   const controlOptions = [
@@ -99,7 +106,7 @@ function AppLayout() {
     { label: 'Gestion de OT', path: '/pmp/gestion-ot' },
     { label: 'Plan de mantenimiento - Km', path: '/pmp/km' },
     { label: 'Equipos', path: '/pmp/equipos' },
-    { label: 'Historial de OTs', path: '/pmp/historial-ot' },
+    { label: 'Historiales', path: '/historiales' },
     { label: 'RRHH', path: '/rrhh/personal-propio' },
     { label: 'Materiales', path: '/materiales' },
   ];
@@ -117,6 +124,7 @@ function AppLayout() {
       { label: 'Avisos', path: '/pmp/avisos' },
       { label: 'Mis registros', path: '/worklogs' },
       { label: 'Consulta OT', path: '/pmp/gestion-ot' },
+      { label: 'Historiales', path: '/historiales' },
       { label: 'Equipos', path: '/pmp/equipos' },
     ]
     : [
@@ -126,12 +134,13 @@ function AppLayout() {
       { label: 'Notificaciones', path: '/tasks' },
       { label: 'Registros', path: '/worklogs' },
       { label: 'PMP', path: '/pmp', children: pmpOptions },
+      { label: 'Historiales', path: '/historiales', children: historyOptions },
       { label: 'RRHH', path: '/rrhh/personal-propio' },
       { label: 'Materiales', path: '/materiales' },
       ...(hasMinRole('ENCARGADO') ? [{ label: 'Usuarios', path: '/users' }] : []),
       ...(hasMinRole('PLANNER') ? [{ label: 'Configuraciones', path: defaultSettingsPath }] : []),
     ];
-  const operationalBrowseActive = isInAnySection(['/tasks', '/indicadores', '/pmp/gestion-ot', '/pmp/km', '/pmp/equipos', '/pmp/historial-ot', '/rrhh', '/materiales']);
+  const operationalBrowseActive = isInAnySection(['/tasks', '/indicadores', '/pmp/gestion-ot', '/pmp/km', '/pmp/equipos', '/historiales', '/pmp/historial-ot', '/rrhh', '/materiales']);
 
   useEffect(() => {
     setOpenMenu(null);
@@ -158,6 +167,7 @@ function AppLayout() {
         { key: 'rrhh', ref: rrhhMenuRef },
         { key: 'control', ref: controlMenuRef },
         { key: 'settings', ref: settingsMenuRef },
+        { key: 'histories', ref: historiesMenuRef },
         { key: 'user', ref: userMenuRef },
       ];
       const clickedInsideKnownMenu = menuRefs.some(({ ref }) => ref.current && ref.current.contains(target));
@@ -359,6 +369,26 @@ function AppLayout() {
                       </div>
                     </details>
                   </li>
+                  <li className="nav-dropdown">
+                    <details className="nav-dropdown-details" open={openMenu === 'histories'} ref={historiesMenuRef}>
+                      <summary
+                        className={`${navLinkClass('/historiales', 'section')} nav-dropdown-trigger`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          toggleMenu('histories');
+                        }}
+                      >
+                        Historiales <span style={{ fontSize: '.7rem' }}>+</span>
+                      </summary>
+                      <div className="nav-dropdown-menu">
+                        {historyOptions.map((option) => (
+                          <Link key={option.path} to={option.path} className="nav-dropdown-item" onClick={closeMenus}>
+                            {option.label}
+                          </Link>
+                        ))}
+                      </div>
+                    </details>
+                  </li>
                   <li><Link to="/materiales" className={navLinkClass('/materiales')}>Gestion de Materiales</Link></li>
                   {hasMinRole('PLANNER') && (
                     <li className="nav-dropdown">
@@ -462,6 +492,13 @@ function AppLayout() {
           <Route path="/pmp/avisos" element={<PrivateRoute minRole="OPERADOR"><PmpMaintenanceNotices /></PrivateRoute>} />
           <Route path="/pmp/historial-ot" element={<PrivateRoute minRole="OPERADOR"><PmpHistorialOt /></PrivateRoute>} />
           <Route path="/pmp/paquetes" element={<PrivateRoute minRole="OPERADOR"><PmpPaquetesMantenimiento /></PrivateRoute>} />
+          <Route path="/historiales" element={<PrivateRoute minRole="OPERADOR"><PmpHistoriales /></PrivateRoute>} />
+          <Route path="/historiales/ot" element={<PrivateRoute minRole="OPERADOR"><PmpHistorialOt /></PrivateRoute>} />
+          <Route path="/historiales/avisos" element={<PrivateRoute minRole="OPERADOR"><PmpMaintenanceNotices initialTab="historial" /></PrivateRoute>} />
+          <Route path="/historiales/intercambios" element={<PrivateRoute minRole="OPERADOR"><PmpIntercambiosHistorial /></PrivateRoute>} />
+          <Route path="/historiales/bajas" element={<PrivateRoute minRole="OPERADOR"><PmpBajasHistorial /></PrivateRoute>} />
+          <Route path="/historiales/contadores" element={<PrivateRoute minRole="INGENIERO"><SettingsCounters standalone /></PrivateRoute>} />
+          <Route path="/historiales/asistencia" element={<PrivateRoute minRole="OPERADOR"><AttendanceHistory /></PrivateRoute>} />
           <Route path="/settings/listas-desplegables" element={<PrivateRoute minRole="PLANNER"><SettingsDropdownLists /></PrivateRoute>} />
           <Route path="/settings/ordenes-trabajo" element={<PrivateRoute minRole="INGENIERO"><SettingsOtOrders /></PrivateRoute>} />
           <Route path="/settings/contadores" element={<PrivateRoute minRole="INGENIERO"><SettingsCounters /></PrivateRoute>} />

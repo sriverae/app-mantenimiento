@@ -658,7 +658,7 @@ export default function TaskDetail({ user }) {
                       <div style={{ padding:'.5rem .75rem', borderTop:`1px solid ${border}` }}>
                         <label style={{ display:'inline-flex', alignItems:'center', gap:'.4rem', padding:'.4rem .9rem', background:'#fff', border:`1.5px solid ${color}`, color, borderRadius:'.4rem', cursor: uploadingPhoto ? 'not-allowed' : 'pointer', fontWeight:600, fontSize:'.82rem', opacity: uploadingPhoto ? .6 : 1 }}>
                           🔄 Reemplazar
-                          <input type="file" accept="image/*" style={{ display:'none' }} disabled={uploadingPhoto} onChange={e => { setPhotoCategory(cat); handleUploadPhoto(e); }} />
+                          <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} disabled={uploadingPhoto} onChange={e => { setPhotoCategory(cat); handleUploadPhoto(e); }} />
                         </label>
                       </div>
                     )}
@@ -670,7 +670,7 @@ export default function TaskDetail({ user }) {
                     {!isDone && canContribute && (
                       <label style={{ display:'inline-flex', alignItems:'center', gap:'.4rem', padding:'.65rem 1.3rem', background:color, color:'#fff', borderRadius:'.5rem', cursor: uploadingPhoto ? 'not-allowed' : 'pointer', fontWeight:600, fontSize:'.875rem', opacity: uploadingPhoto ? .6 : 1 }}>
                         {uploadingPhoto && photoCategory === cat ? '⏳ Subiendo...' : `📷 Subir foto`}
-                        <input type="file" accept="image/*" style={{ display:'none' }} disabled={uploadingPhoto} onChange={e => { setPhotoCategory(cat); handleUploadPhoto(e); }} />
+                        <input type="file" accept="image/*" capture="environment" style={{ display:'none' }} disabled={uploadingPhoto} onChange={e => { setPhotoCategory(cat); handleUploadPhoto(e); }} />
                       </label>
                     )}
                   </div>

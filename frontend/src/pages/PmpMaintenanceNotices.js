@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import TableFilterRow from '../components/TableFilterRow';
+import ImagePreviewModal from '../components/ImagePreviewModal';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { uploadPhotoAttachment } from '../services/api';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
@@ -44,13 +46,22 @@ const NOTICE_CATEGORY_OPTIONS = [
   'Aviso general',
 ];
 
+const getTodayDateString = () => {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+};
+const getCurrentTimeString = () => new Date().toTimeString().slice(0, 5);
+
 const EMPTY_NOTICE_FORM = {
   area_filter: '',
   equipo_id: '',
   categoria: 'Aviso general',
   detalle: '',
   sugerencia_texto: '',
-  hora_evidencia: new Date().toTimeString().slice(0, 5),
+  fecha_evidencia: getTodayDateString(),
+  hora_evidencia: getCurrentTimeString(),
   can_continue_working: 'si',
   detection_method: 'Visual',
   has_production_impact: 'no',
@@ -88,26 +99,40 @@ function ReadOnlyBox({ title, text }) {
   );
 }
 
-export default function PmpMaintenanceNotices() {
+export default function PmpMaintenanceNotices({ initialTab }) {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('TODOS');
   const [selectedId, setSelectedId] = useState(null);
+  const requestedTab = initialTab || searchParams.get('tab');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [form, setForm] = useState(EMPTY_NOTICE_FORM);
   const [noticePhotos, setNoticePhotos] = useState([]);
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const [saving, setSaving] = useState(false);
-
   const normalizedRole = getUserRole(user);
   const canReview = canReviewMaintenanceNotices(user);
   const canCreate = canCreateMaintenanceNotices(user);
   const canCreateOnly = canCreate && !canReview;
+  const [activeTab, setActiveTab] = useState(() => {
+    if (requestedTab === 'historial') return 'historial';
+    if (requestedTab === 'gestion' && canReview) return 'gestion';
+    if (requestedTab === 'agregar' && canCreate) return 'agregar';
+    return canReview ? 'gestion' : canCreate ? 'agregar' : 'historial';
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (requestedTab === 'historial') setActiveTab('historial');
+    if (requestedTab === 'gestion' && canReview) setActiveTab('gestion');
+    if (requestedTab === 'agregar' && canCreate) setActiveTab('agregar');
+  }, [requestedTab, canReview, canCreate]);
 
   useEffect(() => {
     let active = true;
@@ -163,18 +188,20 @@ export default function PmpMaintenanceNotices() {
   };
 
   const visibleItems = useMemo(() => {
-    const baseItems = canCreateOnly ? items.filter((item) => isMaintenanceNoticeOwnedByUser(item, user)) : items;
+    const baseItems = activeTab === 'gestion'
+      ? items.filter((item) => item.status === 'Pendiente')
+      : items;
     return baseItems.filter((item) => {
-      const matchesStatus = statusFilter === 'TODOS' || item.status === statusFilter;
-      const haystack = `${item.aviso_codigo} ${item.source_ot_numero} ${item.codigo} ${item.descripcion} ${item.categoria} ${item.detalle} ${item.sugerencia_texto}`.toLowerCase();
+      const matchesStatus = activeTab === 'gestion' || statusFilter === 'TODOS' || item.status === statusFilter;
+      const haystack = `${item.aviso_codigo} ${item.source_ot_numero} ${item.codigo} ${item.descripcion} ${item.categoria} ${item.detalle} ${item.sugerencia_texto} ${item.created_by_name} ${item.created_by}`.toLowerCase();
       const matchesQuery = !query.trim() || haystack.includes(query.toLowerCase());
       return matchesStatus && matchesQuery;
     });
-  }, [canCreateOnly, items, query, statusFilter, user]);
+  }, [activeTab, items, query, statusFilter]);
 
   const noticeTableColumns = useMemo(() => ([
     { id: 'aviso_codigo', getValue: (item) => item.aviso_codigo },
-    { id: 'origen', getValue: (item) => (canCreateOnly ? formatIsoTimestampDisplay(item.created_at) : (item.source_ot_numero || 'Manual')) },
+    { id: 'origen', getValue: (item) => item.source_ot_numero || item.origin || 'Manual' },
     { id: 'fecha_aviso', getValue: (item) => getNoticeDateLabel(item) },
     { id: 'equipo', getValue: (item) => `${item.codigo || ''} ${item.descripcion || ''}`.trim() },
     { id: 'categoria', getValue: (item) => item.categoria || 'Aviso tecnico' },
@@ -182,7 +209,7 @@ export default function PmpMaintenanceNotices() {
     { id: 'detalle', getValue: (item) => item.detalle || item.sugerencia_texto || 'N.A.' },
     { id: 'estado', getValue: (item) => getNoticeStatusLabel(item.status) },
     { id: 'registrado_por', getValue: (item) => item.created_by_name || item.created_by || 'Sistema' },
-  ]), [canCreateOnly]);
+  ]), []);
 
   const {
     filters: noticeFilters,
@@ -197,21 +224,21 @@ export default function PmpMaintenanceNotices() {
   const selected = useMemo(
     () => filteredNoticeRows.find((item) => String(item.id) === String(selectedId))
       || visibleItems.find((item) => String(item.id) === String(selectedId))
-      || (canCreateOnly ? null : items.find((item) => String(item.id) === String(selectedId)))
+      || items.find((item) => String(item.id) === String(selectedId))
       || filteredNoticeRows[0]
       || visibleItems[0]
       || null,
-    [filteredNoticeRows, visibleItems, items, selectedId, canCreateOnly],
+    [filteredNoticeRows, visibleItems, items, selectedId],
   );
 
   const stats = useMemo(() => {
-    const baseItems = canCreateOnly ? items.filter((item) => isMaintenanceNoticeOwnedByUser(item, user)) : items;
     return {
-      pendientes: baseItems.filter((item) => item.status === 'Pendiente').length,
-      aceptados: baseItems.filter((item) => item.status === 'Aceptado').length,
-      rechazados: baseItems.filter((item) => item.status === 'Rechazado').length,
+      pendientes: items.filter((item) => item.status === 'Pendiente').length,
+      aceptados: items.filter((item) => item.status === 'Aceptado').length,
+      rechazados: items.filter((item) => item.status === 'Rechazado').length,
+      mios: items.filter((item) => isMaintenanceNoticeOwnedByUser(item, user)).length,
     };
-  }, [canCreateOnly, items, user]);
+  }, [items, user]);
 
   const equipmentOptions = useMemo(
     () => (Array.isArray(equipmentItems) ? equipmentItems : []).slice().sort((a, b) => `${a.codigo} ${a.descripcion}`.localeCompare(`${b.codigo} ${b.descripcion}`, 'es')),
@@ -279,8 +306,18 @@ export default function PmpMaintenanceNotices() {
       window.alert(getBlockedTextMessage('Texto sugerido del aviso'));
       return;
     }
+    if (!form.fecha_evidencia) {
+      window.alert('Registra la fecha en que se observo la evidencia.');
+      return;
+    }
     if (!form.hora_evidencia) {
       window.alert('Registra la hora en que se observó la evidencia.');
+      return;
+    }
+
+    const evidenceTimestamp = new Date(`${form.fecha_evidencia}T${form.hora_evidencia}`);
+    if (!Number.isNaN(evidenceTimestamp.getTime()) && evidenceTimestamp > new Date()) {
+      window.alert('La fecha y hora de la evidencia no puede ser futura.');
       return;
     }
 
@@ -307,7 +344,9 @@ export default function PmpMaintenanceNotices() {
         categoria: form.categoria || 'Aviso general',
         detalle: form.detalle.trim(),
         sugerencia_texto: (form.sugerencia_texto || form.detalle).trim(),
-        fecha_aviso: new Date().toISOString().slice(0, 10),
+        fecha_aviso: form.fecha_evidencia,
+        fecha_evidencia: form.fecha_evidencia,
+        fecha_registro_aviso: getTodayDateString(),
         hora_evidencia: form.hora_evidencia,
         can_continue_working: form.can_continue_working === 'si',
         detection_method: form.detection_method,
@@ -350,7 +389,7 @@ export default function PmpMaintenanceNotices() {
         },
       }).catch((err) => console.error('Error auditando aviso creado:', err));
       setSelectedId(nextNotice.id);
-      setForm({ ...EMPTY_NOTICE_FORM, hora_evidencia: new Date().toTimeString().slice(0, 5) });
+      setForm({ ...EMPTY_NOTICE_FORM, fecha_evidencia: getTodayDateString(), hora_evidencia: getCurrentTimeString() });
       setNoticePhotos([]);
       setSuccess(`Aviso ${nextNotice.aviso_codigo} registrado correctamente.`);
       if (!selectedId && ordered[0]?.id) setSelectedId(ordered[0].id);
@@ -413,8 +452,10 @@ export default function PmpMaintenanceNotices() {
       ...buildPendingOtFromNotice(selected),
       fecha_aceptacion_aviso: acceptedAt,
       aviso_aceptado_por: acceptedByName,
-      fecha_emision_aviso: selected.fecha_aviso || selected.created_at || '',
+      fecha_emision_aviso: selected.fecha_evidencia || selected.fecha_aviso || selected.created_at || '',
       hora_emision_aviso: selected.hora_evidencia || '',
+      fecha_visualizacion_evento: selected.fecha_evidencia || selected.fecha_aviso || '',
+      hora_visualizacion_evento: selected.hora_evidencia || '',
       aviso_creado_at: selected.created_at || '',
       aviso_origen: {
         ...selected,
@@ -507,6 +548,13 @@ export default function PmpMaintenanceNotices() {
 
   return (
     <div>
+      <ImagePreviewModal
+        src={previewPhoto?.url}
+        alt={previewPhoto?.alt || 'Foto del problema'}
+        title="Foto del problema"
+        onClose={() => setPreviewPhoto(null)}
+      />
+
       <h1 style={{ fontSize: '1.95rem', fontWeight: 700, marginBottom: '.35rem' }}>Avisos de Mantenimiento</h1>
       <p style={{ color: '#6b7280', marginBottom: '1rem' }}>
         {canCreateOnly
@@ -517,20 +565,52 @@ export default function PmpMaintenanceNotices() {
       {canCreateOnly && (
         <ReadOnlyBox
           title={`${normalizedRole === 'SUPERVISOR' ? 'Supervisor' : 'Operador'} en modo operativo`}
-          text="En este perfil puedes crear avisos de mantenimiento y revisar tu propio historial. El resto de módulos del sistema quedan en modo solo lectura."
+          text="En este perfil puedes crear avisos de mantenimiento y revisar el historial general con filtros por responsable. El resto de modulos del sistema quedan en modo solo lectura."
         />
       )}
 
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
 
-      <div className="stats-grid" style={{ marginBottom: '1rem' }}>
-        <StatCard label={canCreateOnly ? 'Mis avisos pendientes' : 'Avisos pendientes'} value={stats.pendientes} color="#b45309" />
-        <StatCard label="Aceptados" value={stats.aceptados} color="#059669" />
-        <StatCard label="Rechazados" value={stats.rechazados} color="#dc2626" />
+      <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+        {canCreate && (
+          <button
+            type="button"
+            className={activeTab === 'agregar' ? 'btn btn-primary' : 'btn btn-secondary'}
+            onClick={() => setActiveTab('agregar')}
+          >
+            Agregar aviso
+          </button>
+        )}
+        {canReview && (
+          <button
+            type="button"
+            className={activeTab === 'gestion' ? 'btn btn-primary' : 'btn btn-secondary'}
+            onClick={() => {
+              setStatusFilter('TODOS');
+              setActiveTab('gestion');
+            }}
+          >
+            Gestion de avisos
+          </button>
+        )}
+        <button
+          type="button"
+          className={activeTab === 'historial' ? 'btn btn-primary' : 'btn btn-secondary'}
+          onClick={() => setActiveTab('historial')}
+        >
+          Historial de avisos
+        </button>
       </div>
 
-      {canCreate && (
+      <div className="stats-grid" style={{ marginBottom: '1rem' }}>
+        <StatCard label="Avisos pendientes" value={stats.pendientes} color="#b45309" />
+        <StatCard label="Aceptados" value={stats.aceptados} color="#059669" />
+        <StatCard label="Rechazados" value={stats.rechazados} color="#dc2626" />
+        <StatCard label="Mis avisos" value={stats.mios} color="#2563eb" />
+      </div>
+
+      {canCreate && activeTab === 'agregar' && (
         <div className="card" style={{ marginBottom: '1rem' }}>
           <h3 className="card-title">Crear aviso de mantenimiento</h3>
           <form onSubmit={createNotice} style={{ display: 'grid', gap: '.85rem' }}>
@@ -560,6 +640,16 @@ export default function PmpMaintenanceNotices() {
                 <select className="form-select" value={form.categoria} onChange={(e) => setForm((prev) => ({ ...prev, categoria: e.target.value }))}>
                   {NOTICE_CATEGORY_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Fecha en que vio la evidencia *</label>
+                <input
+                  className="form-input"
+                  type="date"
+                  max={getTodayDateString()}
+                  value={form.fecha_evidencia}
+                  onChange={(e) => setForm((prev) => ({ ...prev, fecha_evidencia: e.target.value }))}
+                />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Hora en que vio la evidencia *</label>
@@ -673,7 +763,7 @@ export default function PmpMaintenanceNotices() {
                 </div>
                 <label className="btn btn-secondary" style={{ cursor: uploadingPhoto ? 'not-allowed' : 'pointer', opacity: uploadingPhoto ? .65 : 1 }}>
                   {uploadingPhoto ? 'Subiendo...' : 'Agregar foto'}
-                  <input type="file" accept="image/*" style={{ display: 'none' }} disabled={uploadingPhoto} onChange={uploadNoticePhoto} />
+                  <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} disabled={uploadingPhoto} onChange={uploadNoticePhoto} />
                 </label>
               </div>
               {noticePhotos.length ? (
@@ -704,22 +794,31 @@ export default function PmpMaintenanceNotices() {
         </div>
       )}
 
+      {activeTab !== 'agregar' && (
+        <>
       <div className="card" style={{ marginBottom: '1rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 1fr) minmax(180px, 220px)', gap: '.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: activeTab === 'gestion' ? '1fr' : 'minmax(240px, 1fr) minmax(180px, 220px)', gap: '.75rem' }}>
           <div>
-            <label className="form-label">{canCreateOnly ? 'Buscar en mis avisos' : 'Buscar aviso'}</label>
-            <input className="form-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Código, equipo, OT origen o detalle" />
+            <label className="form-label">{activeTab === 'gestion' ? 'Buscar aviso pendiente' : 'Buscar en historial'}</label>
+            <input className="form-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Codigo, equipo, OT origen, detalle o registrado por" />
           </div>
-          <div>
-            <label className="form-label">Estado</label>
-            <select className="form-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="TODOS">Todos</option>
-              <option value="Pendiente">Pendiente</option>
-              <option value="Aceptado">Aceptado</option>
-              <option value="Rechazado">Rechazado</option>
-            </select>
-          </div>
+          {activeTab === 'historial' && (
+            <div>
+              <label className="form-label">Estado</label>
+              <select className="form-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <option value="TODOS">Todos</option>
+                <option value="Pendiente">Pendiente</option>
+                <option value="Aceptado">Aceptado</option>
+                <option value="Rechazado">Rechazado</option>
+              </select>
+            </div>
+          )}
         </div>
+        {activeTab === 'historial' && (
+          <p style={{ margin: '.6rem 0 0', color: '#64748b', fontSize: '.9rem' }}>
+            Usa los filtros de la tabla, especialmente Registrado por, para consultar tus avisos o los de tus companeros.
+          </p>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(320px, .8fr)', gap: '1rem' }}>
@@ -729,7 +828,7 @@ export default function PmpMaintenanceNotices() {
               <tr style={{ background: '#0b5c8c', color: '#fff' }}>
                 {[
                   'Aviso',
-                  canCreateOnly ? 'Creado' : 'OT origen',
+                  activeTab === 'historial' ? 'Origen' : 'OT origen',
                   'Fecha aviso',
                   'Equipo',
                   'Categoria',
@@ -752,7 +851,7 @@ export default function PmpMaintenanceNotices() {
                 >
                   <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem', fontWeight: 700 }}>{item.aviso_codigo}</td>
                   <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>
-                    {canCreateOnly ? formatIsoTimestampDisplay(item.created_at) : (item.source_ot_numero || 'Manual')}
+                    {item.source_ot_numero || item.origin || 'Manual'}
                   </td>
                   <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{getNoticeDateLabel(item)}</td>
                   <td style={{ border: '1px solid #d1d5db', padding: '.45rem .5rem' }}>{item.codigo} - {item.descripcion}</td>
@@ -790,7 +889,7 @@ export default function PmpMaintenanceNotices() {
                 <div><strong>Equipo:</strong> {selected.codigo || 'N.A.'} - {selected.descripcion || 'N.A.'}</div>
                 <div><strong>Área:</strong> {selected.area_trabajo || 'N.A.'}</div>
                 <div><strong>OT origen:</strong> {selected.source_ot_numero || 'Aviso manual'}</div>
-                <div><strong>Fecha aviso:</strong> {getNoticeDateLabel(selected)}</div>
+                <div><strong>Fecha evidencia:</strong> {getNoticeDateLabel(selected)}</div>
                 <div><strong>Hora evidencia:</strong> {formatTimeDisplay(selected.hora_evidencia, 'N.A.')}</div>
                 <div><strong>Criticidad sugerida:</strong> {selected.criticidad_aviso || 'N.A.'}</div>
                 <div><strong>Prioridad sugerida OT:</strong> {selected.prioridad_sugerida || 'N.A.'}</div>
@@ -811,9 +910,14 @@ export default function PmpMaintenanceNotices() {
                     <strong>Fotos del problema:</strong>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '.55rem', marginTop: '.45rem' }}>
                       {getNoticeProblemPhotos(selected).map((photo, index) => (
-                        <a key={photo.id || photo.filename || index} href={photo.url} target="_blank" rel="noreferrer" style={{ display: 'block', border: '1px solid #d1d5db', borderRadius: '.55rem', overflow: 'hidden', background: '#fff' }}>
+                        <button
+                          key={photo.id || photo.filename || index}
+                          type="button"
+                          onClick={() => setPreviewPhoto({ url: photo.url, alt: photo.caption || `Foto problema ${index + 1}` })}
+                          style={{ display: 'block', border: '1px solid #d1d5db', borderRadius: '.55rem', overflow: 'hidden', background: '#fff', padding: 0, cursor: 'zoom-in' }}
+                        >
                           <img src={photo.url} alt={photo.caption || `Foto problema ${index + 1}`} style={{ width: '100%', height: '90px', objectFit: 'cover', display: 'block' }} />
-                        </a>
+                        </button>
                       ))}
                     </div>
                   </div>
@@ -832,12 +936,12 @@ export default function PmpMaintenanceNotices() {
                 {selected.rejection_reason && <div><strong>Motivo rechazo:</strong> {selected.rejection_reason}</div>}
               </div>
 
-              {canReview && (
+              {activeTab === 'gestion' && canReview && selected.status === 'Pendiente' && (
                 <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap' }}>
-                  <button type="button" className="btn btn-primary" disabled={selected.status !== 'Pendiente'} onClick={acceptNotice}>
+                  <button type="button" className="btn btn-primary" onClick={acceptNotice}>
                     Aceptar aviso
                   </button>
-                  <button type="button" className="btn btn-danger" disabled={selected.status !== 'Pendiente'} onClick={rejectNotice}>
+                  <button type="button" className="btn btn-danger" onClick={rejectNotice}>
                     Rechazar aviso
                   </button>
                 </div>
@@ -848,6 +952,8 @@ export default function PmpMaintenanceNotices() {
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

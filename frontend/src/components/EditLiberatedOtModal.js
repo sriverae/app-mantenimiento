@@ -3,6 +3,8 @@ import { getAlertConsistencySummary } from '../utils/otConsistency';
 import { formatDateDisplay } from '../utils/dateFormat';
 import ConfigurableSelectField from './ConfigurableSelectField';
 import TableFilterRow from './TableFilterRow';
+import CatalogSearchSelect from './CatalogSearchSelect';
+import ActivityListEditor from './ActivityListEditor';
 import useConfigurableLists from '../hooks/useConfigurableLists';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import { filterRowsByColumns } from '../utils/tableFilters';
@@ -455,8 +457,13 @@ export default function EditLiberatedOtModal({
                 />
               </div>
               <div style={{ gridColumn: '1 / -1' }}>
-                {renderLabel('actividad', 'Actividad')}
-                <textarea className="form-textarea" style={getInputStyle('actividad')} value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} />
+                <ActivityListEditor
+                  label={renderLabel('actividad', 'Actividad')}
+                  value={form.actividad}
+                  onChange={(nextValue) => setForm({ ...form, actividad: nextValue })}
+                  inputStyle={getInputStyle('actividad')}
+                  placeholder="Agregar actividad de mantenimiento"
+                />
               </div>
               <div>
                 {renderLabel('fecha_ejecutar', 'Fecha a ejecutar')}
@@ -488,8 +495,23 @@ export default function EditLiberatedOtModal({
 
         {tab === 'personal' && (
           <div className="card" style={{ marginBottom: 0, background: '#f8fafc' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '.7rem', marginBottom: '.8rem' }}>
-              <select className="form-select" value={selectedPersonalId} onChange={(e) => setSelectedPersonalId(e.target.value)}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '.7rem', marginBottom: '.8rem', alignItems: 'end' }}>
+              <CatalogSearchSelect
+                label="Buscar personal"
+                items={eligibleAssignableRrhh}
+                value={selectedPersonalId}
+                onChange={setSelectedPersonalId}
+                placeholder="Selecciona personal..."
+                textPlaceholder="Buscar por codigo, nombre, especialidad, tipo o empresa"
+                searchFields={['codigo', 'nombres_apellidos', 'cargo', 'especialidad', 'tipo_personal', 'empresa']}
+                filters={[
+                  { id: 'tipo_personal', getValue: (item) => item.tipo_personal || 'Propio', allLabel: 'Todos los tipos' },
+                  { id: 'especialidad', getValue: (item) => item.especialidad || 'N.A.', allLabel: 'Todas' },
+                  { id: 'empresa', getValue: (item) => item.empresa || 'N.A.', allLabel: 'Todas' },
+                ]}
+                optionLabel={(item) => `${item.codigo || 'S/C'} - ${item.nombres_apellidos || 'Sin nombre'} | ${item.especialidad || 'N.A.'}${item.tipo_personal === 'Tercero' ? ` | ${item.empresa || 'Tercero'}` : ''}`}
+              />
+              <select className="form-select" style={{ display: 'none' }} value={selectedPersonalId} onChange={(e) => setSelectedPersonalId(e.target.value)}>
                 <option value="">Selecciona personal...</option>
                 {eligibleAssignableRrhh.map((item) => (
                   <option key={item.id} value={item.id}>{item.codigo} - {item.nombres_apellidos}{item.tipo_personal === 'Tercero' ? ` · ${item.empresa || 'Tercero'}` : ''}</option>
@@ -523,14 +545,32 @@ export default function EditLiberatedOtModal({
 
         {tab === 'materiales' && (
           <div className="card" style={{ marginBottom: 0, background: '#f8fafc' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px auto', gap: '.7rem', marginBottom: '.8rem' }}>
-              <select className="form-select" value={selectedMaterialId} onChange={(e) => setSelectedMaterialId(e.target.value)}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 140px auto', gap: '.7rem', marginBottom: '.8rem', alignItems: 'end' }}>
+              <CatalogSearchSelect
+                label="Buscar material"
+                items={materialsCatalog}
+                value={selectedMaterialId}
+                onChange={setSelectedMaterialId}
+                placeholder="Selecciona material..."
+                textPlaceholder="Buscar por codigo, descripcion, unidad o ubicacion"
+                searchFields={['codigo', 'descripcion', 'unidad', 'ubicacion', 'categoria', 'tipo']}
+                filters={[
+                  { id: 'categoria', getValue: (item) => item.categoria || item.tipo || 'N.A.', allLabel: 'Todas' },
+                  { id: 'unidad', getValue: (item) => item.unidad || 'UND', allLabel: 'Todas' },
+                  { id: 'ubicacion', getValue: (item) => item.ubicacion || 'N.A.', allLabel: 'Todas' },
+                ]}
+                optionLabel={(item) => `${item.codigo || 'S/C'} - ${item.descripcion || 'Sin descripcion'} | Stock: ${Number(item.stock) || 0} ${item.unidad || 'UND'}`}
+              />
+              <select className="form-select" style={{ display: 'none' }} value={selectedMaterialId} onChange={(e) => setSelectedMaterialId(e.target.value)}>
                 <option value="">Selecciona material...</option>
                 {materialsCatalog.map((item) => (
                   <option key={item.id} value={item.id}>{item.codigo} - {item.descripcion}</option>
                 ))}
               </select>
-              <input type="number" min="1" className="form-input" value={cantidadMaterial} onChange={(e) => setCantidadMaterial(e.target.value)} />
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Cantidad</label>
+                <input type="number" min="1" className="form-input" value={cantidadMaterial} onChange={(e) => setCantidadMaterial(e.target.value)} />
+              </div>
               <button type="button" className="btn btn-primary" onClick={addMaterial}>Agregar</button>
             </div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>

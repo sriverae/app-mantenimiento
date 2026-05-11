@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
 import TableFilterRow from '../components/TableFilterRow';
+import ActivityListEditor from '../components/ActivityListEditor';
+import ImagePreviewModal from '../components/ImagePreviewModal';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import {
   acquireWorkNotificationLock,
@@ -740,7 +742,15 @@ function EditLiberatedOtModal({
                   selectStyle={getInputStyle('responsable')}
                 />
               </div>
-              <div style={{ gridColumn: '1 / -1' }}>{renderLabel('actividad', 'Actividad')}<textarea className="form-textarea" style={getInputStyle('actividad')} value={form.actividad} onChange={(e) => setForm({ ...form, actividad: e.target.value })} /></div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <ActivityListEditor
+                  label={renderLabel('actividad', 'Actividad')}
+                  value={form.actividad}
+                  onChange={(nextValue) => setForm({ ...form, actividad: nextValue })}
+                  inputStyle={getInputStyle('actividad')}
+                  placeholder="Agregar actividad de mantenimiento"
+                />
+              </div>
               <div>{renderLabel('fecha_ejecutar', 'Fecha a ejecutar')}<input className="form-input" style={getInputStyle('fecha_ejecutar')} type="date" value={form.fecha_ejecutar} onChange={(e) => setForm({ ...form, fecha_ejecutar: e.target.value })} /></div>
               <div>{renderLabel('fecha_inicio_prop', 'Inicio propuesto OT')}<input className="form-input" style={getInputStyle('fecha_inicio_prop')} type="date" value={form.fecha_inicio_prop} onChange={(e) => setForm({ ...form, fecha_inicio_prop: e.target.value })} /></div>
               <div>{renderLabel('fecha_fin_prop', 'Fin propuesto OT')}<input className="form-input" style={getInputStyle('fecha_fin_prop')} type="date" value={form.fecha_fin_prop} onChange={(e) => setForm({ ...form, fecha_fin_prop: e.target.value })} /></div>
@@ -829,7 +839,7 @@ function EditLiberatedOtModal({
 }
 
 function RegisterWorkModal({
-  alert, rrhhItems, materialsCatalog, initialReport = null, canCreateServiceReport = false, onClose, onSave,
+  alert, rrhhItems, materialsCatalog, initialReport = null, canCreateServiceReport = false, saving = false, onClose, onSave,
 }) {
   const initialTechs = (alert.personal_mantenimiento || '')
     .split(',')
@@ -896,6 +906,7 @@ function RegisterWorkModal({
   const [serviceAllInclusive, setServiceAllInclusive] = useState(!!initialReport?.serviceAllInclusive);
   const [evidencePhotos, setEvidencePhotos] = useState(() => getWorkReportEvidencePhotos(initialReport || {}));
   const [uploadingEvidenceSlot, setUploadingEvidenceSlot] = useState('');
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   const maxHorasSugeridas = useMemo(() => {
     if (!fechaInicio || !horaInicio || !fechaFin || !horaFin) return 0;
     const start = new Date(`${fechaInicio}T${horaInicio}:00`);
@@ -1247,6 +1258,12 @@ function RegisterWorkModal({
 
   return (
     <>
+      <ImagePreviewModal
+        src={previewPhoto?.url}
+        alt={previewPhoto?.alt || 'Evidencia fotografica'}
+        title="Evidencia fotografica"
+        onClose={() => setPreviewPhoto(null)}
+      />
       <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.45)', display: 'grid', placeItems: 'center', zIndex: 1000, padding: '1rem' }}>
         <div className="card" style={{ width: 'min(1160px, 98vw)', maxHeight: '95vh', overflow: 'auto', padding: '1rem 1.1rem', marginBottom: 0 }}>
           <h3 className="card-title" style={{ marginBottom: '.35rem' }}>
@@ -1531,12 +1548,18 @@ function RegisterWorkModal({
                       <span>{slot.title}{isServiceReport ? '' : ' *'}</span>
                       <label className="btn btn-secondary btn-sm" style={{ cursor: uploadingEvidenceSlot ? 'not-allowed' : 'pointer', opacity: uploadingEvidenceSlot ? .65 : 1 }}>
                         {uploadingEvidenceSlot === slot.key ? 'Subiendo...' : (src ? 'Reemplazar' : 'Subir')}
-                        <input type="file" accept="image/*" style={{ display: 'none' }} disabled={!!uploadingEvidenceSlot} onChange={(event) => uploadEvidencePhoto(slot.key, event)} />
+                        <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} disabled={!!uploadingEvidenceSlot} onChange={(event) => uploadEvidencePhoto(slot.key, event)} />
                       </label>
                     </div>
                     {src ? (
                       <>
-                        <img src={src} alt={slot.title} style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} />
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPhoto({ url: src, alt: slot.title })}
+                          style={{ display: 'block', width: '100%', border: 0, padding: 0, background: 'transparent', cursor: 'zoom-in' }}
+                        >
+                          <img src={src} alt={slot.title} style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} />
+                        </button>
                         <div style={{ padding: '.5rem .65rem', color: '#475569', fontSize: '.86rem' }}>
                           {photo.original_name || photo.caption || 'Evidencia cargada'}
                         </div>
@@ -1587,8 +1610,10 @@ function RegisterWorkModal({
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem', flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancelar</button>
-            <button type="button" className="btn btn-primary" onClick={handleSubmit}>Guardar registro</button>
+            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancelar</button>
+            <button type="button" className="btn btn-primary" onClick={handleSubmit} disabled={saving || !!uploadingEvidenceSlot}>
+              {saving ? 'Guardando...' : 'Guardar registro'}
+            </button>
           </div>
         </div>
       </div>
@@ -1641,6 +1666,7 @@ export default function WorkNotifications({ user }) {
   const [expandedOtIds, setExpandedOtIds] = useState({});
   const [mobileActionMenu, setMobileActionMenu] = useState(null);
   const [mobileVisibleCount, setMobileVisibleCount] = useState(12);
+  const [savingWorkReport, setSavingWorkReport] = useState(false);
   const [filterArea, setFilterArea] = useState('');
   const [filterWorker, setFilterWorker] = useState('');
   const [filterDate, setFilterDate] = useState('');
@@ -2052,6 +2078,7 @@ export default function WorkNotifications({ user }) {
   };
 
   const saveWorkReport = async (payload) => {
+    if (savingWorkReport) return;
     if (isReadOnly) return;
     if (!selectedAlert) return;
     if (blockIfSelectedAlertLocked('guardar cambios')) return;
@@ -2117,6 +2144,7 @@ export default function WorkNotifications({ user }) {
     const nextReports = isEditing
       ? workReports.map((item) => (item.id === editingReportId ? report : item))
       : [...workReports, report];
+    setSavingWorkReport(true);
     try {
       await persistWorkReports(nextReports);
       await saveSharedDocument(MATERIALES_KEY, discountedCatalog.data);
@@ -2130,9 +2158,11 @@ export default function WorkNotifications({ user }) {
       setShowRegisterModal(false);
       setEditingReportId(null);
       await releaseSelectedAlertLock(selectedAlert.id);
-      window.alert('Trabajo registrado correctamente.');
+      window.alert(isEditing ? 'Notificacion actualizada correctamente.' : 'Notificacion guardada correctamente.');
     } catch (err) {
       console.error('Error guardando notificacion de trabajo:', err);
+    } finally {
+      setSavingWorkReport(false);
     }
   };
 
@@ -2266,18 +2296,21 @@ const handleDeleteReport = async (reportId) => {
     await persistAlerts(nextAlerts);
   };
 
-  const handleOpenRegister = async () => {
+  const handleOpenRegister = async (targetAlert = selectedAlert) => {
     if (isReadOnly) return;
-    if (!selectedAlert || selectedAlert.status_ot !== 'Liberada') {
+    const row = targetAlert || selectedAlert;
+    if (!row || row.status_ot !== 'Liberada') {
       window.alert('Solo puedes registrar trabajo en una OT que esté Liberada.');
       return;
     }
-    if (blockIfSelectedAlertLocked('registrar trabajo')) return;
-    if (isTechnician && !selectedAlertAssignedToMe) {
+    const targetAssignedToMe = isAlertAssignedToUser(row, user);
+    if (String(selectedAlert?.id) === String(row.id) && blockIfSelectedAlertLocked('registrar trabajo')) return;
+    if (isTechnician && !targetAssignedToMe) {
       window.alert('Esta OT esta asignada a otro companero. Puedes verla, pero solo podras registrar trabajo cuando te la asignes.');
       return;
     }
-    if (!(await acquireSelectedAlertLock('registrar trabajo'))) return;
+    setSelectedAlertId(row.id);
+    if (!(await acquireSelectedAlertLock('registrar trabajo', row))) return;
     const [rrhhData, materialsData] = await Promise.all([
       loadSharedDocument(RRHH_KEY, RRHH_FALLBACK),
       loadSharedDocument(MATERIALES_KEY, MATERIALES_FALLBACK),
@@ -2527,7 +2560,7 @@ const handleDeleteReport = async (reportId) => {
     };
     await Promise.all([
       saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]),
-      saveSharedDocument(NOTICES_KEY, [...generatedNotices, ...(Array.isArray(existingNotices) ? existingNotices : [])]),
+      saveSharedDocument(NOTICES_KEY, Array.isArray(existingNotices) ? existingNotices : []),
     ]);
     const nextAlerts = alerts.filter((item) => String(item.id) !== String(selectedAlert.id));
     await persistAlerts(nextAlerts);
@@ -2645,7 +2678,7 @@ const handleDeleteReport = async (reportId) => {
       await Promise.all([
         saveSharedDocument(OT_WORK_REPORTS_KEY, mergedWorkReports),
         saveSharedDocument(OT_HISTORY_KEY, [closedRow, ...history]),
-        saveSharedDocument(NOTICES_KEY, [...generatedNotices, ...(Array.isArray(existingNotices) ? existingNotices : [])]),
+        saveSharedDocument(NOTICES_KEY, Array.isArray(existingNotices) ? existingNotices : []),
       ]);
       setWorkReports(mergedWorkReports);
       setError('');
@@ -2992,12 +3025,27 @@ const handleDeleteReport = async (reportId) => {
                 </div>
               )}
 
-              {isExpanded && reportRows.map((report, idx) => (
+              {isExpanded && reportRows.map((report, idx) => {
+                const reportLocked = item.status_ot === 'Solicitud de cierre';
+                const canModifyReport = !isReadOnly && (normalizedRole !== 'TECNICO' || isWorkReportOwnedByUser(report, user));
+                return (
                 <div key={`mobile_report_${report.id}`} style={{ borderTop: '1px solid #e5e7eb', paddingTop: '.7rem', color: '#475569', lineHeight: 1.6 }}>
                   <strong style={{ color: '#0f172a' }}>Sub-registro #{idx + 1}</strong><br />
                   {report.reportCode || `NT${idx + 1}-${item.ot_numero || item.id}`} · {formatDateTimeDisplay(report.fechaInicio || '', report.horaInicio || '', 'N.A.')} a {formatDateTimeDisplay(report.fechaFin || '', report.horaFin || '', 'N.A.')}
+                    {!reportLocked && canModifyReport && (
+                      <div style={{ display: 'flex', gap: '.45rem', flexWrap: 'wrap', marginTop: '.6rem' }}>
+                        <button type="button" className="btn btn-secondary btn-sm" disabled={selectedAlertLockedByOthers && String(selectedAlert?.id) === String(item.id)} onClick={(event) => { event.stopPropagation(); handleEditReport(item.id, report.id); }}>Editar</button>
+                        <button type="button" className="btn btn-danger btn-sm" disabled={selectedAlertLockedByOthers && String(selectedAlert?.id) === String(item.id)} onClick={(event) => { event.stopPropagation(); handleDeleteReport(report.id); }}>Eliminar</button>
+                      </div>
+                    )}
+                    {reportLocked && (
+                      <div style={{ marginTop: '.45rem', color: '#b45309', fontWeight: 700, fontSize: '.84rem' }}>
+                        Bloqueado por solicitud de cierre.
+                      </div>
+                    )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}
@@ -3276,6 +3324,7 @@ const handleDeleteReport = async (reportId) => {
           materialsCatalog={materialsCatalog}
           initialReport={editingReport}
           canCreateServiceReport={canCreateServiceReports}
+          saving={savingWorkReport}
           onClose={async () => {
             setShowRegisterModal(false);
             setEditingReportId(null);
@@ -3328,5 +3377,6 @@ const handleDeleteReport = async (reportId) => {
     </div>
   );
 }
+
 
 

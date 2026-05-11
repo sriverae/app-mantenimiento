@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import ConfigurableSelectField from '../components/ConfigurableSelectField';
 import ReadOnlyAccessNotice from '../components/ReadOnlyAccessNotice';
 import TableFilterRow from '../components/TableFilterRow';
+import ActivityListEditor from '../components/ActivityListEditor';
 import useTableColumnFilters from '../hooks/useTableColumnFilters';
 import useConfigurableLists from '../hooks/useConfigurableLists';
 import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
@@ -1153,10 +1154,6 @@ export default function PmpFechas() {
               <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: '.85rem' }}>Datos generales del plan</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '.85rem' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Codigo</label>
-                  <input className="form-input" value={form.codigo} onChange={(e) => setForm({ ...form, codigo: e.target.value.toUpperCase() })} placeholder="Se completa desde el equipo" />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
                   <ConfigurableSelectField
                     label="Responsable *"
                     value={form.responsable}
@@ -1199,48 +1196,82 @@ export default function PmpFechas() {
               </div>
             </div>
 
-            <div style={{ padding: '1rem', borderRadius: '1rem', border: '1px solid #e5e7eb', background: '#fff' }}>
-              <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: '.85rem' }}>Seleccion de equipos</div>
+            <div style={{ padding: '1rem', borderRadius: '1rem', border: '1px solid #dbeafe', background: '#f8fbff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '.85rem' }}>
+                <div>
+                  <div style={{ fontWeight: 900, color: '#0f172a', marginBottom: '.2rem' }}>Equipos incluidos en el plan</div>
+                  <div style={{ color: '#64748b', lineHeight: 1.55 }}>
+                    Busca y marca uno o varios equipos. El codigo del plan se tomara automaticamente del equipo seleccionado.
+                  </div>
+                </div>
+                <span style={{ borderRadius: '999px', background: '#dbeafe', color: '#1d4ed8', padding: '.25rem .65rem', fontWeight: 800, fontSize: '.82rem' }}>
+                  {selectedEquipmentIds.length} seleccionado(s)
+                </span>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '.65rem', marginBottom: '.8rem' }}>
                 <select className="form-select" value={equipmentAreaFilter} onChange={(e) => setEquipmentAreaFilter(e.target.value)}>
                   <option value="">Area (todas)</option>
                   {uniqueAreas.map((area) => <option key={area} value={area}>{area}</option>)}
                 </select>
-                <input className="form-input" placeholder="Filtro por codigo" value={equipmentCodeFilter} onChange={(e) => setEquipmentCodeFilter(e.target.value)} />
-                <input className="form-input" placeholder="Buscar por nombre o area..." value={equipmentTextFilter} onChange={(e) => setEquipmentTextFilter(e.target.value)} />
+                <input className="form-input" placeholder="Codigo del equipo, ej: IAISPL1" value={equipmentCodeFilter} onChange={(e) => setEquipmentCodeFilter(e.target.value)} />
+                <input className="form-input" placeholder="Nombre, descripcion o area del equipo" value={equipmentTextFilter} onChange={(e) => setEquipmentTextFilter(e.target.value)} />
               </div>
 
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Equipo *</label>
-                <select
-                  className="form-select"
-                  multiple
-                  size={Math.min(8, Math.max(4, filteredEquipos.length || 4))}
-                  required
-                  value={selectedEquipmentIds}
-                  onChange={(e) => {
-                    const nextSelected = Array.from(e.target.selectedOptions).map((option) => option.value);
-                    setSelectedEquipmentIds(nextSelected);
-                    if (nextSelected.length > 0) {
-                      const selectedEquipment = equipos.find((item) => String(item.id) === String(nextSelected[0]));
-                      if (selectedEquipment) {
-                        setForm((prev) => ({
-                          ...prev,
-                          codigo: selectedEquipment.codigo || prev.codigo,
-                          equipo: selectedEquipment.descripcion || prev.equipo,
-                        }));
-                      }
-                    }
-                  }}
-                >
-                  {filteredEquipos.map((eq) => (
-                    <option key={eq.id} value={String(eq.id)}>
-                      {eq.codigo} | {eq.descripcion} {eq.area_trabajo ? `(${eq.area_trabajo})` : ''}
-                    </option>
-                  ))}
-                </select>
-                <p style={{ color: '#6b7280', fontSize: '.82rem', marginTop: '.35rem' }}>
-                  Seleccion multiple habilitada: puedes crear el mismo plan para varios equipos en una sola operacion.
+                <label className="form-label">Resultados de busqueda *</label>
+                <div style={{ display: 'grid', gap: '.55rem', maxHeight: '300px', overflow: 'auto', paddingRight: '.15rem' }}>
+                  {filteredEquipos.map((eq) => {
+                    const checked = selectedEquipmentIds.includes(String(eq.id));
+                    return (
+                      <label
+                        key={eq.id}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'auto 1fr',
+                          gap: '.65rem',
+                          alignItems: 'center',
+                          border: checked ? '1px solid #2563eb' : '1px solid #dbe4f0',
+                          borderRadius: '.85rem',
+                          padding: '.7rem .8rem',
+                          background: checked ? '#eff6ff' : '#fff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            const id = String(eq.id);
+                            const nextSelected = event.target.checked
+                              ? Array.from(new Set([...selectedEquipmentIds, id]))
+                              : selectedEquipmentIds.filter((item) => item !== id);
+                            setSelectedEquipmentIds(nextSelected);
+                            const firstSelected = equipos.find((item) => String(item.id) === String(nextSelected[0]));
+                            if (firstSelected) {
+                              setForm((prev) => ({
+                                ...prev,
+                                codigo: firstSelected.codigo || prev.codigo,
+                                equipo: firstSelected.descripcion || prev.equipo,
+                              }));
+                            }
+                          }}
+                        />
+                        <span>
+                          <strong style={{ color: '#0f172a' }}>{eq.codigo || 'Sin codigo'}</strong>
+                          <span style={{ color: '#334155' }}> | {eq.descripcion || 'Equipo sin descripcion'}</span>
+                          <small style={{ display: 'block', color: '#64748b', marginTop: '.15rem' }}>{eq.area_trabajo || 'Area N.A.'}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {!filteredEquipos.length && (
+                    <div style={{ border: '1px dashed #cbd5e1', borderRadius: '.85rem', padding: '1rem', color: '#64748b', textAlign: 'center' }}>
+                      No hay equipos para los filtros aplicados.
+                    </div>
+                  )}
+                </div>
+                <p style={{ color: '#6b7280', fontSize: '.82rem', marginTop: '.45rem' }}>
+                  Si marcas varios equipos, se creara el mismo plan para cada uno con su propio codigo.
                 </p>
               </div>
             </div>
@@ -1355,12 +1386,12 @@ export default function PmpFechas() {
                         <div style={{ color: '#334155', fontWeight: 700 }}>
                           {packagePreview.codigo || 'Sin codigo'} | {packagePreview.vc} | {packagePreview.nombre || 'Paquete sin nombre'}
                         </div>
-                        <textarea
-                          className="form-input"
-                          rows={6}
+                        <ActivityListEditor
+                          label=""
                           value={packagePreview.actividades}
-                          onChange={(e) => setPackageActivitiesDraft(e.target.value)}
-                          placeholder="Edita aqui las actividades del paquete para este plan."
+                          onChange={setPackageActivitiesDraft}
+                          placeholder="Agregar actividad del paquete"
+                          emptyText="Este paquete no tiene actividades registradas."
                         />
                         <div style={{ color: '#64748b', fontSize: '.82rem' }}>
                           Puedes modificar las actividades solo para este plan sin alterar el paquete base.
@@ -1392,12 +1423,12 @@ export default function PmpFechas() {
 
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">Detalle de actividades manuales</label>
-                    <textarea
-                      className="form-input"
-                      rows={5}
+                    <ActivityListEditor
+                      label=""
                       value={manualActivitiesDraft}
-                      onChange={(e) => setManualActivitiesDraft(e.target.value)}
-                      placeholder="Escribe una o varias actividades, una por linea."
+                      onChange={setManualActivitiesDraft}
+                      placeholder="Agregar detalle de actividad manual"
+                      emptyText="Sin detalle de actividades manuales."
                     />
                     <p style={{ color: '#6b7280', fontSize: '.82rem', marginTop: '.35rem' }}>
                       Si lo dejas vacio, el sistema usara el nombre de la actividad como detalle principal.

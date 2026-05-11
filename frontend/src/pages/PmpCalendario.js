@@ -1,9 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { loadSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { loadSharedDocument, saveSharedDocument, SHARED_DOCUMENT_KEYS } from '../services/sharedDocuments';
+import { useAuth } from '../context/AuthContext';
 import { getDatePlanOccurrencesInWindow } from '../utils/datePlanCycle';
+import { applyOtReprogramming } from '../utils/otReprogramming';
+import { ModalCrearOt } from './PmpGestionOt';
 
 const PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlans;
 const KM_PLANS_KEY = SHARED_DOCUMENT_KEYS.maintenancePlansKm;
+const PACKAGES_KEY = SHARED_DOCUMENT_KEYS.maintenancePackages;
 const EQUIPOS_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
 const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
 const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
@@ -24,6 +28,14 @@ const STATUS_META = {
 
 const PRIORITY_ORDER = { Alta: 0, Media: 1, Baja: 2 };
 
+const getTodayDateKey = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const isKmPlanInAlertWindow = (plan) => {
   const actual = Number(plan.km_actual) || 0;
   const target = Number(plan.proximo_km) || 0;
@@ -32,6 +44,15 @@ const isKmPlanInAlertWindow = (plan) => {
 };
 
 const buildKmAlertId = (plan) => `km_${plan.id}_${Number(plan.proximo_km) || 0}`;
+
+const addDaysToDateKey = (dateKey, days) => {
+  const parsed = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return dateKey;
+  parsed.setDate(parsed.getDate() + Number(days || 0));
+  return parsed.toISOString().slice(0, 10);
+};
+
+const buildManualCalendarOtId = () => `calendar_manual_${Date.now()}`;
 
 const buildCalendarCells = (year, month) => {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -67,25 +88,40 @@ const compareMaintenanceItems = (a, b) => {
   return String(a.codigo || '').localeCompare(String(b.codigo || ''));
 };
 
+const isItemInOtNoticeWindow = (item, todayKey = getTodayDateKey()) => {
+  const start = String(item?.alerta_desde || item?.fecha || '').slice(0, 10);
+  const end = String(item?.fecha || item?.fecha_programada || '').slice(0, 10);
+  if (!start || !end) return true;
+  return start <= todayKey && todayKey <= end;
+};
+
 export default function PmpCalendario() {
+  const { hasMinRole, user } = useAuth();
   const [plans, setPlans] = useState([]);
   const [plansKm, setPlansKm] = useState([]);
   const [equipos, setEquipos] = useState([]);
+  const [packages, setPackages] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [history, setHistory] = useState([]);
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [selectedDate, setSelectedDate] = useState(null);
+  const [scheduleAction, setScheduleAction] = useState(null);
+  const [newScheduleDate, setNewScheduleDate] = useState('');
+  const [scheduleReason, setScheduleReason] = useState('');
+  const [showManualOtModal, setShowManualOtModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const canManageSchedule = hasMinRole('ENCARGADO');
 
   useEffect(() => {
     let active = true;
     const load = async () => {
       setLoading(true);
-      const [loadedPlans, loadedPlansKm, loadedEquipos, loadedAlerts, loadedHistory] = await Promise.all([
+      const [loadedPlans, loadedPlansKm, loadedEquipos, loadedPackages, loadedAlerts, loadedHistory] = await Promise.all([
         loadSharedDocument(PLANS_KEY, []),
         loadSharedDocument(KM_PLANS_KEY, []),
         loadSharedDocument(EQUIPOS_KEY, []),
+        loadSharedDocument(PACKAGES_KEY, []),
         loadSharedDocument(OT_ALERTS_KEY, []),
         loadSharedDocument(OT_HISTORY_KEY, []),
       ]);
@@ -93,6 +129,7 @@ export default function PmpCalendario() {
       setPlans(Array.isArray(loadedPlans) ? loadedPlans : []);
       setPlansKm(Array.isArray(loadedPlansKm) ? loadedPlansKm : []);
       setEquipos(Array.isArray(loadedEquipos) ? loadedEquipos : []);
+      setPackages(Array.isArray(loadedPackages) ? loadedPackages : []);
       setAlerts(Array.isArray(loadedAlerts) ? loadedAlerts : []);
       setHistory(Array.isArray(loadedHistory) ? loadedHistory : []);
       setLoading(false);
@@ -129,10 +166,18 @@ export default function PmpCalendario() {
             area_trabajo: eq?.area_trabajo || existingAlert?.area_trabajo || 'N.A.',
             prioridad: plan.prioridad || 'Media',
             responsable: plan.responsable || 'N.A.',
-            actividad: `${occurrence.marker} - ${occurrence.title}${occurrence.activities_text ? `\n${occurrence.activities_text}` : ''}`.trim(),
+            actividad: occurrence.activities_text || occurrence.title || 'Mantenimiento preventivo programado',
             tipo_mantto: existingAlert?.tipo_mantto || 'Preventivo',
             status_ot: existingAlert?.status_ot || 'Pendiente',
             ot_numero: existingAlert?.ot_numero || '',
+            fecha_programada: existingAlert?.fecha_programada || occurrence.fecha,
+            alerta_desde: occurrence.alerta_desde,
+            dias_anticipacion_alerta: occurrence.dias_anticipacion_alerta,
+            tipo_pm_programado: occurrence.marker || '',
+            paquete_pm_id: occurrence.package_id || '',
+            paquete_pm: occurrence.package_nombre || occurrence.package_codigo || occurrence.title || '',
+            ciclo_paso_label: occurrence.title || '',
+            origen_programacion: 'FECHA',
           };
         });
       })
@@ -167,11 +212,43 @@ export default function PmpCalendario() {
           tipo_mantto: existingAlert?.tipo_mantto || 'Preventivo por Km',
           status_ot: existingAlert?.status_ot || 'Pendiente',
           ot_numero: existingAlert?.ot_numero || '',
+          fecha_programada: existingAlert?.fecha_programada || fecha,
+          alerta_desde: existingAlert?.alerta_desde || fecha,
+          dias_anticipacion_alerta: existingAlert?.dias_anticipacion_alerta || 0,
+          origen_programacion: 'KM',
         };
       })
       .filter(Boolean);
 
-    return [...dateItems, ...kmItems].sort(compareMaintenanceItems);
+    const manualCalendarItems = activeAlerts
+      .filter((item) => item.origen_programacion === 'CALENDARIO_MANUAL')
+      .map((item) => {
+        const fecha = item.fecha_ejecutar || item.fecha_programada || '';
+        const [year, month] = fecha.split('-').map(Number);
+        if (year !== calendarYear || month !== calendarMonth + 1) return null;
+        if (closedIds.has(String(item.id))) return null;
+        return {
+          id: item.id,
+          fecha,
+          codigo: item.codigo || '',
+          equipo: item.descripcion || '',
+          area_trabajo: item.area_trabajo || 'N.A.',
+          prioridad: item.prioridad || 'Media',
+          responsable: item.responsable || 'N.A.',
+          actividad: item.actividad || 'OT agendada desde calendario',
+          tipo_mantto: item.tipo_mantto || 'Correctivo',
+          status_ot: item.status_ot || 'Pendiente',
+          ot_numero: item.ot_numero || '',
+          fecha_programada: item.fecha_programada || fecha,
+          alerta_desde: item.alerta_desde || fecha,
+          dias_anticipacion_alerta: item.dias_anticipacion_alerta || 0,
+          origen_programacion: item.origen_programacion || 'CALENDARIO_MANUAL',
+          origen_creacion: item.origen_creacion || 'CALENDARIO',
+        };
+      })
+      .filter(Boolean);
+
+    return [...dateItems, ...kmItems, ...manualCalendarItems].sort(compareMaintenanceItems);
   }, [plans, plansKm, equipos, alerts, history, calendarMonth, calendarYear]);
 
   const countByDate = useMemo(() => {
@@ -186,6 +263,122 @@ export default function PmpCalendario() {
     if (!selectedDate) return [];
     return maintenanceItems.filter((item) => item.fecha === selectedDate);
   }, [maintenanceItems, selectedDate]);
+
+  const buildAlertFromCalendarItem = (item, fecha, reason = '') => ({
+    id: item.id,
+    fecha_ejecutar: fecha,
+    fecha_programada: item.fecha_programada || item.fecha,
+    fecha_reprogramacion: reason ? new Date().toISOString() : '',
+    reprogramado_por: reason ? (user?.full_name || user?.username || user?.role || 'Sistema') : '',
+    motivo_reprogramacion: reason,
+    reprogramaciones: reason ? [{
+      fecha_anterior: item.fecha,
+      fecha_nueva: fecha,
+      motivo: reason,
+      reprogramado_at: new Date().toISOString(),
+      reprogramado_por: user?.full_name || user?.username || user?.role || 'Sistema',
+    }] : [],
+    alerta_desde: item.alerta_desde || fecha,
+    dias_anticipacion_alerta: item.dias_anticipacion_alerta || 0,
+    codigo: item.codigo || '',
+    descripcion: item.equipo || '',
+    area_trabajo: item.area_trabajo || 'N.A.',
+    prioridad: item.prioridad || 'Media',
+    actividad: item.actividad || 'Mantenimiento preventivo programado',
+    responsable: item.responsable || 'N.A.',
+    status_ot: 'Pendiente',
+    ot_numero: '',
+    fecha_ejecucion: '',
+    tipo_mantto: item.tipo_mantto || 'Preventivo',
+    personal_mantenimiento: '',
+    materiales: '',
+    personal_detalle: [],
+    materiales_detalle: [],
+    registro_ot: null,
+    cierre_ot: null,
+    tipo_pm_programado: item.tipo_pm_programado || '',
+    paquete_pm_id: item.paquete_pm_id || '',
+    paquete_pm: item.paquete_pm || '',
+    ciclo_paso_label: item.ciclo_paso_label || '',
+    origen_programacion: item.origen_programacion || 'CALENDARIO',
+  });
+
+  const persistScheduleChange = async ({ item, fecha, reason }) => {
+    if (!canManageSchedule || !item || !fecha) return;
+    if (!isItemInOtNoticeWindow(item)) {
+      window.alert(`Esta OT solo se puede adelantar o crear dentro de su ventana de aviso: desde ${item.alerta_desde || item.fecha} hasta ${item.fecha}.`);
+      return;
+    }
+    const actorName = user?.full_name || user?.username || user?.role || 'Sistema';
+    const nextAlerts = (() => {
+      const found = (Array.isArray(alerts) ? alerts : []).some((row) => String(row.id) === String(item.id));
+      if (!found) return [buildAlertFromCalendarItem(item, fecha, reason), ...(Array.isArray(alerts) ? alerts : [])];
+      return alerts.map((row) => {
+        if (String(row.id) !== String(item.id)) return row;
+        if (reason) return applyOtReprogramming(row, { fecha_anterior: row.fecha_ejecutar || item.fecha, fecha_nueva: fecha, motivo: reason }, actorName);
+        return { ...row, fecha_ejecutar: fecha, fecha_programada: row.fecha_programada || row.fecha_ejecutar || item.fecha };
+      });
+    })();
+    await saveSharedDocument(OT_ALERTS_KEY, nextAlerts);
+    setAlerts(nextAlerts);
+    setSelectedDate(fecha);
+    setScheduleAction(null);
+    setNewScheduleDate('');
+    setScheduleReason('');
+    window.alert(reason ? 'Mantenimiento reprogramado y enviado a Gestion de OT.' : 'Mantenimiento adelantado a hoy y enviado a Gestion de OT.');
+  };
+
+  const openManualOtModal = () => {
+    if (!selectedDate || !canManageSchedule) return;
+    setShowManualOtModal(true);
+  };
+
+  const saveManualCalendarOt = async (payload) => {
+    if (!selectedDate || !canManageSchedule) return;
+    const leadDays = Math.max(0, Math.trunc(Number(payload.dias_anticipacion_alerta) || 0));
+    const alertFrom = addDaysToDateKey(selectedDate, -leadDays);
+    const createdAt = new Date().toISOString();
+    const createdBy = user?.full_name || user?.username || user?.role || 'Sistema';
+    const nextRow = {
+      id: buildManualCalendarOtId(),
+      fecha_ejecutar: selectedDate,
+      fecha_programada: selectedDate,
+      fecha_creacion: createdAt,
+      created_at: createdAt,
+      creado_por: createdBy,
+      alerta_desde: alertFrom,
+      dias_anticipacion_alerta: leadDays,
+      codigo: payload.codigo,
+      descripcion: payload.descripcion,
+      area_trabajo: payload.area_trabajo || 'N.A.',
+      prioridad: payload.prioridad || 'Media',
+      actividad: payload.actividad,
+      responsable: payload.responsable || 'N.A.',
+      status_ot: 'Pendiente',
+      ot_numero: '',
+      fecha_ejecucion: '',
+      tipo_mantto: payload.tipo_mantto || 'Correctivo',
+      personal_mantenimiento: '',
+      materiales: '',
+      personal_detalle: [],
+      materiales_detalle: [],
+      registro_ot: null,
+      cierre_ot: null,
+      equipo_id: payload.equipo_id || '',
+      servicio: payload.servicio || '',
+      vc: payload.vc || 'V.C - DIA',
+      tiempo_min: Number(payload.tiempo_min) || 0,
+      paquete_pm_id: payload.paquete_pm_id || '',
+      paquete_pm_nombre: payload.paquete_pm_nombre || '',
+      origen_programacion: 'CALENDARIO_MANUAL',
+      origen_creacion: 'CALENDARIO',
+    };
+    const nextAlerts = [nextRow, ...(Array.isArray(alerts) ? alerts : [])];
+    await saveSharedDocument(OT_ALERTS_KEY, nextAlerts);
+    setAlerts(nextAlerts);
+    setShowManualOtModal(false);
+    window.alert(`OT agendada para ${selectedDate}. Avisara desde ${alertFrom}.`);
+  };
 
   const calendarCells = useMemo(
     () => buildCalendarCells(calendarYear, calendarMonth),
@@ -328,9 +521,16 @@ export default function PmpCalendario() {
       </div>
 
       <div className="card">
-        <h2 className="card-title" style={{ marginBottom: '.8rem' }}>
-          {selectedDate ? `Mantenimientos pendientes para ${selectedDate}` : 'Selecciona un dia del calendario'}
-        </h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '.8rem' }}>
+          <h2 className="card-title" style={{ marginBottom: 0 }}>
+            {selectedDate ? `Mantenimientos pendientes para ${selectedDate}` : 'Selecciona un dia del calendario'}
+          </h2>
+          {selectedDate && canManageSchedule && (
+            <button type="button" className="btn btn-primary" onClick={openManualOtModal}>
+              Crear OT
+            </button>
+          )}
+        </div>
 
         {!selectedDate ? (
           <p style={{ color: '#6b7280', marginBottom: 0 }}>
@@ -344,6 +544,7 @@ export default function PmpCalendario() {
           <div style={{ display: 'grid', gap: '.75rem' }}>
             {selectedItems.map((item) => {
               const statusMeta = STATUS_META[item.status_ot] || { bg: '#f3f4f6', color: '#374151' };
+              const isInNoticeWindow = isItemInOtNoticeWindow(item);
               return (
                 <div key={item.id} style={{ border: '1px solid #e5e7eb', borderRadius: '.8rem', padding: '.9rem 1rem', background: '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', marginBottom: '.5rem' }}>
@@ -372,12 +573,108 @@ export default function PmpCalendario() {
                   <div style={{ color: '#6b7280', fontSize: '.88rem' }}>
                     OT: {item.ot_numero || 'Sin generar'} | Fecha: {item.fecha}
                   </div>
+                  {Number(item.dias_anticipacion_alerta) > 0 && (
+                    <div style={{ color: isInNoticeWindow ? '#2563eb' : '#6b7280', fontSize: '.84rem', fontWeight: 700, marginTop: '.3rem' }}>
+                      Aviso OT: {item.dias_anticipacion_alerta} dia(s) antes | Disponible desde {item.alerta_desde || item.fecha}
+                    </div>
+                  )}
+                  {canManageSchedule && item.status_ot === 'Pendiente' && (
+                    <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginTop: '.75rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={!isInNoticeWindow}
+                        onClick={() => {
+                          setScheduleAction({ type: 'move', item });
+                          setNewScheduleDate(item.fecha);
+                          setScheduleReason('');
+                        }}
+                      >
+                        Mover fecha
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={!isInNoticeWindow}
+                        onClick={() => persistScheduleChange({
+                          item,
+                          fecha: new Date().toISOString().slice(0, 10),
+                          reason: `Adelanto de mantenimiento desde calendario. Fecha original: ${item.fecha}`,
+                        })}
+                      >
+                        Adelantar a hoy
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
       </div>
+      {showManualOtModal && (
+        <ModalCrearOt
+          initialAlert={{
+            fecha_ejecutar: selectedDate,
+            fecha_programada: selectedDate,
+            status_ot: 'Pendiente',
+            tipo_mantto: 'Correctivo',
+            dias_anticipacion_alerta: 0,
+          }}
+          equipmentItems={equipos}
+          packageItems={packages}
+          title="Crear OT agendada"
+          subtitle={`Fecha programada: ${selectedDate}. Define los dias de aviso para que aparezca en Gestion de OT cuando corresponda.`}
+          submitLabel="Guardar OT agendada"
+          showLeadDays
+          lockDate
+          onClose={() => setShowManualOtModal(false)}
+          onSubmit={saveManualCalendarOt}
+        />
+      )}
+      {scheduleAction && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', display: 'grid', placeItems: 'center', zIndex: 1200, padding: '1rem' }}>
+          <div className="card" style={{ width: 'min(520px, 96vw)', marginBottom: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'flex-start', marginBottom: '.9rem' }}>
+              <div>
+                <h3 className="card-title" style={{ marginBottom: '.2rem' }}>Mover mantenimiento</h3>
+                <p style={{ margin: 0, color: '#64748b' }}>
+                  {scheduleAction.item.codigo} - {scheduleAction.item.equipo}
+                </p>
+              </div>
+              <button type="button" className="btn btn-secondary" onClick={() => setScheduleAction(null)}>Cerrar</button>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Nueva fecha *</label>
+              <input type="date" className="form-input" value={newScheduleDate} onChange={(event) => setNewScheduleDate(event.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Motivo *</label>
+              <textarea className="form-textarea" rows={4} value={scheduleReason} onChange={(event) => setScheduleReason(event.target.value)} placeholder="Ej: se adelanta por parada programada, disponibilidad de equipo, prioridad operativa..." />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.55rem', flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setScheduleAction(null)}>Cancelar</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  if (!newScheduleDate) {
+                    window.alert('Selecciona la nueva fecha.');
+                    return;
+                  }
+                  if (!scheduleReason.trim()) {
+                    window.alert('Indica el motivo del cambio de fecha.');
+                    return;
+                  }
+                  persistScheduleChange({ item: scheduleAction.item, fecha: newScheduleDate, reason: scheduleReason.trim() });
+                }}
+              >
+                Guardar cambio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

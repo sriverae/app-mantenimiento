@@ -55,6 +55,13 @@ function safeText(value) {
   return String(value || '').trim();
 }
 
+function todayDateString() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
 function normalizeOwnerText(value) {
   return safeText(value).toLowerCase();
 }
@@ -175,7 +182,8 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
       categoria: suggestion.noticeCategory || suggestion.category || 'Aviso tecnico',
       detalle: noticeDetail,
       sugerencia_texto: safeText(suggestion.text || report?.observaciones),
-      fecha_aviso: report?.fechaFin || report?.fechaInicio || new Date().toISOString().slice(0, 10),
+      fecha_aviso: report?.fechaFin || report?.fechaInicio || todayDateString(),
+      fecha_evidencia: report?.fechaFin || report?.fechaInicio || todayDateString(),
       hora_evidencia: safeText(report?.horaFin || report?.horaInicio),
       rango_notificacion: `${formatDateTimeDisplay(report?.fechaInicio, report?.horaInicio, 'N.A.')} - ${formatDateTimeDisplay(report?.fechaFin, report?.horaFin, 'N.A.')}`,
       created_at: new Date().toISOString(),
@@ -209,9 +217,11 @@ export function buildMaintenanceNoticesFromReports(alert, reports, existingNotic
 export function buildPendingOtFromNotice(notice) {
   const priority = safeText(notice.prioridad_sugerida) || safeText(notice.criticidad_aviso) || 'Media';
   const type = safeText(notice.tipo_mantto_sugerido) || 'Correctivo';
+  const eventDate = safeText(notice.fecha_evidencia) || safeText(notice.fecha_aviso) || todayDateString();
+  const eventTime = safeText(notice.hora_evidencia);
   return {
     id: `notice_ot_${Date.now()}_${notice.id}`,
-    fecha_ejecutar: notice.fecha_aviso || new Date().toISOString().slice(0, 10),
+    fecha_ejecutar: eventDate,
     codigo: notice.codigo || '',
     descripcion: notice.descripcion || '',
     area_trabajo: notice.area_trabajo || 'N.A.',
@@ -233,8 +243,10 @@ export function buildPendingOtFromNotice(notice) {
     origen_programacion: 'AVISO',
     aviso_id: notice.id,
     aviso_codigo: notice.aviso_codigo,
-    fecha_emision_aviso: notice.fecha_aviso || notice.created_at || '',
-    hora_emision_aviso: notice.hora_evidencia || '',
+    fecha_emision_aviso: eventDate || notice.created_at || '',
+    hora_emision_aviso: eventTime,
+    fecha_visualizacion_evento: eventDate,
+    hora_visualizacion_evento: eventTime,
     aviso_creado_at: notice.created_at || '',
     fecha_aceptacion_aviso: notice.accepted_at || '',
     aviso_aceptado_por: notice.accepted_by_name || '',
