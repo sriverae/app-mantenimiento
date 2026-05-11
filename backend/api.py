@@ -613,7 +613,11 @@ def _document_payload(rule: dict, setting: Setting | None) -> tuple[Any, str, Op
 
 
 def _work_notification_lock_key(alert_id: str | int) -> str:
-    return f"work_notification_lock:{alert_id}"
+    # Some OTs created from maintenance notices carry long ids
+    # (for example notice_ot_..._notice_manual_...). settings.key is kept
+    # compact, so the lock key must stay below the database varchar limit.
+    digest = hashlib.sha1(str(alert_id).encode("utf-8")).hexdigest()
+    return f"work_notification_lock:{digest}"
 
 
 def _parse_work_notification_lock(setting: Setting | None) -> Optional[dict[str, Any]]:
