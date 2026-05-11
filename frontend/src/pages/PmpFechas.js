@@ -40,6 +40,8 @@ const MONTHS = [
   'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
 ];
 
+const MAX_EQUIPMENT_RESULTS = 25;
+
 const PACKAGES_FALLBACK = [
   {
     id: 1,
@@ -464,6 +466,16 @@ export default function PmpFechas() {
       return areaOk && codeOk && textOk;
     })
   ), [equipos, equipmentAreaFilter, equipmentCodeFilter, equipmentTextFilter]);
+
+  const visibleEquipos = useMemo(
+    () => filteredEquipos.slice(0, MAX_EQUIPMENT_RESULTS),
+    [filteredEquipos],
+  );
+
+  const selectedEquiposPreview = useMemo(
+    () => equipos.filter((eq) => selectedEquipmentIds.includes(String(eq.id))).slice(0, 6),
+    [equipos, selectedEquipmentIds],
+  );
 
   const filteredPackages = useMemo(() => {
     return packages.filter((pkg) => {
@@ -1265,6 +1277,27 @@ export default function PmpFechas() {
                   {selectedEquipmentIds.length} seleccionado(s)
                 </span>
               </div>
+              {selectedEquiposPreview.length > 0 && (
+                <div style={{ display: 'flex', gap: '.35rem', flexWrap: 'wrap', marginBottom: '.65rem' }}>
+                  {selectedEquiposPreview.map((eq) => (
+                    <span key={eq.id} style={{ borderRadius: '999px', background: '#e0f2fe', color: '#075985', padding: '.22rem .55rem', fontSize: '.78rem', fontWeight: 800 }}>
+                      {eq.codigo || 'S/C'}
+                    </span>
+                  ))}
+                  {selectedEquipmentIds.length > selectedEquiposPreview.length && (
+                    <span style={{ borderRadius: '999px', background: '#f1f5f9', color: '#475569', padding: '.22rem .55rem', fontSize: '.78rem', fontWeight: 800 }}>
+                      +{selectedEquipmentIds.length - selectedEquiposPreview.length} mas
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setSelectedEquipmentIds([])}
+                  >
+                    Limpiar
+                  </button>
+                </div>
+              )}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '.65rem', marginBottom: '.8rem' }}>
                 <select className="form-select" value={equipmentAreaFilter} onChange={(e) => setEquipmentAreaFilter(e.target.value)}>
                   <option value="">Area (todas)</option>
@@ -1275,23 +1308,29 @@ export default function PmpFechas() {
               </div>
 
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Resultados de busqueda *</label>
-                <div style={{ display: 'grid', gap: '.55rem', maxHeight: '300px', overflow: 'auto', paddingRight: '.15rem' }}>
-                  {filteredEquipos.map((eq) => {
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '.45rem' }}>
+                  <label className="form-label" style={{ marginBottom: 0 }}>Resultados de busqueda *</label>
+                  <span style={{ color: '#64748b', fontSize: '.82rem', fontWeight: 700 }}>
+                    Mostrando {visibleEquipos.length} de {filteredEquipos.length}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gap: '.35rem', maxHeight: '240px', overflow: 'auto', paddingRight: '.15rem' }}>
+                  {visibleEquipos.map((eq) => {
                     const checked = selectedEquipmentIds.includes(String(eq.id));
                     return (
                       <label
                         key={eq.id}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: 'auto 1fr',
-                          gap: '.65rem',
+                          gridTemplateColumns: 'auto minmax(86px, .35fr) minmax(140px, 1fr) minmax(80px, .35fr)',
+                          gap: '.55rem',
                           alignItems: 'center',
                           border: checked ? '1px solid #2563eb' : '1px solid #dbe4f0',
-                          borderRadius: '.85rem',
-                          padding: '.7rem .8rem',
+                          borderRadius: '.65rem',
+                          padding: '.48rem .6rem',
                           background: checked ? '#eff6ff' : '#fff',
                           cursor: 'pointer',
+                          fontSize: '.9rem',
                         }}
                       >
                         <input
@@ -1313,10 +1352,12 @@ export default function PmpFechas() {
                             }
                           }}
                         />
-                        <span>
-                          <strong style={{ color: '#0f172a' }}>{eq.codigo || 'Sin codigo'}</strong>
-                          <span style={{ color: '#334155' }}> | {eq.descripcion || 'Equipo sin descripcion'}</span>
-                          <small style={{ display: 'block', color: '#64748b', marginTop: '.15rem' }}>{eq.area_trabajo || 'Area N.A.'}</small>
+                        <strong style={{ color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{eq.codigo || 'Sin codigo'}</strong>
+                        <span style={{ color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {eq.descripcion || 'Equipo sin descripcion'}
+                        </span>
+                        <span style={{ color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '.82rem' }}>
+                          {eq.area_trabajo || 'Area N.A.'}
                         </span>
                       </label>
                     );
@@ -1327,6 +1368,11 @@ export default function PmpFechas() {
                     </div>
                   )}
                 </div>
+                {filteredEquipos.length > MAX_EQUIPMENT_RESULTS && (
+                  <p style={{ color: '#64748b', fontSize: '.8rem', marginTop: '.4rem', marginBottom: 0 }}>
+                    Hay muchos resultados. Filtra por area, codigo o descripcion para ubicar el equipo mas rapido.
+                  </p>
+                )}
                 <p style={{ color: '#6b7280', fontSize: '.82rem', marginTop: '.45rem' }}>
                   Si marcas varios equipos, se creara el mismo plan para cada uno con su propio codigo.
                 </p>

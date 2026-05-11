@@ -11,6 +11,7 @@ const PACKAGES_KEY = SHARED_DOCUMENT_KEYS.maintenancePackages;
 const EQUIPOS_KEY = SHARED_DOCUMENT_KEYS.equipmentItems;
 const OT_ALERTS_KEY = SHARED_DOCUMENT_KEYS.otAlerts;
 const OT_HISTORY_KEY = SHARED_DOCUMENT_KEYS.otHistory;
+const NOTICES_KEY = SHARED_DOCUMENT_KEYS.maintenanceNotices;
 
 const MONTHS = [
   'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -80,6 +81,28 @@ const buildCalendarCells = (year, month) => {
   return cells;
 };
 
+const getDateKey = (value) => String(value || '').slice(0, 10);
+
+const getAlertDateKey = (item) => (
+  getDateKey(item?.fecha_ejecutar)
+  || getDateKey(item?.fecha_programada)
+  || getDateKey(item?.fecha_creacion)
+  || getDateKey(item?.created_at)
+);
+
+const getNoticeDateKey = (item) => (
+  getDateKey(item?.fecha_aviso)
+  || getDateKey(item?.fecha_evidencia)
+  || getDateKey(item?.fecha_registro_aviso)
+  || getDateKey(item?.created_at)
+);
+
+const isInCalendarMonth = (dateKey, year, month) => {
+  if (!dateKey) return false;
+  const [dateYear, dateMonth] = dateKey.split('-').map(Number);
+  return dateYear === year && dateMonth === month + 1;
+};
+
 const compareMaintenanceItems = (a, b) => {
   if (a.fecha !== b.fecha) return new Date(a.fecha) - new Date(b.fecha);
   const priorityA = PRIORITY_ORDER[a.prioridad] ?? 99;
@@ -103,6 +126,7 @@ export default function PmpCalendario() {
   const [packages, setPackages] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [history, setHistory] = useState([]);
+  const [notices, setNotices] = useState([]);
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
   const [selectedDate, setSelectedDate] = useState(null);
@@ -117,13 +141,14 @@ export default function PmpCalendario() {
     let active = true;
     const load = async () => {
       setLoading(true);
-      const [loadedPlans, loadedPlansKm, loadedEquipos, loadedPackages, loadedAlerts, loadedHistory] = await Promise.all([
+      const [loadedPlans, loadedPlansKm, loadedEquipos, loadedPackages, loadedAlerts, loadedHistory, loadedNotices] = await Promise.all([
         loadSharedDocument(PLANS_KEY, []),
         loadSharedDocument(KM_PLANS_KEY, []),
         loadSharedDocument(EQUIPOS_KEY, []),
         loadSharedDocument(PACKAGES_KEY, []),
         loadSharedDocument(OT_ALERTS_KEY, []),
         loadSharedDocument(OT_HISTORY_KEY, []),
+        loadSharedDocument(NOTICES_KEY, []),
       ]);
       if (!active) return;
       setPlans(Array.isArray(loadedPlans) ? loadedPlans : []);
@@ -132,6 +157,7 @@ export default function PmpCalendario() {
       setPackages(Array.isArray(loadedPackages) ? loadedPackages : []);
       setAlerts(Array.isArray(loadedAlerts) ? loadedAlerts : []);
       setHistory(Array.isArray(loadedHistory) ? loadedHistory : []);
+      setNotices(Array.isArray(loadedNotices) ? loadedNotices : []);
       setLoading(false);
     };
     load();
@@ -259,10 +285,34 @@ export default function PmpCalendario() {
     return countMap;
   }, [maintenanceItems]);
 
+  const otCountByDate = useMemo(() => {
+    const countMap = new Map();
+    (Array.isArray(alerts) ? alerts : []).forEach((item) => {
+      if (item.status_ot === 'Cerrada') return;
+      const dateKey = getAlertDateKey(item);
+      if (!isInCalendarMonth(dateKey, calendarYear, calendarMonth)) return;
+      countMap.set(dateKey, (countMap.get(dateKey) || 0) + 1);
+    });
+    return countMap;
+  }, [alerts, calendarMonth, calendarYear]);
+
+  const noticeCountByDate = useMemo(() => {
+    const countMap = new Map();
+    (Array.isArray(notices) ? notices : []).forEach((item) => {
+      const dateKey = getNoticeDateKey(item);
+      if (!isInCalendarMonth(dateKey, calendarYear, calendarMonth)) return;
+      countMap.set(dateKey, (countMap.get(dateKey) || 0) + 1);
+    });
+    return countMap;
+  }, [notices, calendarMonth, calendarYear]);
+
   const selectedItems = useMemo(() => {
     if (!selectedDate) return [];
     return maintenanceItems.filter((item) => item.fecha === selectedDate);
   }, [maintenanceItems, selectedDate]);
+
+  const selectedOtCount = selectedDate ? (otCountByDate.get(selectedDate) || 0) : 0;
+  const selectedNoticeCount = selectedDate ? (noticeCountByDate.get(selectedDate) || 0) : 0;
 
   const buildAlertFromCalendarItem = (item, fecha, reason = '') => ({
     id: item.id,
@@ -414,6 +464,11 @@ export default function PmpCalendario() {
         <div className="stat-card">
           <div className="stat-label">Dia seleccionado</div>
           <div className="stat-value" style={{ color: '#059669' }}>{selectedDate ? (countByDate.get(selectedDate) || 0) : 0}</div>
+          {selectedDate && (
+            <div style={{ color: '#64748b', fontSize: '.82rem', marginTop: '.2rem' }}>
+              OT {selectedOtCount} | Avisos {selectedNoticeCount}
+            </div>
+          )}
         </div>
       </div>
 
@@ -479,6 +534,8 @@ export default function PmpCalendario() {
             }
 
             const count = countByDate.get(cell.iso) || 0;
+            const otCount = otCountByDate.get(cell.iso) || 0;
+            const noticeCount = noticeCountByDate.get(cell.iso) || 0;
             const isSelected = selectedDate === cell.iso;
             const isToday = cell.iso === new Date().toISOString().slice(0, 10);
 
@@ -508,11 +565,19 @@ export default function PmpCalendario() {
                     <span style={{ fontSize: '.72rem', fontWeight: 700, color: '#2563eb' }}>Hoy</span>
                   )}
                 </div>
-                <div>
-                  <div style={{ fontSize: '.8rem', color: '#6b7280', marginBottom: '.35rem' }}>Pendientes</div>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: '34px', padding: '.25rem .55rem', borderRadius: '999px', background: count > 0 ? '#dbeafe' : '#f3f4f6', color: count > 0 ? '#1d4ed8' : '#6b7280', fontWeight: 700 }}>
-                    {count}
-                  </div>
+                <div style={{ display: 'grid', gap: '.28rem' }}>
+                  {[
+                    ['Pend.', count, count > 0 ? '#dbeafe' : '#f3f4f6', count > 0 ? '#1d4ed8' : '#6b7280'],
+                    ['OT', otCount, otCount > 0 ? '#dcfce7' : '#f3f4f6', otCount > 0 ? '#166534' : '#6b7280'],
+                    ['Avisos', noticeCount, noticeCount > 0 ? '#ffedd5' : '#f3f4f6', noticeCount > 0 ? '#c2410c' : '#6b7280'],
+                  ].map(([label, value, bg, color]) => (
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '.45rem', color: '#64748b', fontSize: '.76rem' }}>
+                      <span>{label}</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: '28px', padding: '.16rem .45rem', borderRadius: '999px', background: bg, color, fontWeight: 800 }}>
+                        {value}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </button>
             );
@@ -522,9 +587,17 @@ export default function PmpCalendario() {
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '.8rem' }}>
-          <h2 className="card-title" style={{ marginBottom: 0 }}>
-            {selectedDate ? `Mantenimientos pendientes para ${selectedDate}` : 'Selecciona un dia del calendario'}
-          </h2>
+          <div>
+            <h2 className="card-title" style={{ marginBottom: selectedDate ? '.25rem' : 0 }}>
+              {selectedDate ? `Mantenimientos pendientes para ${selectedDate}` : 'Selecciona un dia del calendario'}
+            </h2>
+            {selectedDate && (
+              <div style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap', color: '#64748b', fontSize: '.86rem' }}>
+                <span>OT creadas: <strong style={{ color: '#166534' }}>{selectedOtCount}</strong></span>
+                <span>Avisos del dia: <strong style={{ color: '#c2410c' }}>{selectedNoticeCount}</strong></span>
+              </div>
+            )}
+          </div>
           {selectedDate && canManageSchedule && (
             <button type="button" className="btn btn-primary" onClick={openManualOtModal}>
               Crear OT
