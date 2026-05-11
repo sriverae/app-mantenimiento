@@ -3949,6 +3949,8 @@ export default function PmpGestionOt() {
           const dueDates = getDatePlanOccurrencesInWindow(plan, monthStart, monthEnd, { includeAlertWindow: true });
           return dueDates
             .filter((scheduleInfo) => String(scheduleInfo.alerta_desde || scheduleInfo.fecha || '') <= todayStr)
+            .sort((a, b) => String(a.fecha || '').localeCompare(String(b.fecha || '')))
+            .slice(0, 1)
             .map((scheduleInfo, idx) => {
             const fecha = scheduleInfo.fecha;
             const cycleId = scheduleInfo.id;
@@ -4051,7 +4053,13 @@ export default function PmpGestionOt() {
         .map((row, idx) => ({ ...row, orden: idx + 1 }));
 
       const dueIds = new Set(dueAlerts.map((item) => item.id));
-      const carryOver = activeExisting.filter((item) => !dueIds.has(item.id));
+      const carryOver = activeExisting.filter((item) => {
+        if (dueIds.has(item.id)) return false;
+        const isUnstartedDatePlanOt = String(item.origen_programacion || '') === 'FECHA'
+          && ['Pendiente', 'Creada'].includes(String(item.status_ot || ''))
+          && !item.ot_numero;
+        return !isUnstartedDatePlanOt;
+      });
       const mergedAlerts = [...carryOver, ...dueAlerts]
         .sort(compareOtAlerts)
         .map((row, idx) => ({ ...row, orden: idx + 1 }));
