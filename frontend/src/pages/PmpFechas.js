@@ -304,6 +304,7 @@ export default function PmpFechas() {
   const [manualLabelInput, setManualLabelInput] = useState('');
   const [manualFrequencyDays, setManualFrequencyDays] = useState('');
   const [manualActivitiesDraft, setManualActivitiesDraft] = useState('');
+  const [manualBatchRows, setManualBatchRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const [error, setError] = useState('');
@@ -397,7 +398,9 @@ export default function PmpFechas() {
   const planMonthMap = useMemo(() => {
     const map = new Map();
     plans.forEach((plan) => {
-      const occurrences = getDatePlanOccurrencesInWindow(plan, monthStart, monthEnd);
+      const occurrences = getDatePlanOccurrencesInWindow(plan, monthStart, monthEnd)
+        .sort((a, b) => String(a.fecha || '').localeCompare(String(b.fecha || '')))
+        .slice(0, 1);
       const byDay = new Map();
       occurrences.forEach((occurrence) => {
         const day = Number(String(occurrence.fecha).slice(8, 10));
@@ -536,6 +539,7 @@ export default function PmpFechas() {
     setManualLabelInput('');
     setManualFrequencyDays('');
     setManualActivitiesDraft('');
+    setManualBatchRows([]);
   };
 
   const openCreate = async () => {
@@ -702,6 +706,58 @@ export default function PmpFechas() {
     }));
   };
 
+  const addManualBatchRow = () => {
+    const label = String(manualLabelInput || '').trim();
+    const frequencyDays = Number(manualFrequencyDays);
+    if (!label) {
+      window.alert('Debes escribir el nombre de la actividad manual.');
+      return;
+    }
+    if (!Number.isFinite(frequencyDays) || frequencyDays <= 0) {
+      window.alert('Debes indicar la frecuencia de esta actividad manual.');
+      return;
+    }
+    const validationError = validateTextFields([['Actividad manual', label]]);
+    if (validationError) {
+      window.alert(validationError);
+      return;
+    }
+    setManualBatchRows((prev) => ([
+      ...prev,
+      {
+        id: `manual_batch_${Date.now()}_${prev.length}`,
+        label,
+        frecuencia_dias: Math.trunc(frequencyDays),
+      },
+    ]));
+    setManualLabelInput('');
+    setManualFrequencyDays('');
+  };
+
+  const removeManualBatchRow = (id) => {
+    setManualBatchRows((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const addManualBatchRowsToCycle = () => {
+    if (!manualBatchRows.length) {
+      window.alert('Agrega al menos una actividad manual a la lista.');
+      return;
+    }
+    const nextEntries = manualBatchRows.map((row, index) => normalizeDateCycleEntry({
+      item: cycleItems.length + index + 1,
+      source_type: 'manual',
+      label: row.label,
+      frecuencia_dias: row.frecuencia_dias,
+      actividades: [row.label],
+      vc: 'V.C - DIA',
+    }));
+    setCycleItems((prev) => reindexDateCycleEntries([...prev, ...nextEntries]));
+    setManualBatchRows([]);
+    setManualLabelInput('');
+    setManualFrequencyDays('');
+    setManualActivitiesDraft('');
+  };
+
   const editCycleEntry = (index) => {
     const current = cycleItems[index];
     if (!current) return;
@@ -711,6 +767,7 @@ export default function PmpFechas() {
       setManualLabelInput(current.label || '');
       setManualFrequencyDays(String(current.frecuencia_dias || ''));
       setManualActivitiesDraft((current.actividades || []).join('\n'));
+      setManualBatchRows([]);
       setForm((prev) => ({ ...prev, paquete_id: '', package_frequency_days: '' }));
       setPackageActivitiesDraft('');
     } else {
@@ -925,7 +982,7 @@ export default function PmpFechas() {
                 </div>
 
                 <div style={{ display: 'grid', gap: '.45rem' }}>
-                  <div style={{ color: '#0f172a', fontWeight: 700 }}>Ocurrencias del mes</div>
+                  <div style={{ color: '#0f172a', fontWeight: 700 }}>Siguiente ocurrencia del mes</div>
                   {plan.monthData.occurrences.length ? plan.monthData.occurrences.map((occurrence) => {
                     const status = getOccurrenceState(occurrence.id, activeAlertMap, closedHistoryIds, deletedIdSet, [`${occurrence.fecha}_${plan.id}`]);
                     return (
@@ -950,7 +1007,7 @@ export default function PmpFechas() {
                       </div>
                     );
                   }) : (
-                    <div style={{ color: '#6b7280', fontSize: '.9rem' }}>Sin eventos programados para este mes.</div>
+                    <div style={{ color: '#6b7280', fontSize: '.9rem' }}>Sin siguiente evento programado para este mes.</div>
                   )}
                 </div>
 
@@ -980,7 +1037,7 @@ export default function PmpFechas() {
                     </th>
                   ))}
                   <th colSpan={31} style={{ textAlign: 'center', padding: '.7rem .5rem', border: '1px solid #2f4f75', fontSize: '.85rem', background: '#21486e' }}>
-                    Cronograma ({MONTHS[calendarMonth]} {calendarYear})
+                    Siguiente fecha del mes ({MONTHS[calendarMonth]} {calendarYear})
                   </th>
                 </tr>
                 <tr style={{ background: '#244a71', color: '#fff' }}>
@@ -1118,7 +1175,7 @@ export default function PmpFechas() {
               </div>
 
               <div style={{ padding: '1rem', borderRadius: '1rem', border: '1px solid #e5e7eb', background: '#fff' }}>
-                <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: '.8rem' }}>Ocurrencias del mes</div>
+                <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: '.8rem' }}>Siguiente ocurrencia del mes</div>
                 <div style={{ display: 'grid', gap: '.65rem' }}>
                   {detailPlanMonthData.occurrences.length ? detailPlanMonthData.occurrences.map((occurrence) => {
                     const status = getOccurrenceState(occurrence.id, activeAlertMap, closedHistoryIds, deletedIdSet, [`${occurrence.fecha}_${detailPlan.id}`]);
@@ -1138,7 +1195,7 @@ export default function PmpFechas() {
                       </div>
                     );
                   }) : (
-                    <div style={{ color: '#6b7280' }}>Este plan no tiene ejecuciones programadas en el mes seleccionado.</div>
+                    <div style={{ color: '#6b7280' }}>Este plan no tiene una siguiente ejecucion programada en el mes seleccionado.</div>
                   )}
                 </div>
               </div>
@@ -1421,6 +1478,41 @@ export default function PmpFechas() {
                     </div>
                   </div>
 
+                  {editingCycleIndex === null && (
+                    <div style={{ display: 'grid', gap: '.65rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ color: '#64748b', fontSize: '.9rem' }}>
+                          Agrega varias actividades manuales a la lista y luego cargalas juntas al ciclo. Cada una conserva su propia frecuencia.
+                        </div>
+                        <button type="button" className="btn btn-secondary" onClick={addManualBatchRow}>
+                          Agregar a lista
+                        </button>
+                      </div>
+                      {manualBatchRows.length > 0 && (
+                        <div style={{ border: '1px solid #dbe4f0', borderRadius: '.85rem', overflow: 'hidden', background: '#fff' }}>
+                          {manualBatchRows.map((row, index) => (
+                            <div
+                              key={row.id}
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '46px minmax(0, 1fr) 150px auto',
+                                gap: '.65rem',
+                                alignItems: 'center',
+                                padding: '.65rem .75rem',
+                                borderTop: index ? '1px solid #e5e7eb' : 0,
+                              }}
+                            >
+                              <strong style={{ color: '#2563eb' }}>{index + 1}</strong>
+                              <span style={{ color: '#0f172a', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.label}</span>
+                              <span style={{ color: '#475569', fontWeight: 800 }}>{row.frecuencia_dias} dia(s)</span>
+                              <button type="button" className="btn btn-danger btn-sm" onClick={() => removeManualBatchRow(row.id)}>Quitar</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">Detalle de actividades manuales</label>
                     <ActivityListEditor
@@ -1436,8 +1528,16 @@ export default function PmpFechas() {
                   </div>
 
                   <div>
-                    <button type="button" className="btn btn-primary" onClick={addOrUpdateManualStep}>
-                      {editingCycleIndex !== null && cycleEditorMode === 'manual' ? 'Actualizar actividad manual' : 'Agregar actividad manual al ciclo'}
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={manualBatchRows.length && editingCycleIndex === null ? addManualBatchRowsToCycle : addOrUpdateManualStep}
+                    >
+                      {editingCycleIndex !== null && cycleEditorMode === 'manual'
+                        ? 'Actualizar actividad manual'
+                        : manualBatchRows.length
+                          ? 'Agregar actividades manuales al ciclo'
+                          : 'Agregar actividad manual al ciclo'}
                     </button>
                   </div>
                 </div>
